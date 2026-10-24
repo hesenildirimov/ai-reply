@@ -84,16 +84,21 @@ async function deliver(c: ConvCtx, text: string, sender: 'ai' | 'human'): Promis
   await q('UPDATE conversations SET last_message_at = now() WHERE id = $1', [c.id]);
 }
 
-export async function reserveReply(workspaceId: string): Promise<boolean> {
-  const ws = await one<{ monthly_reply_limit: number }>('SELECT monthly_reply_limit FROM workspaces WHERE id = $1', [workspaceId]);
-  if (!ws || ws.monthly_reply_limit <= 0) return false;
+/** Counts one AI reply against the monthly limit. 'expired' = subscription not paid (paid_until passed). */
+export async function reserveReply(workspaceId: string): Promise<'ok' | 'limit' | 'expired'> {
+  const ws = await one<{ monthly_reply_limit: number; expired: boolean }>(
+    'SELECT monthly_reply_limit, coalesce(paid_until < current_date, false) AS expired FROM workspaces WHERE id = $1',
+    [workspaceId],
+  );
+  if (!ws || ws.expired) return 'expired';
+  if (ws.monthly_reply_limit <= 0) return 'limit';
   const row = await one(
     `INSERT INTO usage_counters (workspace_id, period, ai_replies) VALUES ($1, to_char(now(), 'YYYY-MM'), 1)
      ON CONFLICT (workspace_id, period) DO UPDATE SET ai_replies = usage_counters.ai_replies + 1
      WHERE usage_counters.ai_replies < $2 RETURNING ai_replies`,
     [workspaceId, ws.monthly_reply_limit],
   );
-  return !!row;
+  return row ? 'ok' : 'limit';
 }
 
 async function handoff(c: ConvCtx, handoffMessage: string, reason: string): Promise<void> {
@@ -124,7 +129,9 @@ export async function processReply(conversationId: string, messageId: string): P
   const lastText = recent.at(-1)?.body ?? '';
   if (HUMAN_KEYWORDS.test(lastText)) return handoff(c, a.handoff_message, 'customer asked for a human');
 
-  if (!(await reserveReply(c.workspace_id))) return handoff(c, a.handoff_message, 'monthly AI reply limit reached');
+  const quota = await reserveReply(c.workspace_id);
+  if (quota === 'expired') return; // unpaid: stay silent, staff answers from the inbox
+  if (quota === 'limit') return handoff(c, a.handoff_message, 'monthly AI reply limit reached');
 
   if (c.channel.type === 'instagram' && !c.display_name) {
     const name = await instagramUsername(decrypt(c.channel.access_token_enc), c.external_user_id);

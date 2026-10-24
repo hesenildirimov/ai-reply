@@ -15,3 +15,4 @@ tr.attention{background:#fff7ed}.tag{display:inline-block;font-size:12px;padding
 .thread{display:flex;flex-direction:column;gap:8px;margin:16px 0}.bubble{max-width:75%;padding:8px 12px;border-radius:10px;background:#eef2ff;white-space:pre-wrap;word-wrap:break-word}
 .bubble small{display:block;color:var(--muted);font-size:11px}.bubble.customer{background:#f3f4f6;align-self:flex-start}.bubble.ai,.bubble.human{align-self:flex-end}.bubble.human{background:#dcfce7}
 .legal h2{font-size:17px;margin-top:20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0 16px;align-items:end}.grid button{margin:12px 0}input.copy{font-family:monospace;font-size:13px}

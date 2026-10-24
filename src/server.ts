@@ -8,6 +8,7 @@ import Fastify from 'fastify';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { queue, redis } from './queue.js';
+import { adminRoutes } from './web/admin.js';
 import { appRoutes } from './web/app.js';
 import { registerAuth } from './web/auth.js';
 import { legalRoutes } from './web/legal.js';
@@ -65,6 +66,7 @@ export async function buildServer() {
   legalRoutes(app);
   metaRoutes(app);
   appRoutes(app);
+  adminRoutes(app);
 
   app.setErrorHandler((err: any, req, reply) => {
     const status = err.statusCode && err.statusCode < 500 ? err.statusCode : 500;

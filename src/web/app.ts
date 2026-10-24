@@ -24,6 +24,7 @@ Object.assign(MESSAGES, {
   sent: { type: 'ok', text: 'Göndərildi. AI bu söhbətdə 12 saat dayandırıldı.' },
   send_failed: { type: 'error', text: 'Göndərmək alınmadı.' },
   limit: { type: 'error', text: 'Aylıq AI cavab limitiniz bitib.' },
+  expired: { type: 'error', text: 'Abunəliyin müddəti bitib. AI cavablar dayandırılıb — administratorla əlaqə saxlayın.' },
   pw_changed: { type: 'ok', text: 'Şifrə dəyişdirildi.' },
   bad_password: { type: 'error', text: 'Şifrə yanlışdır.' },
 });
@@ -46,17 +47,17 @@ export function appRoutes(app: FastifyInstance) {
     r.get('/app', async (req, reply) => {
       const w = req.user!.workspaceId;
       const [ws, a, chans, usage] = await Promise.all([
-        one('SELECT name, plan, monthly_reply_limit FROM workspaces WHERE id = $1', [w]),
+        one('SELECT name, monthly_reply_limit, paid_until, coalesce(paid_until < current_date, false) AS expired FROM workspaces WHERE id = $1', [w]),
         one('SELECT enabled, knowledge FROM assistants WHERE workspace_id = $1', [w]),
         q<ChannelRow>('SELECT type, display_name, status FROM channels WHERE workspace_id = $1', [w]),
         one(`SELECT ai_replies FROM usage_counters WHERE workspace_id = $1 AND period = to_char(now(), 'YYYY-MM')`, [w]),
       ]);
       const step = (done: boolean, text: string, href: string) => html`<li class="${done ? 'done' : ''}"><a href="${href}">${text}</a></li>`;
-      return view(req, reply, 'Panel', html`<section class="card"><h1>${ws.name}</h1>
+      return view(req, reply, 'Panel', html`${ws.expired ? html`<p class="flash error">${MESSAGES.expired!.text}</p>` : ''}<section class="card"><h1>${ws.name}</h1>
         <ol class="steps">${step(a.knowledge.length > 50, 'Biznes məlumatlarını doldurun', '/app/assistant')}
           ${step(chans.length > 0, 'Instagram və ya WhatsApp bağlayın', '/app/channels')}
           ${step(a.enabled, 'AI cavabları aktiv edin', '/app/assistant')}</ol>
-        <p>AI: <b>${a.enabled ? 'Aktiv' : 'Deaktiv'}</b> · Bu ay AI cavabları: <b>${usage?.ai_replies ?? 0} / ${ws.monthly_reply_limit}</b> · Plan: ${ws.plan}</p>
+        <p>AI: <b>${a.enabled ? 'Aktiv' : 'Deaktiv'}</b> · Bu ay AI cavabları: <b>${usage?.ai_replies ?? 0} / ${ws.monthly_reply_limit}</b>${ws.paid_until ? html` · Ödənilib: <b>${new Date(ws.paid_until).toISOString().slice(0, 10)}</b> tarixinə qədər` : ''}</p>
         <p>Kanallar: ${chans.length ? chans.map((c) => html`<span class="tag ${c.status}">${typeLabel(c.type)}: ${c.display_name}</span> `) : 'yoxdur'}</p></section>`);
     });
 
@@ -104,7 +105,8 @@ export function appRoutes(app: FastifyInstance) {
     r.post('/app/test', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
       const msg = z.string().trim().min(1).max(1000).safeParse((req.body as any)?.message).data;
       if (!msg) return reply.redirect('/app/test?m=invalid');
-      if (!(await reserveReply(req.user!.workspaceId))) return reply.redirect('/app/test?m=limit');
+      const quota = await reserveReply(req.user!.workspaceId);
+      if (quota !== 'ok') return reply.redirect(`/app/test?m=${quota}`);
       const a = await one('SELECT * FROM assistants WHERE workspace_id = $1', [req.user!.workspaceId]);
       const res = await generateReply(a, [{ role: 'user', text: msg }], a.ai_disclosure);
       const answer =
@@ -285,7 +287,7 @@ export function appRoutes(app: FastifyInstance) {
       if (!(await verify(u.password_hash, p.data.current))) return reply.redirect('/app/settings?m=bad_password');
       await q('UPDATE users SET password_hash = $2 WHERE id = $1', [req.user!.id, await hash(p.data.password, ARGON)]);
       await q('DELETE FROM sessions WHERE user_id = $1', [req.user!.id]);
-      return reply.redirect('/login?m=password_reset');
+      return reply.redirect('/login?m=password_set');
     });
 
     r.get('/app/settings/export', async (req, reply) => {
@@ -293,7 +295,7 @@ export function appRoutes(app: FastifyInstance) {
       const data = {
         exported_at: new Date().toISOString(),
         user: { email: req.user!.email },
-        workspace: await one('SELECT name, plan, monthly_reply_limit, created_at FROM workspaces WHERE id = $1', [w]),
+        workspace: await one('SELECT name, monthly_reply_limit, paid_until, created_at FROM workspaces WHERE id = $1', [w]),
         assistant: await one('SELECT business_name, knowledge, tone, handoff_message, enabled, ai_disclosure FROM assistants WHERE workspace_id = $1', [w]),
         channels: await q('SELECT type, external_id, display_name, status, created_at FROM channels WHERE workspace_id = $1', [w]),
         conversations: await q(

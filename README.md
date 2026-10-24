@@ -1,6 +1,6 @@
 # AI Reply: Instagram və WhatsApp üçün AI avtomatik cavab sistemi (MVP)
 
-Bizneslər qeydiyyatdan keçir, biznes məlumatlarını yazır, Instagram və WhatsApp hesablarını bağlayır. Gələn DM-lərə Claude AI cavab verir. Lazım olduqda söhbət əməkdaşa ötürülür.
+Müştəri hesablarını admin yaradır. Biznes öz panelində məlumatlarını yazır, Instagram və WhatsApp hesablarını bağlayır. Gələn DM-lərə Claude AI cavab verir. Lazım olduqda söhbət əməkdaşa ötürülür.
 
 ## Arxitektura
 
@@ -16,7 +16,8 @@ Meta webhook → /webhooks/* (imza yoxlanır) → Postgres (dedupe) → Redis n�
 | `src/pipeline.ts` | Mesaj qəbulu, AI cavabı, operatora ötürmə, əl ilə cavab |
 | `src/ai.ts` | Claude inteqrasiyası (prompt caching, `request_human` aləti, fallback) |
 | `src/channels/` | WhatsApp Cloud API, Instagram API (Instagram Login) |
-| `src/web/` | Giriş sistemi, CSRF, panel səhifələri, hüquqi səhifələr, Meta callback-ləri |
+| `src/web/` | Giriş sistemi, CSRF, panel səhifələri, admin panel (`admin.ts`), hüquqi səhifələr, Meta callback-ləri |
+| `src/create-admin.ts` | İlk admin hesabını yaradır |
 
 ## Lokal işə salma
 
@@ -25,12 +26,26 @@ cp .env.example .env              # ENCRYPTION_KEY: openssl rand -base64 32
 docker compose up -d db redis     # və ya lokal Postgres 16 + Redis 7
 npm install
 npm run migrate
+npm run create-admin -- siz@example.com   # şifrə təyin etmə linkini çap edir
 npm run dev                       # http://localhost:3000
 npm run dev:worker                # ayrı terminalda
 npm test
 ```
 
-SMTP təyin olunmayıbsa, development rejimində təsdiq linkləri konsola yazılır.
+SMTP məcburi deyil. Təyin olunsa, operatora ötürmə bildirişləri e-poçtla gəlir və "Şifrəni unutmusunuz?" funksiyası aktivləşir.
+
+## Müştəri idarəetməsi (Admin panel: `/admin`)
+
+Açıq qeydiyyat yoxdur. Ödəniş nağd və ya kartdan karta alınır, sistemdə yalnız tarix kimi qeyd olunur.
+
+1. **Yeni müştəri** formasını doldurun: biznes adı, e-poçt, aylıq AI limiti, "Ödənilib (bu tarixə qədər)", qeyd.
+2. Sistem **şifrə təyin etmə linki** göstərir (72 saat, birdəfəlik). Onu müştəriyə WhatsApp ilə göndərin.
+3. Müştəri şifrəsini təyin edib daxil olur, məlumatlarını yazır, kanallarını bağlayır.
+4. Ödəniş alanda müştərinin səhifəsində **"+30 gün ödəniş"** düyməsini basın.
+5. Ödəniş tarixi keçəndə AI avtomatik dayanır. Müştəri panelə girib əl ilə cavab verə bilir və xəbərdarlıq görür.
+6. Şifrəni unudan müştəri üçün **"Yeni şifrə linki"** düyməsindən istifadə edin.
+
+Admin hesabının öz "Demo" workspace-i var. Meta App Review screencast-ı üçün ondan istifadə edin.
 
 Meta webhook-larını lokalda yoxlamaq üçün HTTPS tunel lazımdır (məsələn `cloudflared tunnel --url http://localhost:3000`). `APP_URL` tunel ünvanı olmalıdır.
 
@@ -67,7 +82,7 @@ Meta webhook-larını lokalda yoxlamaq üçün HTTPS tunel lazımdır (məsələ
 
 **Screencast** (hər icazə üçün ingiliscə subtitr əlavə edin):
 
-1. Qeydiyyat, e-poçt təsdiqi, giriş
+1. Giriş (hesab admin tərəfindən yaradılır)
 2. AI köməkçi səhifəsində biznes məlumatlarının doldurulması
 3. "Instagram bağla" → Instagram icazə ekranı → bağlandı
 4. Test hesabından DM yazmaq → AI cavabı telefonda görünür → paneldə "Söhbətlər" səhifəsində görünür
@@ -87,7 +102,7 @@ Meta webhook-larını lokalda yoxlamaq üçün HTTPS tunel lazımdır (məsələ
 
 - Webhook-lar `X-Hub-Signature-256` HMAC ilə raw body üzərindən yoxlanır (timing-safe müqayisə).
 - Meta access token-ları AES-256-GCM ilə şifrələnir. Loglara token, cookie və query string yazılmır.
-- Şifrələr Argon2id ilə hash-lənir. Login cəhdləri IP və e-poçt üzrə məhdudlaşdırılır (15 dəqiqəlik bloklama). Hesab mövcudluğu (enumeration) gizlədilir.
+- Şifrələr Argon2id ilə hash-lənir. Login cəhdləri IP və e-poçt üzrə məhdudlaşdırılır (15 dəqiqəlik bloklama). Hesab mövcudluğu (enumeration) gizlədilir. Açıq qeydiyyat yoxdur, hesabları yalnız admin yaradır.
 - Sessiyalar DB-də yalnız SHA-256 hash kimi saxlanır. Cookie `__Host-` prefiksli, `HttpOnly`, `Secure`, `SameSite`. Şifrə dəyişəndə bütün sessiyalar silinir.
 - CSRF: hər POST üçün token və Origin yoxlaması. OAuth `state` birdəfəlik, 10 dəqiqəlikdir və workspace-ə bağlıdır.
 - Embedded Signup-dan gələn `waba_id` və `phone_number_id` token ilə yoxlanır, saxta ID qəbul edilmir.
@@ -99,7 +114,8 @@ Meta webhook-larını lokalda yoxlamaq üçün HTTPS tunel lazımdır (məsələ
 
 - [ ] HTTPS domen, `NODE_ENV=production`, `APP_URL=https://...`
 - [ ] `ENCRYPTION_KEY`-in ehtiyat nüsxəsi (itsə, token-lar oxunmaz və bütün kanallar yenidən bağlanmalıdır)
-- [ ] SMTP (məsələn Amazon SES, Postmark, Brevo), domen üçün SPF/DKIM
+- [ ] `npm run create-admin:prod -- email` ilə admin yaradılması
+- [ ] (İstəyə görə) SMTP, domen üçün SPF/DKIM
 - [ ] Postgres üçün avtomatik backup, Redis persistence (AOF)
 - [ ] Hüquqi səhifələrdəki şirkət adı, ünvan və e-poçt (`LEGAL_*`). Mətnləri hüquqşünasa yoxlatdırın.
 - [ ] Monitorinq: `/healthz`, worker logları, uğursuz job-lar
@@ -114,4 +130,4 @@ TikTok-un DM API-si (Business Messaging API) hamı üçün açıq deyil, partnyo
 
 ## Növbəti addımlar
 
-Ödəniş (Payriff / Epoint), planlar, TikTok, Instagram şərhlərinə cavab, bir workspace-də bir neçə əməkdaş, bilik bazası üçün PDF və sayt importu.
+Onlayn ödəniş (Payriff / Epoint), TikTok, Instagram şərhlərinə cavab, bir workspace-də bir neçə əməkdaş, bilik bazası üçün PDF və sayt importu.

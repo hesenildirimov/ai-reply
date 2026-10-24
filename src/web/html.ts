@@ -28,16 +28,16 @@ export const csrfField = (token: string) => html`<input type="hidden" name="_csr
 
 export interface PageOpts {
   csrf: string;
-  user?: { email: string } | null;
+  user?: { email: string; isAdmin?: boolean } | null;
   flash?: { type: 'ok' | 'error'; text: string } | null;
   head?: Safe;
 }
 
 export function page(title: string, body: Safe, o: PageOpts): string {
   const nav = o.user
-    ? html`<nav><a href="/app">Panel</a><a href="/app/inbox">Söhbətlər</a><a href="/app/assistant">AI köməkçi</a><a href="/app/channels">Kanallar</a><a href="/app/test">Test</a><a href="/app/settings">Ayarlar</a>
+    ? html`<nav><a href="/app">Panel</a><a href="/app/inbox">Söhbətlər</a><a href="/app/assistant">AI köməkçi</a><a href="/app/channels">Kanallar</a><a href="/app/test">Test</a><a href="/app/settings">Ayarlar</a>${o.user.isAdmin ? html`<a href="/admin"><b>Admin</b></a>` : ''}
         <form method="post" action="/logout" class="inline">${csrfField(o.csrf)}<button class="link">Çıxış</button></form></nav>`
-    : html`<nav><a href="/">Ana səhifə</a><a href="/login">Daxil ol</a><a href="/signup">Qeydiyyat</a></nav>`;
+    : html`<nav><a href="/">Ana səhifə</a><a href="/login">Daxil ol</a></nav>`;
   return `<!doctype html>${html`<html lang="az"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title} · AI Reply</title><link rel="stylesheet" href="/public/app.css"><script src="/public/app.js" defer></script>${o.head}</head>
 <body><header><strong>AI Reply</strong>${nav}</header><main>

@@ -5,8 +5,9 @@ const transport = config.SMTP_URL ? nodemailer.createTransport(config.SMTP_URL) 
 
 export async function sendMail(to: string, subject: string, text: string): Promise<void> {
   if (!transport) {
-    // Development only: config.ts refuses to start production without SMTP_URL.
-    console.info(`[mail:dev] to=${to} subject=${subject}\n${text}`);
+    // Bodies can contain secret links: only print them in development.
+    if (config.isProd) console.info(`[mail:skipped, SMTP_URL not set] subject=${subject}`);
+    else console.info(`[mail:dev] to=${to} subject=${subject}\n${text}`);
     return;
   }
   await transport.sendMail({ from: config.MAIL_FROM, to, subject, text });

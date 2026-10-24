@@ -36,9 +36,10 @@ const schema = z.object({
   LEGAL_COMPANY_NAME: z.string().default('[Şirkət adı]'),
   LEGAL_ADDRESS: z.string().default('[Ünvan], Bakı, Azərbaycan'),
   SUPPORT_EMAIL: z.string().default('support@example.com'),
+  CONTACT_PHONE: z.string().default(''),
 
   RETENTION_DAYS: z.coerce.number().int().min(1).default(90),
-  TRIAL_REPLY_LIMIT: z.coerce.number().int().min(0).default(300),
+  DEFAULT_REPLY_LIMIT: z.coerce.number().int().min(0).default(1000),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -49,8 +50,8 @@ if (!parsed.success) {
 const env = parsed.data;
 
 if (env.NODE_ENV === 'production') {
-  const missing = (['ANTHROPIC_API_KEY', 'SMTP_URL'] as const).filter((k) => !env[k]);
-  if (!env.APP_URL.startsWith('https://')) missing.push('APP_URL(https)' as never);
+  const missing: string[] = env.ANTHROPIC_API_KEY ? [] : ['ANTHROPIC_API_KEY'];
+  if (!env.APP_URL.startsWith('https://')) missing.push('APP_URL(https)');
   if (missing.length) {
     console.error(`Missing required production config: ${missing.join(', ')}`);
     process.exit(1);
@@ -62,5 +63,6 @@ export const config = {
   isProd: env.NODE_ENV === 'production',
   appOrigin: new URL(env.APP_URL).origin,
   whatsappEnabled: Boolean(env.META_APP_ID && env.META_APP_SECRET && env.WA_EMBEDDED_SIGNUP_CONFIG_ID),
+  mailEnabled: Boolean(env.SMTP_URL),
   instagramEnabled: Boolean(env.IG_APP_ID && env.IG_APP_SECRET),
 };

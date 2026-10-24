@@ -9,6 +9,7 @@ export interface SessionUser {
   emailVerified: boolean;
   workspaceId: string;
   role: 'owner' | 'agent';
+  isAdmin: boolean;
 }
 
 declare module 'fastify' {
@@ -54,13 +55,13 @@ export function registerAuth(app: FastifyInstance) {
     const token = req.cookies[SID];
     if (token) {
       const row = await one(
-        `SELECT s.csrf_token, s.expires_at < now() + interval '6 days' AS stale, u.id, u.email, u.email_verified_at, m.workspace_id, m.role
+        `SELECT s.csrf_token, s.expires_at < now() + interval '6 days' AS stale, u.id, u.email, u.email_verified_at, u.is_admin, m.workspace_id, m.role
          FROM sessions s JOIN users u ON u.id = s.user_id JOIN memberships m ON m.user_id = u.id
          WHERE s.id_hash = $1 AND s.expires_at > now() LIMIT 1`,
         [sha256(token)],
       );
       if (row) {
-        req.user = { id: row.id, email: row.email, emailVerified: !!row.email_verified_at, workspaceId: row.workspace_id, role: row.role };
+        req.user = { id: row.id, email: row.email, emailVerified: !!row.email_verified_at, workspaceId: row.workspace_id, role: row.role, isAdmin: row.is_admin };
         req.csrfToken = row.csrf_token;
         if (row.stale) {
           await q(`UPDATE sessions SET expires_at = now() + interval '${SESSION_DAYS} days' WHERE id_hash = $1`, [sha256(token)]);
@@ -92,6 +93,11 @@ export function registerAuth(app: FastifyInstance) {
 
 export async function requireUser(req: FastifyRequest, reply: FastifyReply) {
   if (!req.user) return reply.redirect('/login');
+}
+
+export async function requireAdmin(req: FastifyRequest, reply: FastifyReply) {
+  if (!req.user) return reply.redirect('/login');
+  if (!req.user.isAdmin) return reply.code(404).send('Not found');
 }
 
 export async function requireOwner(req: FastifyRequest, reply: FastifyReply) {
