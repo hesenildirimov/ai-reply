@@ -1,0 +1,100 @@
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { config } from '../config.js';
+import { randomToken, safeEqual, sha256 } from '../crypto.js';
+import { one, q } from '../db.js';
+
+export interface SessionUser {
+  id: string;
+  email: string;
+  emailVerified: boolean;
+  workspaceId: string;
+  role: 'owner' | 'agent';
+}
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    user: SessionUser | null;
+    csrfToken: string;
+    rawBody?: Buffer;
+  }
+  interface FastifyContextConfig {
+    csrf?: boolean;
+  }
+}
+
+const SID = config.isProd ? '__Host-sid' : 'sid';
+const PRE = config.isProd ? '__Host-pcsrf' : 'pcsrf';
+const SESSION_DAYS = 7;
+const cookieOpts = { httpOnly: true, secure: config.isProd, sameSite: 'lax' as const, path: '/' };
+const NO_SESSION = /^\/(public|webhooks|meta|healthz)(\/|$)/;
+
+export async function createSession(reply: FastifyReply, userId: string): Promise<void> {
+  const token = randomToken();
+  await q(`INSERT INTO sessions (id_hash, user_id, csrf_token, expires_at) VALUES ($1, $2, $3, now() + interval '${SESSION_DAYS} days')`, [
+    sha256(token),
+    userId,
+    randomToken(),
+  ]);
+  reply.setCookie(SID, token, { ...cookieOpts, maxAge: SESSION_DAYS * 86400 });
+  reply.clearCookie(PRE, { path: '/' });
+}
+
+export async function destroySession(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  const token = req.cookies[SID];
+  if (token) await q('DELETE FROM sessions WHERE id_hash = $1', [sha256(token)]);
+  reply.clearCookie(SID, { path: '/' });
+}
+
+export function registerAuth(app: FastifyInstance) {
+  app.decorateRequest('user', null);
+  app.decorateRequest('csrfToken', '');
+
+  app.addHook('onRequest', async (req, reply) => {
+    if (NO_SESSION.test(req.url)) return;
+    const token = req.cookies[SID];
+    if (token) {
+      const row = await one(
+        `SELECT s.csrf_token, s.expires_at < now() + interval '6 days' AS stale, u.id, u.email, u.email_verified_at, m.workspace_id, m.role
+         FROM sessions s JOIN users u ON u.id = s.user_id JOIN memberships m ON m.user_id = u.id
+         WHERE s.id_hash = $1 AND s.expires_at > now() LIMIT 1`,
+        [sha256(token)],
+      );
+      if (row) {
+        req.user = { id: row.id, email: row.email, emailVerified: !!row.email_verified_at, workspaceId: row.workspace_id, role: row.role };
+        req.csrfToken = row.csrf_token;
+        if (row.stale) {
+          await q(`UPDATE sessions SET expires_at = now() + interval '${SESSION_DAYS} days' WHERE id_hash = $1`, [sha256(token)]);
+          reply.setCookie(SID, token, { ...cookieOpts, maxAge: SESSION_DAYS * 86400 });
+        }
+        return;
+      }
+      reply.clearCookie(SID, { path: '/' });
+    }
+    // Anonymous forms (login/signup) use a double-submit token in a strict cookie.
+    let pre = req.cookies[PRE];
+    if (!pre || pre.length < 32) {
+      pre = randomToken();
+      reply.setCookie(PRE, pre, { ...cookieOpts, sameSite: 'strict' });
+    }
+    req.csrfToken = pre;
+  });
+
+  // CSRF: same-origin check + token on every state-changing request (except signed Meta callbacks).
+  app.addHook('preHandler', async (req, reply) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.routeOptions.config?.csrf === false) return;
+    const origin = req.headers.origin ?? (req.headers.referer ? URL.parse(req.headers.referer)?.origin ?? 'invalid' : undefined);
+    const token = (req.body as any)?._csrf ?? req.headers['x-csrf-token'];
+    if ((origin && origin !== config.appOrigin) || typeof token !== 'string' || !req.csrfToken || !safeEqual(token, req.csrfToken)) {
+      return reply.code(403).send('Forbidden (CSRF)');
+    }
+  });
+}
+
+export async function requireUser(req: FastifyRequest, reply: FastifyReply) {
+  if (!req.user) return reply.redirect('/login');
+}
+
+export async function requireOwner(req: FastifyRequest, reply: FastifyReply) {
+  if (!req.user) return reply.redirect('/login');
+  if (req.user.role !== 'owner') return reply.code(403).send('Forbidden');
+}

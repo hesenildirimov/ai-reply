@@ -1,0 +1,31 @@
+# Local/production-like stack. Secrets come from .env (never commit it).
+services:
+  db:
+    image: postgres:16
+    environment: { POSTGRES_USER: app, POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-app}", POSTGRES_DB: aireply }
+    volumes: [pgdata:/var/lib/postgresql/data]
+  redis:
+    image: redis:7
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+  migrate:
+    build: .
+    env_file: .env
+    environment: &dbenv
+      DATABASE_URL: postgres://app:${POSTGRES_PASSWORD:-app}@db:5432/aireply
+      REDIS_URL: redis://redis:6379
+    command: ["node", "dist/migrate.js"]
+    depends_on: [db]
+  web:
+    build: .
+    env_file: .env
+    environment: *dbenv
+    ports: ["3000:3000"]
+    depends_on: { migrate: { condition: service_completed_successfully }, redis: { condition: service_started } }
+  worker:
+    build: .
+    env_file: .env
+    environment: *dbenv
+    command: ["node", "dist/worker.js"]
+    depends_on: { migrate: { condition: service_completed_successfully }, redis: { condition: service_started } }
+volumes: { pgdata: {}, redisdata: {} }
