@@ -55,6 +55,9 @@ export async function buildServer() {
     // Embedded Signup opens a Facebook popup that posts back via window.opener.
     crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
     hsts: config.isProd ? { maxAge: 31536000, includeSubDomains: true } : false,
+    // Not "no-referrer": browsers then send `Origin: null` on form posts and the CSRF origin check fails.
+    // same-origin still keeps URLs (e.g. password links) from leaking to other sites.
+    referrerPolicy: { policy: 'same-origin' },
   });
   await app.register(cookie);
   await app.register(formbody, { bodyLimit: 128 * 1024 });
