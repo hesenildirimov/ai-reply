@@ -42,7 +42,7 @@ export async function buildServer() {
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'", 'https://connect.facebook.net'],
-        styleSrc: ["'self'", "'unsafe-inline'"], // FB SDK injects inline styles
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'], // FB SDK injects inline styles
         imgSrc: ["'self'", 'data:', 'https:'],
         connectSrc: ["'self'", 'https://graph.facebook.com', 'https://www.facebook.com', 'https://connect.facebook.net'],
         frameSrc: ['https://www.facebook.com', 'https://web.facebook.com', 'https://business.facebook.com'],
@@ -61,7 +61,8 @@ export async function buildServer() {
   });
   await app.register(cookie);
   await app.register(formbody, { bodyLimit: 128 * 1024 });
-  await app.register(rateLimit, { global: true, max: 300, timeWindow: '1 minute', redis });
+  // skipOnError: a Redis outage must not take the whole site down with it.
+  await app.register(rateLimit, { global: true, max: 300, timeWindow: '1 minute', redis, skipOnError: true });
   await app.register(staticFiles, { root: path.resolve('public'), prefix: '/public/', maxAge: '1h' });
 
   registerAuth(app);

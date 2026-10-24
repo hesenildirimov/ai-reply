@@ -7,7 +7,8 @@ import { one, q } from '../db.js';
 import { sendMail } from '../mailer.js';
 import { redis } from '../queue.js';
 import { createSession, destroySession } from './auth.js';
-import { csrfField, html, page, type PageOpts } from './html.js';
+import { csrfField, html, logo, page, type PageOpts } from './html.js';
+import { icon } from './icons.js';
 
 export const ARGON = { memoryCost: 19456, timeCost: 2, parallelism: 1 }; // OWASP argon2id baseline
 const DUMMY_HASH = await hash('timing-equalizer-not-a-password', ARGON);
@@ -24,8 +25,10 @@ export const MESSAGES: Record<string, PageOpts['flash']> = {
 };
 
 export const flash = (req: FastifyRequest) => MESSAGES[(req.query as any)?.m ?? ''] ?? null;
-export const view = (req: FastifyRequest, reply: FastifyReply, title: string, body: ReturnType<typeof html>, head?: ReturnType<typeof html>) =>
-  reply.type('text/html; charset=utf-8').send(page(title, body, { csrf: req.csrfToken, user: req.user, flash: flash(req), head }));
+export const view = (req: FastifyRequest, reply: FastifyReply, title: string, body: ReturnType<typeof html>, head?: ReturnType<typeof html>, wide = false) =>
+  reply
+    .type('text/html; charset=utf-8')
+    .send(page(title, body, { csrf: req.csrfToken, user: req.user, flash: flash(req), head, wide, path: req.url.split('?')[0] }));
 
 export const emailSchema = z.string().trim().toLowerCase().pipe(z.email().max(254));
 export const passwordSchema = z.string().min(10, 'min 10').max(200);
@@ -44,19 +47,23 @@ export function publicRoutes(app: FastifyInstance) {
   app.get('/healthz', { config: { rateLimit: false } }, async () => ({ ok: true }));
 
   app.get('/', (req, reply) =>
-    view(req, reply, 'Ana səhifə', html`<section class="card"><h1>Instagram və WhatsApp üçün AI cavablar</h1>
-      <p>Biznesinizin Instagram və WhatsApp mesajlarına 7/24 avtomatik, düzgün cavab. Lazım olanda söhbət əməkdaşınıza ötürülür.</p>
-      <p>Qoşulmaq üçün əlaqə: ${contact()}</p>
-      <p><a class="btn" href="${req.user ? '/app' : '/login'}">Daxil ol</a></p></section>`),
+    view(req, reply, 'Ana səhifə', html`<section class="hero"><h1>Instagram və WhatsApp mesajlarınıza AI cavab versin</h1>
+      <p class="lead">Müştəriləriniz 7/24 dəqiq cavab alır: qiymət, ünvan, iş saatları, çatdırılma. AI bilmədiyini sizə ötürür, siz isə bütün yazışmaları bir yerdən idarə edirsiniz.</p>
+      <div class="hero-actions"><a class="btn lg" href="${req.user ? '/app' : '/login'}">Daxil ol</a><span class="muted">Qoşulmaq üçün: ${contact()}</span></div></section>
+      <section class="features">
+        <div class="card">${icon('bot', 'i feat')}<h2>Avtomatik cavab</h2><p class="muted">Biznesinizin məlumatlarına əsasən, müştərinin dilində, saniyələr içində.</p></div>
+        <div class="card">${icon('headset', 'i feat')}<h2>Operatora ötürmə</h2><p class="muted">Endirim, şikayət, sifariş təsdiqi kimi hallarda söhbət sizə keçir.</p></div>
+        <div class="card">${icon('chat', 'i feat')}<h2>Vahid inbox</h2><p class="muted">Instagram və WhatsApp yazışmaları bir paneldə, istənilən vaxt özünüz cavab verin.</p></div>
+      </section>`),
   );
 
   app.get('/login', (req, reply) =>
-    view(req, reply, 'Daxil ol', html`<section class="card narrow"><h1>Daxil ol</h1>
+    view(req, reply, 'Daxil ol', html`<section class="auth card"><div class="auth-brand">${logo}<h1>Daxil olun</h1><p class="muted">AI Reply panelinə xoş gəlmisiniz</p></div>
       <form method="post" action="/login">${csrfField(req.csrfToken)}
-        <label>E-poçt<input name="email" type="email" required autocomplete="email"></label>
+        <label>E-poçt<input name="email" type="email" required autocomplete="email" placeholder="ad@biznes.az"></label>
         <label>Şifrə<input name="password" type="password" required autocomplete="current-password"></label>
-        <button>Daxil ol</button></form>
-      <p class="muted">${config.mailEnabled ? html`<a href="/forgot">Şifrəni unutmusunuz?</a>` : html`Şifrəni unutmusunuzsa: ${contact()}`}</p></section>`),
+        <button class="btn block">Daxil ol</button></form>
+      <p class="muted center">${config.mailEnabled ? html`<a href="/forgot">Şifrəni unutmusunuz?</a>` : html`Şifrəni unutmusunuzsa: ${contact()}`}</p></section>`),
   );
 
   app.post('/login', { config: AUTH_LIMIT }, async (req, reply) => {
@@ -83,8 +90,8 @@ export function publicRoutes(app: FastifyInstance) {
 
   if (config.mailEnabled) {
     app.get('/forgot', (req, reply) =>
-      view(req, reply, 'Şifrəni bərpa et', html`<section class="card narrow"><h1>Şifrəni bərpa et</h1>
-        <form method="post" action="/forgot">${csrfField(req.csrfToken)}<label>E-poçt<input name="email" type="email" required></label><button>Göndər</button></form></section>`),
+      view(req, reply, 'Şifrəni bərpa et', html`<section class="auth card"><h1>Şifrəni bərpa et</h1>
+        <form method="post" action="/forgot">${csrfField(req.csrfToken)}<label>E-poçt<input name="email" type="email" required></label><button class="btn block">Göndər</button></form></section>`),
     );
     app.post('/forgot', { config: AUTH_LIMIT }, async (req, reply) => {
       const p = emailSchema.safeParse((req.body as any)?.email);
@@ -96,9 +103,9 @@ export function publicRoutes(app: FastifyInstance) {
 
   app.get('/set-password', (req, reply) => {
     const token = String((req.query as any).token ?? '').slice(0, 100);
-    return view(req, reply, 'Şifrə təyin et', html`<section class="card narrow"><h1>Şifrə təyin et</h1>
+    return view(req, reply, 'Şifrə təyin et', html`<section class="auth card"><div class="auth-brand">${logo}<h1>Şifrə təyin edin</h1><p class="muted">Bu şifrə ilə panelə daxil olacaqsınız</p></div>
       <form method="post" action="/set-password">${csrfField(req.csrfToken)}<input type="hidden" name="token" value="${token}">
-      <label>Yeni şifrə (min. 10 simvol)<input name="password" type="password" required minlength="10" maxlength="200" autocomplete="new-password"></label><button>Yadda saxla</button></form></section>`);
+      <label>Yeni şifrə (min. 10 simvol)<input name="password" type="password" required minlength="10" maxlength="200" autocomplete="new-password"></label><button class="btn block">Yadda saxla</button></form></section>`);
   });
 
   app.post('/set-password', { config: AUTH_LIMIT }, async (req, reply) => {

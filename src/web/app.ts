@@ -11,7 +11,8 @@ import { encrypt, randomToken, sha256 } from '../crypto.js';
 import { one, q, tx } from '../db.js';
 import { reserveReply, sendManualReply, WINDOW_MS } from '../pipeline.js';
 import { destroySession, requireOwner, requireUser } from './auth.js';
-import { csrfField, html, raw } from './html.js';
+import { csrfField, html, pageHead, raw, type Safe } from './html.js';
+import { channelIcon, icon, type IconName } from './icons.js';
 import { ARGON, MESSAGES, passwordSchema, view } from './public.js';
 
 Object.assign(MESSAGES, {
@@ -20,19 +21,33 @@ Object.assign(MESSAGES, {
   wa_connected: { type: 'ok', text: 'WhatsApp nömrəsi bağlandı.' },
   disconnected: { type: 'ok', text: 'Kanal ayrıldı və onun bütün məlumatları silindi.' },
   connect_failed: { type: 'error', text: 'Bağlantı alınmadı. Yenidən cəhd edin.' },
-  window_closed: { type: 'error', text: 'Müştərinin son mesajından 24 saat keçib — Meta qaydalarına görə indi cavab göndərmək olmur.' },
+  window_closed: { type: 'error', text: 'Müştərinin son mesajından 24 saat keçib. Meta qaydalarına görə indi cavab göndərmək olmur.' },
   sent: { type: 'ok', text: 'Göndərildi. AI bu söhbətdə 12 saat dayandırıldı.' },
-  send_failed: { type: 'error', text: 'Göndərmək alınmadı.' },
+  send_failed: { type: 'error', text: 'Göndərmək alınmadı. Bir az sonra yenidən cəhd edin.' },
   limit: { type: 'error', text: 'Aylıq AI cavab limitiniz bitib.' },
-  expired: { type: 'error', text: 'Abunəliyin müddəti bitib. AI cavablar dayandırılıb — administratorla əlaqə saxlayın.' },
-  pw_changed: { type: 'ok', text: 'Şifrə dəyişdirildi.' },
+  expired: { type: 'error', text: 'Abunəliyin müddəti bitib, AI cavablar dayandırılıb. Administratorla əlaqə saxlayın.' },
   bad_password: { type: 'error', text: 'Şifrə yanlışdır.' },
 });
 
 const uuid = z.uuid();
 const idParam = (req: FastifyRequest) => uuid.safeParse((req.params as any).id).data;
-const fmt = (d: Date | string | null) => (d ? new Date(d).toLocaleString('az-AZ', { timeZone: 'Asia/Baku' }) : '—');
+const BAKU = { timeZone: 'Asia/Baku' } as const;
+const fmt = (d: Date | string | null) => (d ? new Date(d).toLocaleString('az-AZ', { ...BAKU, dateStyle: 'short', timeStyle: 'short' }) : '—');
+/** Short relative time for lists: "14:05" today, otherwise "24.10". */
+const when = (d: Date | string) => {
+  const t = new Date(d);
+  const sameDay = t.toLocaleDateString('az-AZ', BAKU) === new Date().toLocaleDateString('az-AZ', BAKU);
+  return sameDay ? t.toLocaleTimeString('az-AZ', { ...BAKU, hour: '2-digit', minute: '2-digit' }) : t.toLocaleDateString('az-AZ', { ...BAKU, day: '2-digit', month: '2-digit' });
+};
 const typeLabel = (t: string) => (t === 'whatsapp' ? 'WhatsApp' : 'Instagram');
+const day = (d: Date | null) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+const initials = (name: string) => (name.replace(/^@/, '').trim().slice(0, 1) || '?').toUpperCase();
+const avatar = (name: string, type: string) => html`<span class="avatar ${type === 'whatsapp' ? 'wa' : 'ig'}">${initials(name)}<span class="badge">${channelIcon(type)}</span></span>`;
+const chip = (cls: 'ok' | 'warn' | 'danger' | 'neutral', text: string) => html`<span class="chip ${cls}">${text}</span>`;
+const stat = (ic: IconName, label: string, value: unknown, meta: unknown = '', tone = '') =>
+  html`<div class="stat ${tone}"><span class="stat-ic">${icon(ic)}</span><div><p class="stat-label">${label}</p><p class="stat-value">${value}</p>${meta ? html`<p class="stat-meta">${meta}</p>` : ''}</div></div>`;
+const confirmForm = (action: string, csrf: string, label: Safe, cls: string, confirm?: string, extra?: Safe) =>
+  html`<form method="post" action="${action}" class="inline" ${confirm ? html`data-confirm="${confirm}"` : ''}>${csrfField(csrf)}${extra}<button class="${cls}">${label}</button></form>`;
 
 /** A platform account can belong to one workspace only; moving it drops the old workspace's data. */
 async function claimExternalAccount(type: 'whatsapp' | 'instagram', externalId: string, workspaceId: string) {
@@ -40,40 +55,185 @@ async function claimExternalAccount(type: 'whatsapp' | 'instagram', externalId: 
   for (const ch of others) await q('DELETE FROM channels WHERE id = $1', [ch.id]);
 }
 
+const CONV_LIST_SQL = `SELECT c.id, c.display_name, c.external_user_id, c.needs_human, coalesce(c.ai_paused_until > now(), false) AS paused, c.last_message_at, ch.type,
+    (SELECT body FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last,
+    (SELECT sender FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_sender
+  FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE c.workspace_id = $1`;
+
+const convRow = (c: any, activeId?: string) => html`<a class="conv ${c.id === activeId ? 'on' : ''} ${c.needs_human ? 'attn' : ''}" href="/app/inbox/${c.id}">
+  ${avatar(c.display_name || c.external_user_id, c.type)}
+  <span class="conv-main"><span class="conv-top"><b>${c.display_name || c.external_user_id}</b><time>${when(c.last_message_at)}</time></span>
+  <span class="conv-last">${c.last_sender === 'ai' ? html`${icon('bot', 'i xs')} ` : c.last_sender === 'human' ? 'Siz: ' : ''}${String(c.last ?? '').slice(0, 90)}</span>
+  ${c.needs_human ? chip('warn', 'Operator gözləyir') : c.paused ? chip('neutral', 'AI dayandırılıb') : ''}</span></a>`;
+
 export function appRoutes(app: FastifyInstance) {
   app.register(async (r) => {
     r.addHook('preHandler', requireUser);
 
+    // ---------- Dashboard ----------
     r.get('/app', async (req, reply) => {
       const w = req.user!.workspaceId;
-      const [ws, a, chans, usage] = await Promise.all([
+      const [ws, a, chans, usage, counts, recent] = await Promise.all([
         one('SELECT name, monthly_reply_limit, paid_until, coalesce(paid_until < current_date, false) AS expired FROM workspaces WHERE id = $1', [w]),
         one('SELECT enabled, knowledge FROM assistants WHERE workspace_id = $1', [w]),
         q<ChannelRow>('SELECT type, display_name, status FROM channels WHERE workspace_id = $1', [w]),
         one(`SELECT ai_replies FROM usage_counters WHERE workspace_id = $1 AND period = to_char(now(), 'YYYY-MM')`, [w]),
+        one(
+          `SELECT (SELECT count(*)::int FROM messages WHERE workspace_id = $1 AND direction = 'in' AND created_at >= (now() AT TIME ZONE 'Asia/Baku')::date AT TIME ZONE 'Asia/Baku') AS today,
+                  (SELECT count(*)::int FROM conversations WHERE workspace_id = $1 AND needs_human) AS waiting`,
+          [w],
+        ),
+        q(`${CONV_LIST_SQL} ORDER BY c.needs_human DESC, c.last_message_at DESC LIMIT 5`, [w]),
       ]);
-      const step = (done: boolean, text: string, href: string) => html`<li class="${done ? 'done' : ''}"><a href="${href}">${text}</a></li>`;
-      return view(req, reply, 'Panel', html`${ws.expired ? html`<p class="flash error">${MESSAGES.expired!.text}</p>` : ''}<section class="card"><h1>${ws.name}</h1>
-        <ol class="steps">${step(a.knowledge.length > 50, 'Biznes məlumatlarını doldurun', '/app/assistant')}
-          ${step(chans.length > 0, 'Instagram və ya WhatsApp bağlayın', '/app/channels')}
-          ${step(a.enabled, 'AI cavabları aktiv edin', '/app/assistant')}</ol>
-        <p>AI: <b>${a.enabled ? 'Aktiv' : 'Deaktiv'}</b> · Bu ay AI cavabları: <b>${usage?.ai_replies ?? 0} / ${ws.monthly_reply_limit}</b>${ws.paid_until ? html` · Ödənilib: <b>${new Date(ws.paid_until).toISOString().slice(0, 10)}</b> tarixinə qədər` : ''}</p>
-        <p>Kanallar: ${chans.length ? chans.map((c) => html`<span class="tag ${c.status}">${typeLabel(c.type)}: ${c.display_name}</span> `) : 'yoxdur'}</p></section>`);
+      const used = usage?.ai_replies ?? 0;
+      const pct = ws.monthly_reply_limit ? Math.min(100, Math.round((used / ws.monthly_reply_limit) * 100)) : 100;
+      const steps = [
+        [a.knowledge.length > 50, 'Biznes məlumatlarını yazın', 'Qiymətlər, iş saatları, çatdırılma, FAQ', '/app/assistant'],
+        [chans.length > 0, 'Instagram və ya WhatsApp bağlayın', 'Bir kliklə, şifrə paylaşmadan', '/app/channels'],
+        [a.enabled, 'AI cavabları aktiv edin', 'Əvvəlcə "Test et" bölməsində yoxlayın', '/app/assistant'],
+      ] as const;
+      const allDone = steps.every((s) => s[0]);
+      return view(req, reply, 'Panel', html`${ws.expired ? html`<p class="flash error">${icon('alert')}<span>${MESSAGES.expired!.text}</span></p>` : ''}
+        ${pageHead(ws.name, html`AI köməkçi: ${a.enabled ? chip('ok', 'Aktiv') : chip('neutral', 'Deaktiv')}${ws.paid_until ? html` · Abunəlik: <b>${day(ws.paid_until)}</b> tarixinə qədər` : ''}`,
+          html`<a class="btn" href="/app/inbox">${icon('chat')}Söhbətlərə keç</a>`)}
+        <div class="stats">
+          ${stat('inbox', 'Bu gün gələn mesajlar', counts.today)}
+          ${stat('bot', 'Bu ay AI cavabları', html`${used}<small> / ${ws.monthly_reply_limit}</small>`, html`<span class="bar"><span style="width:${pct}%"></span></span>`)}
+          ${stat('headset', 'Operator gözləyir', counts.waiting, counts.waiting ? html`<a href="/app/inbox?f=human">Cavab verin →</a>` : 'Hamısı cavablanıb', counts.waiting ? 'warn' : '')}
+          ${stat('plug', 'Bağlı kanallar', chans.length, chans.length ? chans.map((c) => html`${channelIcon(c.type)} `) : html`<a href="/app/channels">Bağlayın →</a>`)}
+        </div>
+        <div class="cols">
+          <section class="card">
+            <div class="card-head"><h2>Son söhbətlər</h2><a href="/app/inbox" class="more">Hamısı ${icon('arrow', 'i xs')}</a></div>
+            ${recent.length ? html`<div class="conv-list">${recent.map((c) => convRow(c))}</div>`
+              : html`<div class="empty">${icon('chat', 'i lg')}<p>Hələ mesaj yoxdur. Kanal bağlayandan sonra müştəri mesajları burada görünəcək.</p></div>`}
+          </section>
+          <div class="stack">
+            ${allDone ? '' : html`<section class="card"><h2>Başlanğıc</h2><ol class="steps">${steps.map(([done, t, s, href]) =>
+              html`<li class="${done ? 'done' : ''}"><a href="${href}">${icon(done ? 'check' : 'circle')}<span><b>${t}</b><small>${s}</small></span></a></li>`)}</ol></section>`}
+            <section class="card how"><h2>Mesajlar necə idarə olunur?</h2>
+              <ol>
+                <li>${icon('bot')}<span><b>AI avtomatik cavab verir</b><small>Instagram və WhatsApp-a gələn hər mesaja, sizin yazdığınız məlumatlar əsasında.</small></span></li>
+                <li>${icon('headset')}<span><b>Bilmədiyini sizə ötürür</b><small>Endirim, şikayət, sifariş təsdiqi və ya "operator" yazanda söhbət "Operator gözləyir" olur.</small></span></li>
+                <li>${icon('chat')}<span><b>Siz "Söhbətlər"dən cavab verirsiniz</b><small>Bütün yazışmalar orada görünür. Əl ilə yazdıqda AI həmin söhbətdə dayanır.</small></span></li>
+              </ol></section>
+          </div>
+        </div>`);
+    });
+
+    // ---------- Inbox (two-pane) ----------
+    const inbox = async (req: FastifyRequest, activeId?: string) => {
+      const w = req.user!.workspaceId;
+      const onlyHuman = (req.query as any)?.f === 'human';
+      const convs = await q(`${CONV_LIST_SQL} ${onlyHuman ? 'AND c.needs_human' : ''} ORDER BY c.last_message_at DESC LIMIT 200`, [w]);
+      const waiting = (await one(`SELECT count(*)::int AS n FROM conversations WHERE workspace_id = $1 AND needs_human`, [w])).n;
+      let pane: Safe;
+      const c = activeId
+        ? await one(
+            `SELECT c.*, coalesce(c.ai_paused_until > now(), false) AS paused, ch.type FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE c.id = $1 AND c.workspace_id = $2`,
+            [activeId, w],
+          )
+        : undefined;
+      if (activeId && !c) return null;
+      if (!c) {
+        pane = html`<div class="empty pane-empty">${icon('chat', 'i lg')}<h2>Söhbət seçin</h2><p>Soldakı siyahıdan bir söhbət seçin. Müştərinin yazdıqlarını, AI-nin cavablarını görəcək və özünüz cavab yaza biləcəksiniz.</p></div>`;
+      } else {
+        const msgs = await q(`SELECT * FROM (SELECT sender, body, created_at FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 200) t ORDER BY created_at`, [c.id]);
+        const open = !!c.last_inbound_at && Date.now() - new Date(c.last_inbound_at).getTime() < WINDOW_MS;
+        const name = c.display_name || c.external_user_id;
+        const aiOn = !c.needs_human && !c.paused;
+        const toggle = (label: string, ic: IconName) => confirmForm(`/app/inbox/${c.id}/ai`, req.csrfToken, html`${icon(ic)}${label}`, 'btn sm secondary', undefined, html`<input type="hidden" name="action" value="${aiOn ? 'pause' : 'resume'}">`);
+        const banner = c.needs_human
+          ? html`<div class="banner warn">${icon('headset')}<span><b>Müştəri operator gözləyir.</b> AI bu söhbətdə dayanıb, cavabı siz yazın.</span>${toggle('AI-ni bərpa et', 'play')}</div>`
+          : c.paused
+            ? html`<div class="banner neutral">${icon('pause')}<span>AI bu söhbətdə dayandırılıb (${fmt(c.ai_paused_until)} tarixinə qədər).</span>${toggle('AI-ni bərpa et', 'play')}</div>`
+            : html`<div class="banner ok">${icon('bot')}<span>AI bu söhbətə avtomatik cavab verir.</span>${toggle('Dayandır', 'pause')}</div>`;
+        pane = html`<div class="thread-head"><a class="icon-btn back" href="/app/inbox" aria-label="Geri">${icon('back')}</a>${avatar(name, c.type)}
+            <div><b>${name}</b><small>${typeLabel(c.type)}</small></div>
+            ${confirmForm(`/app/inbox/${c.id}/delete`, req.csrfToken, icon('trash'), 'icon-btn', 'Söhbət həmişəlik silinsin?')}</div>
+          ${banner}
+          <div class="thread" id="thread">${msgs.map((m) => html`<div class="msg ${m.sender}"><div class="bubble">${m.body}</div>
+            <small>${m.sender === 'ai' ? html`${icon('bot', 'i xs')} AI · ` : m.sender === 'human' ? 'Siz · ' : ''}${fmt(m.created_at)}</small></div>`)}</div>
+          ${open
+            ? html`<form class="composer" method="post" action="/app/inbox/${c.id}/reply">${csrfField(req.csrfToken)}
+                <textarea name="text" rows="2" maxlength="${c.type === 'whatsapp' ? 4096 : 1000}" required placeholder="Cavab yazın… (göndərəndə AI bu söhbətdə 12 saat dayanır)"></textarea>
+                <button class="btn" aria-label="Göndər">${icon('send')}</button></form>`
+            : html`<div class="composer closed">${icon('lock')}<span>24 saatlıq cavab müddəti bitib (Meta qaydası). Müştəri yenidən yazanda cavab verə biləcəksiniz.</span></div>`}
+          ${c.type === 'instagram' ? html`<p class="hint">Instagram tətbiqindən də cavab verə bilərsiniz, onda da AI avtomatik dayanır.</p>` : ''}`;
+      }
+      return html`<div class="inbox ${c ? 'has-active' : ''}" data-autorefresh="30">
+        <aside class="inbox-list">
+          <div class="inbox-head"><h1>Söhbətlər</h1>
+            <div class="seg"><a href="/app/inbox" class="${onlyHuman ? '' : 'on'}">Hamısı</a><a href="/app/inbox?f=human" class="${onlyHuman ? 'on' : ''}">Operator gözləyir${waiting ? html` <span class="count">${waiting}</span>` : ''}</a></div></div>
+          ${convs.length ? html`<div class="conv-list">${convs.map((x) => convRow(x, c?.id))}</div>` : html`<div class="empty">${icon('inbox', 'i lg')}<p>${onlyHuman ? 'Operator gözləyən söhbət yoxdur.' : 'Hələ söhbət yoxdur.'}</p></div>`}
+        </aside>
+        <section class="pane">${pane}</section></div>`;
+    };
+
+    r.get('/app/inbox', async (req, reply) => view(req, reply, 'Söhbətlər', (await inbox(req))!, undefined, true));
+    r.get('/app/inbox/:id', async (req, reply) => {
+      const id = idParam(req);
+      const body = id ? await inbox(req, id) : null;
+      if (!body) return reply.code(404).send('Not found');
+      return view(req, reply, 'Söhbət', body, undefined, true);
+    });
+
+    r.post('/app/inbox/:id/reply', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
+      const id = idParam(req);
+      const text = z.string().trim().min(1).max(4096).safeParse((req.body as any)?.text).data;
+      if (!id || !text) return reply.redirect(`/app/inbox?m=invalid`);
+      try {
+        const res = await sendManualReply(req.user!.workspaceId, id, text);
+        if (res === 'not_found') return reply.code(404).send('Not found');
+        if (res === 'sent') await q('UPDATE conversations SET needs_human = false WHERE id = $1', [id]);
+        return reply.redirect(`/app/inbox/${id}?m=${res === 'sent' ? 'sent' : 'window_closed'}`);
+      } catch (e) {
+        req.log.warn({ err: e }, 'manual send failed');
+        return reply.redirect(`/app/inbox/${id}?m=send_failed`);
+      }
+    });
+
+    r.post('/app/inbox/:id/ai', async (req, reply) => {
+      const id = idParam(req);
+      if (!id) return reply.code(404).send('Not found');
+      const resume = (req.body as any)?.action === 'resume';
+      await q(
+        resume
+          ? 'UPDATE conversations SET needs_human = false, ai_paused_until = NULL WHERE id = $1 AND workspace_id = $2'
+          : `UPDATE conversations SET ai_paused_until = now() + interval '30 days' WHERE id = $1 AND workspace_id = $2`,
+        [id, req.user!.workspaceId],
+      );
+      return reply.redirect(`/app/inbox/${id}?m=saved`);
+    });
+
+    r.post('/app/inbox/:id/delete', async (req, reply) => {
+      const id = idParam(req);
+      if (id) await q('DELETE FROM conversations WHERE id = $1 AND workspace_id = $2', [id, req.user!.workspaceId]);
+      return reply.redirect('/app/inbox?m=saved');
     });
 
     // ---------- Assistant ----------
     r.get('/app/assistant', async (req, reply) => {
       const a = await one('SELECT * FROM assistants WHERE workspace_id = $1', [req.user!.workspaceId]);
-      return view(req, reply, 'AI köməkçi', html`<section class="card"><h1>AI köməkçi</h1>
-        <form method="post" action="/app/assistant">${csrfField(req.csrfToken)}
-          <label class="row"><input type="checkbox" name="enabled" value="1" ${a.enabled ? raw('checked') : ''}> <b>AI avtomatik cavabları aktivdir</b></label>
-          <label>Biznesin adı<input name="business_name" value="${a.business_name}" maxlength="120" required></label>
-          <label>Biznes haqqında məlumat (AI yalnız bunu istifadə edir)
-            <textarea name="knowledge" rows="16" maxlength="30000" placeholder="Nə satırsınız, qiymətlər, iş saatları, ünvan, çatdırılma, ödəniş üsulları, qaytarma qaydaları, tez-tez verilən suallar...">${a.knowledge}</textarea></label>
-          <label>Danışıq tonu<input name="tone" value="${a.tone}" maxlength="300"></label>
-          <label>Operatora ötürmə mesajı<input name="handoff_message" value="${a.handoff_message}" maxlength="500"></label>
-          <label class="row"><input type="checkbox" name="ai_disclosure" value="1" ${a.ai_disclosure ? raw('checked') : ''}> İlk cavabda AI köməkçi olduğunu bildir (tövsiyə olunur)</label>
-          <button>Yadda saxla</button></form></section>`);
+      return view(req, reply, 'AI köməkçi', html`${pageHead('AI köməkçi', 'AI yalnız burada yazdığınız məlumatlara əsasən cavab verir. Bilmədiyi sualı sizə ötürür.')}
+        <form method="post" action="/app/assistant" class="form-grid">${csrfField(req.csrfToken)}
+          <section class="card span">
+            <label class="switch-row"><span><b>Avtomatik cavablar</b><small>Söndürsəniz, AI heç bir mesaja cavab vermir.</small></span>
+              <input type="checkbox" class="switch" name="enabled" value="1" ${a.enabled ? raw('checked') : ''}></label></section>
+          <section class="card span"><div class="card-head"><h2>${icon('book')}Biznes məlumatları</h2></div>
+            <label>Biznesin adı<input name="business_name" value="${a.business_name}" maxlength="120" required></label>
+            <label>Məlumat bazası
+              <textarea name="knowledge" rows="14" maxlength="30000" placeholder="Nə satırsınız, qiymətlər, iş saatları, ünvan, çatdırılma, ödəniş üsulları, qaytarma qaydaları, tez-tez verilən suallar...">${a.knowledge}</textarea>
+              <small class="help">Nə qədər ətraflı yazsanız, AI bir o qədər dəqiq cavab verir. Qiymət dəyişəndə burada yeniləyin.</small></label></section>
+          <section class="card"><div class="card-head"><h2>${icon('sparkle')}Danışıq tərzi</h2></div>
+            <label>Ton<input name="tone" value="${a.tone}" maxlength="300"></label>
+            <label class="switch-row"><span><b>AI olduğunu bildir</b><small>İlk cavabda qısaca qeyd edir (tövsiyə olunur).</small></span>
+              <input type="checkbox" class="switch" name="ai_disclosure" value="1" ${a.ai_disclosure ? raw('checked') : ''}></label></section>
+          <section class="card"><div class="card-head"><h2>${icon('headset')}Operatora ötürmə</h2></div>
+            <label>Müştəriyə göndəriləcək mesaj<input name="handoff_message" value="${a.handoff_message}" maxlength="500"></label>
+            <small class="help">AI cavab verə bilməyəndə və ya müştəri "operator" yazanda göndərilir.</small></section>
+          <div class="span form-actions"><a class="btn secondary" href="/app/test">${icon('flask')}Test et</a><button class="btn">Yadda saxla</button></div>
+        </form>`);
     });
 
     r.post('/app/assistant', async (req, reply) => {
@@ -97,10 +257,12 @@ export function appRoutes(app: FastifyInstance) {
     });
 
     // ---------- Test chat (single turn, counts toward usage) ----------
-    const testPage = (req: FastifyRequest, msg = '', answer: ReturnType<typeof html> | '' = '') => html`<section class="card"><h1>AI-ni yoxla</h1>
-      <p>Müştəri kimi yazın və AI-nin necə cavab verdiyinə baxın. Kanal bağlamaq lazım deyil.</p>
-      <form method="post" action="/app/test">${csrfField(req.csrfToken)}<label>Müştərinin mesajı<textarea name="message" rows="3" maxlength="1000" required>${msg}</textarea></label><button>Göndər</button></form>
-      ${answer}</section>`;
+    const testPage = (req: FastifyRequest, msg = '', answer: Safe | '' = '') => html`${pageHead('Test et', 'Müştəri kimi yazın və AI-nin necə cavab verəcəyini görün. Bu mesajlar müştərilərə getmir.')}
+      <section class="card phone">
+        <div class="thread">${msg ? html`<div class="msg customer"><div class="bubble">${msg}</div></div>${answer}` : html`<div class="empty">${icon('flask', 'i lg')}<p>Məsələn: "Çatdırılma neçəyədir?" və ya "Saat neçədə açıqsınız?"</p></div>`}</div>
+        <form class="composer" method="post" action="/app/test">${csrfField(req.csrfToken)}
+          <textarea name="message" rows="2" maxlength="1000" required placeholder="Müştərinin mesajını yazın…"></textarea><button class="btn" aria-label="Göndər">${icon('send')}</button></form>
+      </section>`;
     r.get('/app/test', (req, reply) => view(req, reply, 'Test', testPage(req)));
     r.post('/app/test', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
       const msg = z.string().trim().min(1).max(1000).safeParse((req.body as any)?.message).data;
@@ -111,8 +273,8 @@ export function appRoutes(app: FastifyInstance) {
       const res = await generateReply(a, [{ role: 'user', text: msg }], a.ai_disclosure);
       const answer =
         res.kind === 'reply'
-          ? html`<div class="bubble ai">${res.text}</div>`
-          : html`<div class="bubble ai">${a.handoff_message}</div><p class="muted">→ Operatora ötürüldü (səbəb: ${res.reason})</p>`;
+          ? html`<div class="msg ai"><div class="bubble">${res.text}</div><small>${icon('bot', 'i xs')} AI</small></div>`
+          : html`<div class="msg ai"><div class="bubble">${a.handoff_message}</div><small>${icon('headset', 'i xs')} Operatora ötürüldü · ${res.reason}</small></div>`;
       return view(req, reply, 'Test', testPage(req, msg, answer));
     });
 
@@ -123,19 +285,26 @@ export function appRoutes(app: FastifyInstance) {
       const head = config.whatsappEnabled
         ? html`<script src="/public/wa-signup.js" defer></script><script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>`
         : undefined;
-      return view(req, reply, 'Kanallar', html`<section class="card"><h1>Kanallar</h1>
-        <table><tr><th>Kanal</th><th>Hesab</th><th>Status</th><th></th></tr>
-        ${chans.map((c) => html`<tr><td>${typeLabel(c.type)}</td><td>${c.display_name}</td>
-          <td><span class="tag ${c.status}">${c.status === 'active' ? 'Aktiv' : 'Xəta — yenidən bağlayın'}</span></td>
-          <td>${owner ? html`<form method="post" action="/app/channels/${c.id}/disconnect" class="inline" data-confirm="Kanal ayrılsın və bütün söhbətləri silinsin?">${csrfField(req.csrfToken)}<button class="danger">Ayır</button></form>` : ''}</td></tr>`)}
-        </table>
-        ${owner ? html`<div class="connect">
-          ${config.instagramEnabled ? html`<a class="btn" href="/app/channels/instagram/connect">Instagram bağla</a>` : html`<span class="muted">Instagram: IG_APP_ID / IG_APP_SECRET təyin edilməyib</span>`}
-          ${config.whatsappEnabled
-            ? html`<button id="wa-connect" data-app-id="${config.META_APP_ID}" data-config-id="${config.WA_EMBEDDED_SIGNUP_CONFIG_ID}" data-version="${config.META_GRAPH_VERSION}" data-csrf="${req.csrfToken}">WhatsApp bağla</button>`
-            : html`<span class="muted">WhatsApp: META_APP_ID / META_APP_SECRET / WA_EMBEDDED_SIGNUP_CONFIG_ID təyin edilməyib</span>`}
-          </div><p class="muted">Instagram hesabı Business və ya Creator olmalıdır. Biz yalnız mesajları oxumaq və cavab göndərmək icazəsi istəyirik.</p>` : ''}
-        <p class="muted" id="wa-status"></p></section>`, head);
+      const card = (type: 'instagram' | 'whatsapp', desc: string, connect: Safe) => {
+        const list = chans.filter((c) => c.type === type);
+        return html`<section class="card channel">
+          <div class="channel-top"><span class="brand-tile ${type === 'whatsapp' ? 'wa' : 'ig'}">${channelIcon(type)}</span>
+            <div><h2>${typeLabel(type)}</h2><p class="muted">${desc}</p></div></div>
+          ${list.map((c) => html`<div class="acct"><span>${icon(c.status === 'active' ? 'check' : 'alert')}<b>${c.display_name}</b></span>
+            ${c.status === 'active' ? chip('ok', 'Bağlıdır') : chip('danger', 'Xəta, yenidən bağlayın')}
+            ${owner ? confirmForm(`/app/channels/${c.id}/disconnect`, req.csrfToken, html`Ayır`, 'btn sm danger-ghost', 'Kanal ayrılsın və bütün söhbətləri silinsin?') : ''}</div>`)}
+          ${owner ? connect : ''}</section>`;
+      };
+      return view(req, reply, 'Kanallar', html`${pageHead('Kanallar', 'Hesabınızı bir kliklə bağlayın. Şifrənizi bizimlə paylaşmırsınız, giriş Meta-nın öz səhifəsində olur.')}
+        <div class="channels">
+          ${card('instagram', 'Direct mesajlara avtomatik cavab. Hesab Business və ya Creator olmalıdır.',
+            config.instagramEnabled ? html`<a class="btn" href="/app/channels/instagram/connect">${icon('link')}Instagram bağla</a>` : html`<p class="hint">Meta tətbiqi hələ qurulmayıb (IG_APP_ID).</p>`)}
+          ${card('whatsapp', 'WhatsApp Business nömrənizə gələn mesajlara avtomatik cavab.',
+            config.whatsappEnabled
+              ? html`<button class="btn" id="wa-connect" data-app-id="${config.META_APP_ID}" data-config-id="${config.WA_EMBEDDED_SIGNUP_CONFIG_ID}" data-version="${config.META_GRAPH_VERSION}" data-csrf="${req.csrfToken}">${icon('link')}WhatsApp bağla</button><p class="hint" id="wa-status"></p>`
+              : html`<p class="hint">Meta tətbiqi hələ qurulmayıb (META_APP_ID).</p>`)}
+        </div>
+        <p class="hint">${icon('lock', 'i xs')} Yalnız mesajları oxumaq və cavab göndərmək icazəsi istəyirik. Kanalı ayıranda onun bütün yazışmaları silinir.</p>`, head);
     });
 
     r.get('/app/channels/instagram/connect', { preHandler: requireOwner }, async (req, reply) => {
@@ -198,93 +367,28 @@ export function appRoutes(app: FastifyInstance) {
       return reply.redirect('/app/channels?m=disconnected');
     });
 
-    // ---------- Inbox ----------
-    r.get('/app/inbox', async (req, reply) => {
-      const convs = await q(
-        `SELECT c.id, c.display_name, c.external_user_id, c.needs_human, c.ai_paused_until > now() AS paused, c.last_message_at, ch.type,
-           (SELECT body FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last
-         FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE c.workspace_id = $1 ORDER BY c.last_message_at DESC LIMIT 100`,
-        [req.user!.workspaceId],
-      );
-      return view(req, reply, 'Söhbətlər', html`<section class="card"><h1>Söhbətlər</h1>
-        ${convs.length ? html`<table>${convs.map((c) => html`<tr class="${c.needs_human ? 'attention' : ''}"><td>${typeLabel(c.type)}</td>
-          <td><a href="/app/inbox/${c.id}">${c.display_name || c.external_user_id}</a>${c.needs_human ? html` <span class="tag error">Operator lazımdır</span>` : ''}${c.paused ? html` <span class="tag">AI dayandırılıb</span>` : ''}</td>
-          <td class="muted">${String(c.last ?? '').slice(0, 80)}</td><td class="muted">${fmt(c.last_message_at)}</td></tr>`)}</table>` : html`<p class="muted">Hələ söhbət yoxdur.</p>`}</section>`);
-    });
-
-    r.get('/app/inbox/:id', async (req, reply) => {
-      const id = idParam(req);
-      const c = id && (await one(
-        `SELECT c.*, c.ai_paused_until > now() AS paused, ch.type FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE c.id = $1 AND c.workspace_id = $2`,
-        [id, req.user!.workspaceId],
-      ));
-      if (!c) return reply.code(404).send('Not found');
-      const msgs = await q(`SELECT * FROM (SELECT sender, body, created_at FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 200) t ORDER BY created_at`, [c.id]);
-      const open = !!c.last_inbound_at && Date.now() - new Date(c.last_inbound_at).getTime() < WINDOW_MS;
-      const aiOn = !c.needs_human && !c.paused;
-      return view(req, reply, 'Söhbət', html`<section class="card"><h1>${c.display_name || c.external_user_id} <small class="muted">${typeLabel(c.type)}</small></h1>
-        <div class="thread">${msgs.map((m) => html`<div class="bubble ${m.sender}"><small>${m.sender === 'customer' ? 'Müştəri' : m.sender === 'ai' ? 'AI' : 'Əməkdaş'} · ${fmt(m.created_at)}</small>${m.body}</div>`)}</div>
-        ${open
-          ? html`<form method="post" action="/app/inbox/${c.id}/reply">${csrfField(req.csrfToken)}<textarea name="text" rows="3" maxlength="${c.type === 'whatsapp' ? 4096 : 1000}" required></textarea><button>Əməkdaş kimi göndər</button></form>`
-          : html`<p class="muted">24 saatlıq cavab pəncərəsi bağlıdır. Müştəri yenidən yazanda cavab verə bilərsiniz.</p>`}
-        <div class="actions">
-          <form method="post" action="/app/inbox/${c.id}/ai" class="inline">${csrfField(req.csrfToken)}<input type="hidden" name="action" value="${aiOn ? 'pause' : 'resume'}"><button>${aiOn ? 'AI-ni bu söhbətdə dayandır' : 'AI-ni bu söhbətdə bərpa et'}</button></form>
-          <form method="post" action="/app/inbox/${c.id}/delete" class="inline" data-confirm="Söhbət həmişəlik silinsin?">${csrfField(req.csrfToken)}<button class="danger">Söhbəti sil</button></form>
-        </div></section>`);
-    });
-
-    r.post('/app/inbox/:id/reply', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
-      const id = idParam(req);
-      const text = z.string().trim().min(1).max(4096).safeParse((req.body as any)?.text).data;
-      if (!id || !text) return reply.redirect(`/app/inbox?m=invalid`);
-      try {
-        const res = await sendManualReply(req.user!.workspaceId, id, text);
-        if (res === 'not_found') return reply.code(404).send('Not found');
-        return reply.redirect(`/app/inbox/${id}?m=${res === 'sent' ? 'sent' : 'window_closed'}`);
-      } catch (e) {
-        req.log.warn({ err: e }, 'manual send failed');
-        return reply.redirect(`/app/inbox/${id}?m=send_failed`);
-      }
-    });
-
-    r.post('/app/inbox/:id/ai', async (req, reply) => {
-      const id = idParam(req);
-      if (!id) return reply.code(404).send('Not found');
-      const resume = (req.body as any)?.action === 'resume';
-      await q(
-        resume
-          ? 'UPDATE conversations SET needs_human = false, ai_paused_until = NULL WHERE id = $1 AND workspace_id = $2'
-          : `UPDATE conversations SET ai_paused_until = now() + interval '30 days' WHERE id = $1 AND workspace_id = $2`,
-        [id, req.user!.workspaceId],
-      );
-      return reply.redirect(`/app/inbox/${id}?m=saved`);
-    });
-
-    r.post('/app/inbox/:id/delete', async (req, reply) => {
-      const id = idParam(req);
-      if (id) await q('DELETE FROM conversations WHERE id = $1 AND workspace_id = $2', [id, req.user!.workspaceId]);
-      return reply.redirect('/app/inbox?m=saved');
-    });
-
     // ---------- Settings ----------
     r.get('/app/settings', (req, reply) =>
-      view(req, reply, 'Ayarlar', html`<section class="card"><h1>Ayarlar</h1><p>Hesab: <b>${req.user!.email}</b></p>
-        <h2>Şifrəni dəyiş</h2>
-        <form method="post" action="/app/settings/password">${csrfField(req.csrfToken)}
-          <label>Hazırkı şifrə<input name="current" type="password" required autocomplete="current-password"></label>
-          <label>Yeni şifrə (min. 10)<input name="password" type="password" required minlength="10" maxlength="200" autocomplete="new-password"></label><button>Dəyiş</button></form>
-        <h2>Məlumatlarım</h2><p><a href="/app/settings/export">Bütün məlumatları yüklə (JSON)</a></p>
-        ${req.user!.role === 'owner' ? html`<h2>Hesabı sil</h2><p class="muted">Bütün kanallar, söhbətlər və hesab həmişəlik silinəcək.</p>
-        <form method="post" action="/app/settings/delete" data-confirm="Hesab və bütün məlumatlar həmişəlik silinsin?">${csrfField(req.csrfToken)}
-          <label>Şifrə<input name="password" type="password" required autocomplete="current-password"></label><button class="danger">Hesabı sil</button></form>` : ''}
-        </section>`),
+      view(req, reply, 'Ayarlar', html`${pageHead('Ayarlar', html`Hesab: <b>${req.user!.email}</b>`)}
+        <div class="form-grid">
+          <section class="card"><div class="card-head"><h2>${icon('lock')}Şifrəni dəyiş</h2></div>
+            <form method="post" action="/app/settings/password">${csrfField(req.csrfToken)}
+              <label>Hazırkı şifrə<input name="current" type="password" required autocomplete="current-password"></label>
+              <label>Yeni şifrə (min. 10 simvol)<input name="password" type="password" required minlength="10" maxlength="200" autocomplete="new-password"></label>
+              <button class="btn">Dəyiş</button></form></section>
+          <section class="card"><div class="card-head"><h2>${icon('download')}Məlumatlarım</h2></div>
+            <p class="muted">Bütün ayarlarınızı və yazışmalarınızı JSON faylı kimi yükləyin.</p><a class="btn secondary" href="/app/settings/export">${icon('download')}Yüklə</a>
+            ${req.user!.role === 'owner' ? html`<div class="danger-zone"><h3>Hesabı sil</h3><p class="muted">Bütün kanallar, söhbətlər və hesab həmişəlik silinəcək.</p>
+              <form method="post" action="/app/settings/delete" data-confirm="Hesab və bütün məlumatlar həmişəlik silinsin?">${csrfField(req.csrfToken)}
+                <label>Təsdiq üçün şifrə<input name="password" type="password" required autocomplete="current-password"></label><button class="btn danger">${icon('trash')}Hesabı sil</button></form></div>` : ''}
+          </section></div>`),
     );
 
     r.post('/app/settings/password', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
       const p = z.object({ current: z.string().max(200), password: passwordSchema }).safeParse(req.body);
       if (!p.success) return reply.redirect('/app/settings?m=invalid');
       const u = await one('SELECT password_hash FROM users WHERE id = $1', [req.user!.id]);
-      if (!(await verify(u.password_hash, p.data.current))) return reply.redirect('/app/settings?m=bad_password');
+      if (!(await verify(u.password_hash, p.data.current).catch(() => false))) return reply.redirect('/app/settings?m=bad_password');
       await q('UPDATE users SET password_hash = $2 WHERE id = $1', [req.user!.id, await hash(p.data.password, ARGON)]);
       await q('DELETE FROM sessions WHERE user_id = $1', [req.user!.id]);
       return reply.redirect('/login?m=password_set');
@@ -310,7 +414,7 @@ export function appRoutes(app: FastifyInstance) {
     r.post('/app/settings/delete', { preHandler: requireOwner, config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
       const pw = String((req.body as any)?.password ?? '').slice(0, 200);
       const u = await one('SELECT password_hash FROM users WHERE id = $1', [req.user!.id]);
-      if (!(await verify(u.password_hash, pw))) return reply.redirect('/app/settings?m=bad_password');
+      if (!(await verify(u.password_hash, pw).catch(() => false))) return reply.redirect('/app/settings?m=bad_password');
       for (const ch of await q<ChannelRow>('SELECT * FROM channels WHERE workspace_id = $1', [req.user!.workspaceId])) await removeChannel(ch);
       await destroySession(req, reply);
       await tx(async (c) => {

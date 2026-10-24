@@ -6,7 +6,8 @@ import { config } from '../config.js';
 import { one, q, tx } from '../db.js';
 import { sendMail } from '../mailer.js';
 import { requireAdmin } from './auth.js';
-import { csrfField, html } from './html.js';
+import { csrfField, html, pageHead } from './html.js';
+import { channelIcon, icon, type IconName } from './icons.js';
 import { emailSchema, MESSAGES, passwordLink, view } from './public.js';
 
 Object.assign(MESSAGES, {
@@ -17,11 +18,21 @@ Object.assign(MESSAGES, {
 const date = z.union([z.literal(''), z.string().regex(/^\d{4}-\d{2}-\d{2}$/)]);
 const plusDays = (n: number) => new Date(Date.now() + n * 86400_000).toISOString().slice(0, 10);
 const day = (d: Date | null) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+const stat = (ic: IconName, label: string, value: number, tone = '') =>
+  html`<div class="stat ${tone}"><span class="stat-ic">${icon(ic)}</span><div><p class="stat-label">${label}</p><p class="stat-value">${value}</p></div></div>`;
+const daysLeft = (d: Date | null) => (d ? Math.ceil((new Date(day(d)).getTime() - new Date(new Date().toISOString().slice(0, 10)).getTime()) / 86400_000) : null);
+const payChip = (d: Date | null) => {
+  const n = daysLeft(d);
+  if (n === null) return html`<span class="chip neutral">limitsiz</span>`;
+  if (n < 0) return html`<span class="chip danger">bitib · ${day(d)}</span>`;
+  if (n <= 5) return html`<span class="chip warn">${n} gün qalıb · ${day(d)}</span>`;
+  return html`<span class="chip ok">${day(d)}</span>`;
+};
 const idParam = (req: FastifyRequest) => z.uuid().safeParse((req.params as any).id).data;
 
-const linkBox = (link: string, email: string) => html`<div class="card"><h2>Şifrə təyin etmə linki</h2>
+const linkBox = (link: string, email: string) => html`<div class="card link-box"><div class="card-head"><h2>${icon('link')}Şifrə təyin etmə linki</h2></div>
   <p>Bu linki müştəriyə göndərin (WhatsApp və s.). Link <b>72 saat</b> etibarlıdır və yalnız bir dəfə işləyir. Müştəri şifrəsini təyin edib <b>${email}</b> ilə daxil olacaq.</p>
-  <p><input readonly value="${link}" class="copy"></p>
+  <div class="copy-row"><input readonly value="${link}" class="copy" id="invite-link"><button type="button" class="btn secondary" data-copy="invite-link">${icon('link')}Kopyala</button></div>
   ${config.mailEnabled ? html`<p class="muted">Link e-poçtla da göndərildi.</p>` : ''}</div>`;
 
 export function adminRoutes(app: FastifyInstance) {
@@ -38,21 +49,29 @@ export function adminRoutes(app: FastifyInstance) {
            w.paid_until IS NOT NULL AND w.paid_until < current_date AS expired
          FROM workspaces w ORDER BY w.paid_until NULLS LAST, w.name`,
       );
-      return view(req, reply, 'Admin', html`<section class="card"><h1>Yeni müştəri</h1>
+      const n = (f: (w: any) => boolean) => rows.filter(f).length;
+      return view(req, reply, 'Admin', html`${pageHead('Müştərilər', 'Hesabları yaradın, ödənişləri qeyd edin. Ödəniş tarixi keçəndə AI avtomatik dayanır.')}
+        <div class="stats">
+          ${stat('users', 'Cəmi müştəri', rows.length)}
+          ${stat('check', 'Aktiv', n((w) => !w.expired))}
+          ${stat('clock', '5 gün içində bitir', n((w) => { const d = daysLeft(w.paid_until); return d !== null && d >= 0 && d <= 5; }), 'warn')}
+          ${stat('alert', 'Ödənişi bitib', n((w) => w.expired), 'danger')}
+        </div>
+        <section class="card"><div class="card-head"><h2>${icon('plus')}Yeni müştəri</h2></div>
         <form method="post" action="/admin/customers" class="grid">${csrfField(req.csrfToken)}
           <label>Biznesin adı<input name="name" required maxlength="120"></label>
           <label>E-poçt (giriş üçün)<input name="email" type="email" required></label>
           <label>Aylıq AI cavab limiti<input name="limit" type="number" min="0" max="1000000" value="${config.DEFAULT_REPLY_LIMIT}" required></label>
           <label>Ödənilib (bu tarixə qədər)<input name="paid_until" type="date" value="${plusDays(30)}"></label>
           <label>Qeyd (yalnız siz görürsünüz)<input name="note" maxlength="500" placeholder="Telefon, ödəniş üsulu..."></label>
-          <button>Müştəri yarat</button></form></section>
-        <section class="card"><h1>Müştərilər (${rows.length})</h1><table>
-          <tr><th>Biznes</th><th>E-poçt</th><th>Ödənilib</th><th>Bu ay AI</th><th>Kanallar</th></tr>
-          ${rows.map((w) => html`<tr class="${w.expired ? 'attention' : ''}"><td><a href="/admin/w/${w.id}">${w.name}</a>${w.note ? html`<br><small class="muted">${w.note}</small>` : ''}</td>
-            <td>${w.emails}${w.activated ? '' : html` <span class="tag">link gözləyir</span>`}</td>
-            <td>${w.paid_until ? day(w.paid_until) : 'limitsiz'}${w.expired ? html` <span class="tag error">bitib</span>` : ''}</td>
-            <td>${w.used ?? 0} / ${w.monthly_reply_limit}</td><td>${w.channels ?? '—'}</td></tr>`)}
-        </table></section>`);
+          <button class="btn">${icon('plus')}Müştəri yarat</button></form></section>
+        <section class="card flush"><div class="table-wrap"><table>
+          <thead><tr><th>Biznes</th><th>Giriş</th><th>Ödənilib</th><th>Bu ay AI</th><th>Kanallar</th></tr></thead><tbody>
+          ${rows.map((w) => html`<tr><td><a class="strong" href="/admin/w/${w.id}">${w.name}</a>${w.note ? html`<small class="muted block">${w.note}</small>` : ''}</td>
+            <td>${w.emails}${w.activated ? '' : html` <span class="chip neutral">link gözləyir</span>`}</td>
+            <td>${payChip(w.paid_until)}</td>
+            <td class="num">${w.used ?? 0} / ${w.monthly_reply_limit}</td><td>${w.channels ? String(w.channels).split(', ').map((t) => html`${channelIcon(t)} `) : '—'}</td></tr>`)}
+        </tbody></table></div></section>`);
     });
 
     r.post('/admin/customers', async (req, reply) => {
@@ -72,7 +91,7 @@ export function adminRoutes(app: FastifyInstance) {
       });
       const link = await passwordLink(userId, '72 hours');
       if (config.mailEnabled) await sendMail(d.email, 'AI Reply hesabınız', `Salam! ${d.name} üçün AI Reply hesabınız yaradıldı.\nŞifrənizi təyin edin (72 saat etibarlıdır):\n${link}`).catch(() => {});
-      return view(req, reply, 'Müştəri yaradıldı', html`<p class="flash ok">${d.name} yaradıldı.</p>${linkBox(link, d.email)}<p><a href="/admin">← Admin</a></p>`);
+      return view(req, reply, 'Müştəri yaradıldı', html`${pageHead(`${d.name} yaradıldı`, 'İndi şifrə linkini müştəriyə göndərin.')}${linkBox(link, d.email)}<p><a href="/admin" class="more">${icon('back', 'i xs')} Müştərilər</a></p>`);
     });
 
     const load = async (req: FastifyRequest) => {
@@ -86,16 +105,16 @@ export function adminRoutes(app: FastifyInstance) {
       const users = await q(`SELECT u.email, u.email_verified_at FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1`, [w.id]);
       const f = (action: string, label: string, cls = '', confirm = '') =>
         html`<form method="post" action="/admin/w/${w.id}/${action}" class="inline" ${confirm ? html`data-confirm="${confirm}"` : ''}>${csrfField(req.csrfToken)}<button class="${cls}">${label}</button></form>`;
-      return view(req, reply, w.name, html`<section class="card"><h1>${w.name}</h1>
+      return view(req, reply, w.name, html`<p><a href="/admin" class="more">${icon('back', 'i xs')} Müştərilər</a></p>${pageHead(w.name, html`Ödəniş: ${payChip(w.paid_until)}`)}<section class="card">
         <p>İstifadəçi: ${users.map((u) => html`<b>${u.email}</b> ${u.email_verified_at ? '' : html`<span class="tag">link gözləyir</span>`} `)}</p>
         <form method="post" action="/admin/w/${w.id}/update">${csrfField(req.csrfToken)}
           <label>Biznesin adı<input name="name" value="${w.name}" required maxlength="120"></label>
           <label>Aylıq AI cavab limiti<input name="limit" type="number" min="0" max="1000000" value="${w.monthly_reply_limit}" required></label>
           <label>Ödənilib (bu tarixə qədər; boş = limitsiz)<input name="paid_until" type="date" value="${day(w.paid_until)}"></label>
           <label>Qeyd<input name="note" value="${w.note}" maxlength="500"></label>
-          <button>Yadda saxla</button></form>
-        <div class="actions">${f('extend', '+30 gün ödəniş')}${f('link', 'Yeni şifrə linki')}${f('delete', 'Müştərini sil', 'danger', 'Müştəri, kanalları və bütün söhbətləri həmişəlik silinsin?')}</div>
-        <p class="muted">Ödəniş tarixi keçəndə AI avtomatik dayanır, müştəri panelə girə bilir.</p></section><p><a href="/admin">← Admin</a></p>`);
+          <button class="btn">Yadda saxla</button></form></section>
+        <section class="card"><div class="actions">${f('extend', '+30 gün ödəniş', 'btn')}${f('link', 'Yeni şifrə linki', 'btn secondary')}${f('delete', 'Müştərini sil', 'btn danger-ghost', 'Müştəri, kanalları və bütün söhbətləri həmişəlik silinsin?')}</div>
+        <p class="hint">Ödəniş tarixi keçəndə AI avtomatik dayanır, müştəri panelə girib əl ilə cavab verə bilir.</p></section>`);
     });
 
     r.post('/admin/w/:id/update', async (req, reply) => {
@@ -118,7 +137,7 @@ export function adminRoutes(app: FastifyInstance) {
       const w = await load(req);
       const u = w && (await one(`SELECT u.id, u.email FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1 AND m.role = 'owner' LIMIT 1`, [w.id]));
       if (!u) return reply.code(404).send('Not found');
-      return view(req, reply, 'Şifrə linki', html`${linkBox(await passwordLink(u.id, '72 hours'), u.email)}<p><a href="/admin/w/${w.id}">← ${w.name}</a></p>`);
+      return view(req, reply, 'Şifrə linki', html`${pageHead('Yeni şifrə linki', w.name)}${linkBox(await passwordLink(u.id, '72 hours'), u.email)}<p><a href="/admin/w/${w.id}" class="more">${icon('back', 'i xs')} ${w.name}</a></p>`);
     });
 
     r.post('/admin/w/:id/delete', async (req, reply) => {
