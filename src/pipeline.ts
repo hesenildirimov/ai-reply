@@ -6,7 +6,7 @@ import { markWhatsAppRead } from './channels/whatsapp.js';
 import { config } from './config.js';
 import { decrypt } from './crypto.js';
 import { one, q } from './db.js';
-import { sendMail } from './mailer.js';
+import { notifyWaiting } from './notify.js';
 import { queue } from './queue.js';
 
 /** Meta only allows free-form replies within 24h of the customer's last message. */
@@ -41,7 +41,8 @@ export async function ingest(ev: InboundEvent): Promise<void> {
   );
   if (!msg) return; // duplicate webhook delivery
 
-  if (ch.type === 'whatsapp') await markWhatsAppRead(decrypt(ch.access_token_enc), ch.external_id, ev.mid);
+  // Read receipt is cosmetic: it must never block storing the message.
+  if (ch.type === 'whatsapp') await Promise.resolve().then(() => markWhatsAppRead(decrypt(ch.access_token_enc), ch.external_id, ev.mid)).catch(() => {});
   // Debounce: customers often send several short messages; only the latest job replies.
   await queue.add('reply', { kind: 'reply', conversationId: conv!.id, messageId: msg.id }, { delay: config.AI_DEBOUNCE_MS });
 }
@@ -101,37 +102,38 @@ export async function reserveReply(workspaceId: string): Promise<'ok' | 'limit' 
   return row ? 'ok' : 'limit';
 }
 
-async function handoff(c: ConvCtx, handoffMessage: string, reason: string): Promise<void> {
+/** Max AI replies per conversation per hour: stops one spammer from burning the business's monthly quota. */
+const CONV_HOURLY_CAP = 15;
+
+async function handoff(c: ConvCtx, holdingReply: string, reason: string): Promise<void> {
   const flipped = await one(`UPDATE conversations SET needs_human = true WHERE id = $1 AND needs_human = false RETURNING id`, [c.id]);
   if (!flipped) return;
-  if (handoffMessage.trim()) await deliver(c, handoffMessage, 'ai');
-  const owners = await q<{ email: string }>(
-    `SELECT u.email FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1 AND u.email_verified_at IS NOT NULL`,
-    [c.workspace_id],
-  );
-  const link = `${config.APP_URL}/app/inbox/${c.id}`;
-  await Promise.allSettled(
-    owners.map((o) => sendMail(o.email, 'Söhbət operatora ötürüldü', `Müştəri: ${c.display_name || c.external_user_id}\nSəbəb: ${reason}\n\n${link}`)),
-  );
+  if (holdingReply.trim()) await deliver(c, holdingReply, 'ai');
+  await notifyWaiting(c.workspace_id, c.id, c.display_name || c.external_user_id, c.channel.type, reason);
 }
 
 export async function processReply(conversationId: string, messageId: string): Promise<void> {
   const c = await loadConv(conversationId);
-  if (!c || c.channel.status !== 'active' || c.needs_human || c.ai_paused || c.latest_in !== messageId || !inWindow(c)) return;
-
+  // Only the newest message's job acts (debounce); closed window or broken channel = nothing to do.
+  if (!c || c.latest_in !== messageId || c.channel.status !== 'active' || !inWindow(c)) return;
   const a = await one(`SELECT * FROM assistants WHERE workspace_id = $1`, [c.workspace_id]);
-  if (!a?.enabled) return;
+  const who = c.display_name || c.external_user_id;
+  // Staff is handling this conversation (or AI is off): just tell them a new message arrived.
+  if (c.needs_human || c.ai_paused || !a?.enabled) return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj');
 
   const recent = await q<{ sender: string; body: string }>(
     `SELECT sender, body FROM (SELECT sender, body, created_at FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 20) t ORDER BY created_at`,
     [c.id],
   );
   const lastText = recent.at(-1)?.body ?? '';
-  if (HUMAN_KEYWORDS.test(lastText)) return handoff(c, a.handoff_message, 'customer asked for a human');
+  if (HUMAN_KEYWORDS.test(lastText)) return handoff(c, a.handoff_message, 'müştəri insanla danışmaq istəyir');
+
+  const hourly = await one<{ n: number }>(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND sender = 'ai' AND created_at > now() - interval '1 hour'`, [c.id]);
+  if (hourly!.n >= CONV_HOURLY_CAP) return handoff(c, '', 'çox sayda mesaj (spam ola bilər)');
 
   const quota = await reserveReply(c.workspace_id);
-  if (quota === 'expired') return; // unpaid: stay silent, staff answers from the inbox
-  if (quota === 'limit') return handoff(c, a.handoff_message, 'monthly AI reply limit reached');
+  if (quota === 'expired') return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'abunəlik bitib, AI cavab vermir');
+  if (quota === 'limit') return handoff(c, a.handoff_message, 'aylıq AI limiti bitib');
 
   if (c.channel.type === 'instagram' && !c.display_name) {
     const name = await instagramUsername(decrypt(c.channel.access_token_enc), c.external_user_id);
@@ -145,7 +147,7 @@ export async function processReply(conversationId: string, messageId: string): P
   const fresh = await loadConv(conversationId);
   if (!fresh || fresh.latest_in !== messageId || fresh.needs_human || fresh.ai_paused || !inWindow(fresh)) return;
 
-  if (result.kind === 'handoff') return handoff(fresh, a.handoff_message, result.reason);
+  if (result.kind === 'handoff') return handoff(fresh, result.holdingReply || a.handoff_message, result.reason);
   await deliver(fresh, result.text, 'ai');
 }
 

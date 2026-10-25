@@ -7,6 +7,9 @@ import { config } from '../config.js';
 import { parseSignedRequest, randomToken, safeEqual, verifyMetaSignature } from '../crypto.js';
 import { one, q } from '../db.js';
 import { ingest } from '../pipeline.js';
+import { redis } from '../queue.js';
+import { sha256 } from '../crypto.js';
+import { telegramEnabled, tgSend } from '../telegram.js';
 
 const META = { csrf: false, rateLimit: false } as const;
 
@@ -59,6 +62,36 @@ export function metaRoutes(app: FastifyInstance) {
     if (!verifyMetaSignature(req.rawBody, req.headers['x-hub-signature-256'] as string, [config.IG_APP_SECRET, config.META_APP_SECRET])) return reply.code(401).send();
     await handleEvents(req, parseInstagramWebhook(req.body));
     return reply.send('EVENT_RECEIVED');
+  });
+
+  // Telegram bot: links a chat to a workspace via the one-time /start code. Verified by the secret header.
+  app.post('/webhooks/telegram', { config: META }, async (req, reply) => {
+    const secret = req.headers['x-telegram-bot-api-secret-token'];
+    if (!telegramEnabled() || typeof secret !== 'string' || !safeEqual(secret, config.TELEGRAM_WEBHOOK_SECRET!)) return reply.code(401).send();
+    const msg = (req.body as any)?.message;
+    const chatId = msg?.chat?.id;
+    const text = typeof msg?.text === 'string' ? msg.text.trim() : '';
+    if (typeof chatId !== 'number' || msg.chat.type !== 'private') return reply.send({ ok: true });
+    const chat = String(chatId);
+    const code = /^\/start ([A-Za-z0-9_-]{10,64})$/.exec(text)?.[1];
+    if (code) {
+      const raw = await redis.getdel(`tglink:${sha256(code).toString('hex')}`);
+      const link = raw ? (JSON.parse(raw) as { workspaceId: string; userId: string }) : null;
+      if (!link) {
+        await tgSend(chat, 'Link etibarsızdır və ya vaxtı keçib. Paneldə Ayarlar → Bildirişlər bölməsindən yenidən cəhd edin.');
+      } else {
+        const label = [msg.from?.first_name, msg.from?.username && `@${msg.from.username}`].filter(Boolean).join(' ').slice(0, 100);
+        await q(`INSERT INTO notify_targets (workspace_id, user_id, kind, chat_id, label) VALUES ($1, $2, 'telegram', $3, $4) ON CONFLICT DO NOTHING`, [link.workspaceId, link.userId, chat, label]);
+        const ws = await one('SELECT name FROM workspaces WHERE id = $1', [link.workspaceId]);
+        await tgSend(chat, `✅ Bildirişlər qoşuldu: ${ws?.name ?? ''}. Müştəri cavabınızı gözləyəndə burada xəbər verəcəyəm. Dayandırmaq üçün /stop yazın.`);
+      }
+    } else if (text === '/stop') {
+      await q(`DELETE FROM notify_targets WHERE kind = 'telegram' AND chat_id = $1`, [chat]);
+      await tgSend(chat, 'Bildirişlər dayandırıldı.');
+    } else {
+      await tgSend(chat, 'Bu bot AI Reply bildirişləri üçündür. Qoşulmaq üçün paneldə Ayarlar → Bildirişlər → "Telegram-ı qoş" düyməsini basın.');
+    }
+    return reply.send({ ok: true });
   });
 
   const signed = (req: FastifyRequest) => {

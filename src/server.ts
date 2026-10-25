@@ -8,6 +8,7 @@ import Fastify from 'fastify';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { queue, redis } from './queue.js';
+import { registerTelegramWebhook } from './telegram.js';
 import { adminRoutes } from './web/admin.js';
 import { appRoutes } from './web/app.js';
 import { registerAuth } from './web/auth.js';
@@ -17,7 +18,8 @@ import { publicRoutes } from './web/public.js';
 
 export async function buildServer() {
   const app = Fastify({
-    trustProxy: config.isProd, // behind the hosting provider's TLS proxy
+    // Trust exactly one proxy hop (the TLS proxy); trusting more would let clients spoof their IP for rate limiting.
+    trustProxy: config.isProd ? (_addr: string, hop: number) => hop === 0 : false,
     bodyLimit: 512 * 1024,
     logger: {
       level: config.isProd ? 'info' : 'debug',
@@ -46,7 +48,7 @@ export async function buildServer() {
         imgSrc: ["'self'", 'data:', 'https:'],
         connectSrc: ["'self'", 'https://graph.facebook.com', 'https://www.facebook.com', 'https://connect.facebook.net'],
         frameSrc: ['https://www.facebook.com', 'https://web.facebook.com', 'https://business.facebook.com'],
-        formAction: ["'self'"],
+        formAction: ["'self'", 'https://t.me'], // Telegram link redirect after POST
         frameAncestors: ["'none'"],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
@@ -92,4 +94,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   process.on('SIGTERM', close);
   process.on('SIGINT', close);
   await app.listen({ port: config.PORT, host: '0.0.0.0' });
+  await registerTelegramWebhook().catch((e) => app.log.error({ err: e }, 'telegram webhook registration failed'));
 }

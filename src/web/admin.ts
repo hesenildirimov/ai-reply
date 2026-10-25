@@ -90,6 +90,7 @@ export function adminRoutes(app: FastifyInstance) {
         return u.id as string;
       });
       const link = await passwordLink(userId, '72 hours');
+      req.log.info({ event: 'admin_customer_created', admin: req.user!.id, user: userId }, 'audit');
       if (config.mailEnabled) await sendMail(d.email, 'AI Reply hesabınız', `Salam! ${d.name} üçün AI Reply hesabınız yaradıldı.\nŞifrənizi təyin edin (72 saat etibarlıdır):\n${link}`).catch(() => {});
       return view(req, reply, 'Müştəri yaradıldı', html`${pageHead(`${d.name} yaradıldı`, 'İndi şifrə linkini müştəriyə göndərin.')}${linkBox(link, d.email)}<p><a href="/admin" class="more">${icon('back', 'i xs')} Müştərilər</a></p>`);
     });
@@ -122,6 +123,7 @@ export function adminRoutes(app: FastifyInstance) {
       const p = z.object({ name: z.string().trim().min(1).max(120), limit: z.coerce.number().int().min(0).max(1_000_000), paid_until: date, note: z.string().trim().max(500) }).safeParse(req.body);
       if (!w || !p.success) return reply.redirect('/admin?m=invalid');
       await q('UPDATE workspaces SET name = $2, monthly_reply_limit = $3, paid_until = $4, note = $5 WHERE id = $1', [w.id, p.data.name, p.data.limit, p.data.paid_until || null, p.data.note]);
+      req.log.info({ event: 'admin_customer_updated', admin: req.user!.id, workspace: w.id, paid_until: p.data.paid_until, limit: p.data.limit }, 'audit');
       return reply.redirect(`/admin/w/${w.id}?m=saved`);
     });
 
@@ -129,6 +131,7 @@ export function adminRoutes(app: FastifyInstance) {
       const w = await load(req);
       if (!w) return reply.code(404).send('Not found');
       // Extend from the later of today and the current paid date.
+      req.log.info({ event: 'admin_payment_extended', admin: req.user!.id, workspace: w.id }, 'audit');
       await q(`UPDATE workspaces SET paid_until = greatest(coalesce(paid_until, current_date), current_date) + 30 WHERE id = $1`, [w.id]);
       return reply.redirect(`/admin/w/${w.id}?m=saved`);
     });
@@ -137,6 +140,7 @@ export function adminRoutes(app: FastifyInstance) {
       const w = await load(req);
       const u = w && (await one(`SELECT u.id, u.email FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1 AND m.role = 'owner' LIMIT 1`, [w.id]));
       if (!u) return reply.code(404).send('Not found');
+      req.log.info({ event: 'admin_password_link', admin: req.user!.id, user: u.id }, 'audit');
       return view(req, reply, 'Şifrə linki', html`${pageHead('Yeni şifrə linki', w.name)}${linkBox(await passwordLink(u.id, '72 hours'), u.email)}<p><a href="/admin/w/${w.id}" class="more">${icon('back', 'i xs')} ${w.name}</a></p>`);
     });
 
@@ -149,6 +153,7 @@ export function adminRoutes(app: FastifyInstance) {
         await c.query('DELETE FROM workspaces WHERE id = $1', [w.id]);
         await c.query('DELETE FROM users WHERE id = ANY($1) AND NOT is_admin AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = users.id)', [users]);
       });
+      req.log.info({ event: 'admin_customer_deleted', admin: req.user!.id, workspace: w.id }, 'audit');
       return reply.redirect('/admin?m=customer_deleted');
     });
   });

@@ -5,6 +5,7 @@ import { config } from './config.js';
 import { decrypt, encrypt } from './crypto.js';
 import { pool, q } from './db.js';
 import { processEcho, processReply } from './pipeline.js';
+import { learnStyle } from './style.js';
 import { QUEUE, queue, redis, type JobData } from './queue.js';
 
 type Data = JobData | { kind: 'maintenance' };
@@ -36,6 +37,7 @@ const worker = new Worker<Data>(
     const d = job.data;
     if (d.kind === 'reply') return processReply(d.conversationId, d.messageId);
     if (d.kind === 'ig_echo') return processEcho(d.channelId, d.userId, d.mid, d.text);
+    if (d.kind === 'learn_style') return void (await learnStyle(d.workspaceId));
     if (d.kind === 'maintenance') return maintenance();
   },
   { connection: new Redis(config.REDIS_URL, { maxRetriesPerRequest: null }), concurrency: 5 },

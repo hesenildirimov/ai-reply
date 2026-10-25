@@ -30,6 +30,12 @@ const schema = z.object({
   IG_GRAPH_BASE: z.url().default('https://graph.instagram.com'),
   IG_API_BASE: z.url().default('https://api.instagram.com'),
 
+  // Telegram alerts: create a bot with @BotFather
+  TELEGRAM_BOT_TOKEN: optional,
+  TELEGRAM_BOT_USERNAME: optional,
+  TELEGRAM_WEBHOOK_SECRET: z.string().regex(/^[A-Za-z0-9_-]{16,256}$/).optional().catch(undefined),
+  TELEGRAM_API_BASE: z.url().default('https://api.telegram.org'),
+
   SMTP_URL: optional,
   MAIL_FROM: z.string().default('AI Reply <no-reply@example.com>'),
 

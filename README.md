@@ -95,10 +95,26 @@ Meta webhook-larını lokalda yoxlamaq üçün HTTPS tunel lazımdır (məsələ
 - **24 saat qaydası**: AI və əl ilə cavab yalnız müştərinin son mesajından 24 saat ərzində göndərilir (`pipeline.ts`).
 - **Ümumi təyinatlı AI chatbot qadağası** (WhatsApp Business Solution Terms, 2026): bot yalnız biznesin öz mövzularında cavab verir, kənar suallardan imtina edir (`ai.ts` → RULES). Məhsulu "WhatsApp-da ChatGPT" kimi reklam etməyin. Bu, biznesin müştəri xidməti köməkçisidir.
 - **İnsana ötürmə**: açar sözlər ("operator", "insan", "оператор"...), AI-nin `request_human` aləti, limitin bitməsi. Əməkdaş Instagram tətbiqindən yazdıqda AI həmin söhbətdə 12 saat dayanır.
-- **AI olduğunu bildirmək**: ilk cavabda (paneldən söndürmək olar).
+- **AI olduğunu bildirmək**: default olaraq söndürülüb. AI özünü təqdim etmir, amma ciddi soruşulanda yalan danışmır (bax `SECURITY.md` §11).
 - **Minimal icazələr**, **məlumatların silinməsi** (callback-lər, kanalı ayırmaq, hesabı silmək, `PARTNER_REMOVED` webhook-u), **saxlama müddəti** (`RETENTION_DAYS`, standart 90 gün), **məlumatların yüklənməsi** (JSON export).
 
+## Təbii danışıq və üslub öyrənmə
+
+- AI biznesin əməkdaşı kimi yazır. "Operator", "AI" və ya "sistem" sözlərini işlətmir. Bilmədiyi sualda öz üslubunda qısa gözləmə cavabı yazır ("bir dəqiqə, baxım yazıram") və biznesə bildiriş göndərir.
+- **AI köməkçi → "Yazışmalarımdan öyrən"** düyməsi Instagram-dakı son yazışmaları və paneldən yazılan cavabları oxuyur. Yazılış ("qiymet"), "sən/siz", emoji və uzunluq barədə qısa bir üslub təsviri yaradır. Instagram bağlananda bu avtomatik edilir. WhatsApp API keçmiş yazışmaları vermir: orada üslub paneldən yazılan cavablardan öyrənilir.
+
+## Bildirişlər (Telegram)
+
+1. @BotFather-də bot yaradın. `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` və uzun təsadüfi `TELEGRAM_WEBHOOK_SECRET` təyin edin. Webhook server işə düşəndə avtomatik qeydiyyatdan keçir.
+2. Müştəri **Ayarlar → Bildirişlər → "Telegram-ı qoş"** düyməsini basır və botda **Start**-a toxunur.
+3. Müştəri cavab gözləyəndə bildiriş gəlir: ad, mesajın əvvəli və söhbətin linki. Eyni söhbət üçün ən çox 10 dəqiqədə bir dəfə göndərilir.
+
 ## Təhlükəsizlik
+
+Audit nəticələri və tövsiyələr: [`SECURITY.md`](SECURITY.md). İnteqrasiya testləri:
+`TEST_DATABASE_URL=postgres://… TEST_REDIS_URL=redis://… npm test` (CI-da avtomatik işləyir).
+
+## Təhlükəsizlik detalları
 
 - Webhook-lar `X-Hub-Signature-256` HMAC ilə raw body üzərindən yoxlanır (timing-safe müqayisə).
 - Meta access token-ları AES-256-GCM ilə şifrələnir. Loglara token, cookie və query string yazılmır.

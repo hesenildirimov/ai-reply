@@ -18,7 +18,7 @@ export function legalRoutes(app: FastifyInstance) {
 <h2>How we use it</h2>
 <p>Only to provide the service: receive messages, generate a reply with an AI model, send it on your behalf, show conversations in your inbox and notify you when a human is needed. We do not sell data, use it for advertising, or use it to train AI models.</p>
 <h2>Processors</h2>
-<p>Message text and your business information are sent to Anthropic (Claude API) to generate replies. Anthropic does not train on API data. Hosting, database and email providers process data on our behalf under confidentiality obligations. Meta Platforms delivers and sends messages.</p>
+<p>Message text and your business information are sent to Anthropic (Claude API) to generate replies. To match your writing style, the service reads the messages your business sent in recent Instagram conversations and your staff replies, and stores only a short style summary (no customer data). If you connect Telegram alerts, the name of a waiting customer and the first characters of their message are sent to your Telegram chat. Anthropic does not train on API data. Hosting, database and email providers process data on our behalf under confidentiality obligations. Meta Platforms delivers and sends messages.</p>
 <h2>Retention</h2>
 <p>Messages are deleted automatically after ${config.RETENTION_DAYS} days. Disconnecting a channel deletes its tokens and conversations immediately. Deleting your account deletes all your data immediately.</p>
 <h2>Your rights and deletion</h2>

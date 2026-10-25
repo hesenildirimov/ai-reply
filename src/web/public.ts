@@ -70,16 +70,21 @@ export function publicRoutes(app: FastifyInstance) {
     const p = z.object({ email: emailSchema, password: z.string().max(200) }).safeParse(req.body);
     if (!p.success) return reply.redirect('/login?m=bad_login');
     const key = lockKey(p.data.email);
-    if (Number(await redis.get(key)) >= 10) return reply.redirect('/login?m=locked');
+    if (Number(await redis.get(key)) >= 10) {
+      req.log.warn({ event: 'login_locked', account: sha256(p.data.email).toString('hex').slice(0, 16) }, 'security');
+      return reply.redirect('/login?m=locked');
+    }
     const u = await one<{ id: string; password_hash: string; email_verified_at: Date | null }>('SELECT id, password_hash, email_verified_at FROM users WHERE email = $1', [p.data.email]);
     const ok = await verify(u?.password_hash ?? DUMMY_HASH, p.data.password).catch(() => false);
     // email_verified_at is set when the user sets a password from their invite link.
     if (!u || !ok || !u.email_verified_at) {
       await redis.multi().incr(key).expire(key, 900).exec();
+      req.log.warn({ event: 'login_failed', account: sha256(p.data.email).toString('hex').slice(0, 16), known: !!u }, 'security');
       return reply.redirect('/login?m=bad_login');
     }
     await redis.del(key);
     await createSession(reply, u.id);
+    req.log.info({ event: 'login_ok', user: u.id }, 'security');
     return reply.redirect('/app');
   });
 
@@ -119,6 +124,7 @@ export function publicRoutes(app: FastifyInstance) {
     await q('UPDATE users SET password_hash = $2, email_verified_at = coalesce(email_verified_at, now()) WHERE id = $1', [row.user_id, await hash(p.data.password, ARGON)]);
     await q('DELETE FROM sessions WHERE user_id = $1', [row.user_id]);
     await q(`DELETE FROM auth_tokens WHERE user_id = $1 AND used_at IS NULL`, [row.user_id]); // invalidate other open links
+    req.log.info({ event: 'password_set', user: row.user_id }, 'security');
     return reply.redirect('/login?m=password_set');
   });
 }

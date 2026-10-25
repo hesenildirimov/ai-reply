@@ -10,6 +10,8 @@ import { config } from '../config.js';
 import { encrypt, randomToken, sha256 } from '../crypto.js';
 import { one, q, tx } from '../db.js';
 import { reserveReply, sendManualReply, WINDOW_MS } from '../pipeline.js';
+import { queue, redis } from '../queue.js';
+import { telegramEnabled } from '../telegram.js';
 import { destroySession, requireOwner, requireUser } from './auth.js';
 import { csrfField, html, pageHead, raw, type Safe } from './html.js';
 import { channelIcon, icon, type IconName } from './icons.js';
@@ -27,6 +29,8 @@ Object.assign(MESSAGES, {
   limit: { type: 'error', text: 'Aylıq AI cavab limitiniz bitib.' },
   expired: { type: 'error', text: 'Abunəliyin müddəti bitib, AI cavablar dayandırılıb. Administratorla əlaqə saxlayın.' },
   bad_password: { type: 'error', text: 'Şifrə yanlışdır.' },
+  learning: { type: 'ok', text: 'Yazışmalarınız oxunur. Üslub 1-2 dəqiqəyə hazır olacaq, sonra səhifəni yeniləyin.' },
+  tg_removed: { type: 'ok', text: 'Telegram bildirişləri ayrıldı.' },
 });
 
 const uuid = z.uuid();
@@ -114,7 +118,7 @@ export function appRoutes(app: FastifyInstance) {
             <section class="card how"><h2>Mesajlar necə idarə olunur?</h2>
               <ol>
                 <li>${icon('bot')}<span><b>AI avtomatik cavab verir</b><small>Instagram və WhatsApp-a gələn hər mesaja, sizin yazdığınız məlumatlar əsasında.</small></span></li>
-                <li>${icon('headset')}<span><b>Bilmədiyini sizə ötürür</b><small>Endirim, şikayət, sifariş təsdiqi və ya "operator" yazanda söhbət "Operator gözləyir" olur.</small></span></li>
+                <li>${icon('headset')}<span><b>Bilmədiyini sizə bildirir</b><small>Endirim, şikayət, sifariş təsdiqi kimi hallarda müştəriyə təbii şəkildə "bir dəqiqə" yazır, sizə isə Telegram və ya e-poçtla bildiriş gəlir.</small></span></li>
                 <li>${icon('chat')}<span><b>Siz "Söhbətlər"dən cavab verirsiniz</b><small>Bütün yazışmalar orada görünür. Əl ilə yazdıqda AI həmin söhbətdə dayanır.</small></span></li>
               </ol></section>
           </div>
@@ -225,13 +229,21 @@ export function appRoutes(app: FastifyInstance) {
             <label>Məlumat bazası
               <textarea name="knowledge" rows="14" maxlength="30000" placeholder="Nə satırsınız, qiymətlər, iş saatları, ünvan, çatdırılma, ödəniş üsulları, qaytarma qaydaları, tez-tez verilən suallar...">${a.knowledge}</textarea>
               <small class="help">Nə qədər ətraflı yazsanız, AI bir o qədər dəqiq cavab verir. Qiymət dəyişəndə burada yeniləyin.</small></label></section>
-          <section class="card"><div class="card-head"><h2>${icon('sparkle')}Danışıq tərzi</h2></div>
-            <label>Ton<input name="tone" value="${a.tone}" maxlength="300"></label>
-            <label class="switch-row"><span><b>AI olduğunu bildir</b><small>İlk cavabda qısaca qeyd edir (tövsiyə olunur).</small></span>
+          <section class="card span"><div class="card-head"><h2>${icon('sparkle')}Danışıq üslubu</h2>
+              <button class="btn sm secondary" formaction="/app/assistant/learn" formnovalidate>${icon('book')}Yazışmalarımdan öyrən</button></div>
+            <p class="muted">AI sizin kimi yazsın deyə köhnə yazışmalarınızı oxuyur: yazılış (məsələn "qiymet"), "sən/siz", emoji, mesaj uzunluğu.
+              ${a.style_learned_at ? html`Son öyrənmə: <b>${fmt(a.style_learned_at)}</b>.` : html`Instagram tarixçəsi və paneldən yazdığınız cavablar istifadə olunur.`}</p>
+            <label>Öyrənilmiş üslub (istəsəniz düzəldin)
+              <textarea name="style_guide" rows="6" maxlength="1500" placeholder="Hələ öyrənilməyib. Yuxarıdakı düyməni basın və ya özünüz yazın: məsələn, 'ə' əvəzinə 'e' yazır, 'siz' deyir, hər mesajın sonunda 🙏 qoyur.">${a.style_guide}</textarea></label>
+            <label>Ümumi ton
+              <select name="style_preset">${[['auto', 'Avtomatik (müştəriyə uyğunlaşır)'], ['friendly', 'Səmimi, isti'], ['polite', 'Nəzakətli, "siz"'], ['short', 'Çox qısa, tez']].map(
+                ([v, l]) => html`<option value="${v}" ${a.style_preset === v ? raw('selected') : ''}>${l}</option>`)}</select></label>
+            <label class="switch-row"><span><b>AI olduğunu bildir</b><small>Söndürülüb: AI özünü təqdim etmir. Müştəri ciddi şəkildə "bot-san?" soruşarsa, yalan danışmır.</small></span>
               <input type="checkbox" class="switch" name="ai_disclosure" value="1" ${a.ai_disclosure ? raw('checked') : ''}></label></section>
-          <section class="card"><div class="card-head"><h2>${icon('headset')}Operatora ötürmə</h2></div>
-            <label>Müştəriyə göndəriləcək mesaj<input name="handoff_message" value="${a.handoff_message}" maxlength="500"></label>
-            <small class="help">AI cavab verə bilməyəndə və ya müştəri "operator" yazanda göndərilir.</small></section>
+          <section class="card span"><div class="card-head"><h2>${icon('headset')}Bilmədiyi suallar</h2></div>
+            <p class="muted">AI cavabı bilməyəndə müştəriyə öz üslubunda qısa, təbii bir cavab yazır (operator və ya AI sözü işlətmədən) və sizə bildiriş göndərir.</p>
+            <label>Ehtiyat gözləmə mesajı<input name="handoff_message" value="${a.handoff_message}" maxlength="500"></label>
+            <small class="help">Müştəri "operator" və ya "insan" yazanda, ya da limit bitəndə göndərilir. Boş qoysanız, heç nə yazılmır.</small></section>
           <div class="span form-actions"><a class="btn secondary" href="/app/test">${icon('flask')}Test et</a><button class="btn">Yadda saxla</button></div>
         </form>`);
     });
@@ -241,7 +253,8 @@ export function appRoutes(app: FastifyInstance) {
         .object({
           business_name: z.string().trim().min(1).max(120),
           knowledge: z.string().max(30000),
-          tone: z.string().trim().max(300),
+          style_guide: z.string().trim().max(1500),
+          style_preset: z.enum(['auto', 'friendly', 'polite', 'short']),
           handoff_message: z.string().trim().max(500),
           enabled: z.literal('1').optional(),
           ai_disclosure: z.literal('1').optional(),
@@ -250,10 +263,16 @@ export function appRoutes(app: FastifyInstance) {
       if (!p.success) return reply.redirect('/app/assistant?m=invalid');
       const d = p.data;
       await q(
-        `UPDATE assistants SET business_name = $2, knowledge = $3, tone = $4, handoff_message = $5, enabled = $6, ai_disclosure = $7, updated_at = now() WHERE workspace_id = $1`,
-        [req.user!.workspaceId, d.business_name, d.knowledge, d.tone, d.handoff_message, !!d.enabled, !!d.ai_disclosure],
+        `UPDATE assistants SET business_name = $2, knowledge = $3, style_guide = $4, style_preset = $5, handoff_message = $6, enabled = $7, ai_disclosure = $8, updated_at = now() WHERE workspace_id = $1`,
+        [req.user!.workspaceId, d.business_name, d.knowledge, d.style_guide, d.style_preset, d.handoff_message, !!d.enabled, !!d.ai_disclosure],
       );
       return reply.redirect('/app/assistant?m=saved');
+    });
+
+    // One learning run per workspace at a time; each run is a single small AI call.
+    r.post('/app/assistant/learn', { config: { rateLimit: { max: 3, timeWindow: '1 hour' } } }, async (req, reply) => {
+      await queue.add('learn_style', { kind: 'learn_style', workspaceId: req.user!.workspaceId }, { jobId: `learn-${req.user!.workspaceId}-${Math.floor(Date.now() / 600_000)}` });
+      return reply.redirect('/app/assistant?m=learning');
     });
 
     // ---------- Test chat (single turn, counts toward usage) ----------
@@ -332,6 +351,7 @@ export function appRoutes(app: FastifyInstance) {
              token_expires_at = EXCLUDED.token_expires_at, status = 'active'`,
           [req.user!.workspaceId, ig.igId, `@${ig.username}`, encrypt(ig.token), ig.expiresAt],
         );
+        await queue.add('learn_style', { kind: 'learn_style', workspaceId: req.user!.workspaceId }, { delay: 5000 });
         return reply.redirect('/app/channels?m=ig_connected');
       } catch (e) {
         req.log.warn({ err: e }, 'instagram connect failed');
@@ -368,9 +388,19 @@ export function appRoutes(app: FastifyInstance) {
     });
 
     // ---------- Settings ----------
-    r.get('/app/settings', (req, reply) =>
-      view(req, reply, 'Ayarlar', html`${pageHead('Ayarlar', html`Hesab: <b>${req.user!.email}</b>`)}
+    r.get('/app/settings', async (req, reply) => {
+      const tg = await q(`SELECT id FROM notify_targets WHERE workspace_id = $1 AND kind = 'telegram'`, [req.user!.workspaceId]);
+      return view(req, reply, 'Ayarlar', html`${pageHead('Ayarlar', html`Hesab: <b>${req.user!.email}</b>`)}
         <div class="form-grid">
+          <section class="card span"><div class="card-head"><h2>${icon('zap')}Bildirişlər</h2></div>
+            <p class="muted">Müştəri sizin cavabınızı gözləyəndə (AI bilmədiyi sual, şikayət, sifariş təsdiqi) dərhal xəbər tutun.</p>
+            ${telegramEnabled()
+              ? html`${tg.length ? html`<div class="acct"><span>${icon('check')}<b>Telegram qoşulub</b> (${tg.length} çat)</span>
+                  ${confirmForm('/app/notifications/telegram/remove', req.csrfToken, html`Ayır`, 'btn sm danger-ghost')}</div>` : ''}
+                ${confirmForm('/app/notifications/telegram', req.csrfToken, html`${icon('link')}${tg.length ? 'Başqa Telegram əlavə et' : 'Telegram-ı qoş'}`, 'btn')}
+                <p class="hint">Düyməni basın, Telegram-da botu açıb <b>Start</b> basın. Hər gözləyən söhbət üçün bildiriş gələcək.</p>`
+              : html`<p class="hint">Telegram bildirişləri hələ qurulmayıb (TELEGRAM_BOT_TOKEN).</p>`}
+            <p class="hint">${icon('inbox', 'i xs')} ${config.mailEnabled ? 'E-poçt bildirişləri də aktivdir.' : 'E-poçt bildirişi üçün SMTP qurulmalıdır.'}</p></section>
           <section class="card"><div class="card-head"><h2>${icon('lock')}Şifrəni dəyiş</h2></div>
             <form method="post" action="/app/settings/password">${csrfField(req.csrfToken)}
               <label>Hazırkı şifrə<input name="current" type="password" required autocomplete="current-password"></label>
@@ -381,8 +411,20 @@ export function appRoutes(app: FastifyInstance) {
             ${req.user!.role === 'owner' ? html`<div class="danger-zone"><h3>Hesabı sil</h3><p class="muted">Bütün kanallar, söhbətlər və hesab həmişəlik silinəcək.</p>
               <form method="post" action="/app/settings/delete" data-confirm="Hesab və bütün məlumatlar həmişəlik silinsin?">${csrfField(req.csrfToken)}
                 <label>Təsdiq üçün şifrə<input name="password" type="password" required autocomplete="current-password"></label><button class="btn danger">${icon('trash')}Hesabı sil</button></form></div>` : ''}
-          </section></div>`),
-    );
+          </section></div>`);
+    });
+
+    // Telegram linking: one-time code (hash in Redis, 15 min) passed via the bot's /start deep link.
+    r.post('/app/notifications/telegram', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+      if (!telegramEnabled()) return reply.redirect('/app/settings');
+      const code = randomToken(18);
+      await redis.set(`tglink:${sha256(code).toString('hex')}`, JSON.stringify({ workspaceId: req.user!.workspaceId, userId: req.user!.id }), 'EX', 900);
+      return reply.redirect(`https://t.me/${config.TELEGRAM_BOT_USERNAME}?start=${code}`);
+    });
+    r.post('/app/notifications/telegram/remove', async (req, reply) => {
+      await q(`DELETE FROM notify_targets WHERE workspace_id = $1 AND kind = 'telegram'`, [req.user!.workspaceId]);
+      return reply.redirect('/app/settings?m=tg_removed');
+    });
 
     r.post('/app/settings/password', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
       const p = z.object({ current: z.string().max(200), password: passwordSchema }).safeParse(req.body);
@@ -400,7 +442,7 @@ export function appRoutes(app: FastifyInstance) {
         exported_at: new Date().toISOString(),
         user: { email: req.user!.email },
         workspace: await one('SELECT name, monthly_reply_limit, paid_until, created_at FROM workspaces WHERE id = $1', [w]),
-        assistant: await one('SELECT business_name, knowledge, tone, handoff_message, enabled, ai_disclosure FROM assistants WHERE workspace_id = $1', [w]),
+        assistant: await one('SELECT business_name, knowledge, style_preset, style_guide, handoff_message, enabled, ai_disclosure FROM assistants WHERE workspace_id = $1', [w]),
         channels: await q('SELECT type, external_id, display_name, status, created_at FROM channels WHERE workspace_id = $1', [w]),
         conversations: await q(
           `SELECT c.id, c.display_name, c.external_user_id, coalesce(json_agg(json_build_object('sender', m.sender, 'body', m.body, 'at', m.created_at) ORDER BY m.created_at) FILTER (WHERE m.id IS NOT NULL), '[]') AS messages

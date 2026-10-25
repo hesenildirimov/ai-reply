@@ -86,3 +86,12 @@ export function parseInstagramWebhook(body: any): InboundEvent[] {
   }
   return out;
 }
+
+/** Texts the business itself sent in its most recent DM threads (for style learning). Best effort. */
+export async function instagramOwnMessages(token: string, igId: string): Promise<string[]> {
+  const r = await graph<{ data?: { messages?: { data?: { message?: string; from?: { id?: string } }[] } }[] }>(IG(), fbPath('me/conversations'), {
+    token,
+    query: { platform: 'instagram', limit: '25', fields: 'messages.limit(20){message,from}' },
+  });
+  return (r.data ?? []).flatMap((c) => (c.messages?.data ?? []).filter((m) => m.from?.id === igId && typeof m.message === 'string').map((m) => m.message!));
+}

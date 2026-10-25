@@ -1,31 +1,42 @@
-# Local/production-like stack. Secrets come from .env (never commit it).
+# Production-like stack. Secrets come from .env (never commit it).
+# Only the web app is published, and only on localhost: put a TLS reverse proxy (e.g. Caddy) in front.
 services:
   db:
     image: postgres:16
-    environment: { POSTGRES_USER: app, POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-app}", POSTGRES_DB: aireply }
+    environment: { POSTGRES_USER: app, POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}", POSTGRES_DB: aireply }
     volumes: [pgdata:/var/lib/postgresql/data]
+    restart: unless-stopped
   redis:
     image: redis:7
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"]
     volumes: [redisdata:/data]
+    restart: unless-stopped
   migrate:
     build: .
     env_file: .env
     environment: &dbenv
-      DATABASE_URL: postgres://app:${POSTGRES_PASSWORD:-app}@db:5432/aireply
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgres://app:${POSTGRES_PASSWORD}@db:5432/aireply
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
     command: ["node", "dist/migrate.js"]
     depends_on: [db]
   web:
     build: .
     env_file: .env
     environment: *dbenv
-    ports: ["3000:3000"]
+    ports: ["127.0.0.1:3000:3000"]
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    restart: unless-stopped
     depends_on: { migrate: { condition: service_completed_successfully }, redis: { condition: service_started } }
   worker:
     build: .
     env_file: .env
     environment: *dbenv
     command: ["node", "dist/worker.js"]
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    restart: unless-stopped
     depends_on: { migrate: { condition: service_completed_successfully }, redis: { condition: service_started } }
 volumes: { pgdata: {}, redisdata: {} }
