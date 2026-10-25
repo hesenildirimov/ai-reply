@@ -103,7 +103,13 @@ Meta webhook-larını lokalda yoxlamaq üçün HTTPS tunel lazımdır (məsələ
 - AI biznesin əməkdaşı kimi yazır. "Operator", "AI" və ya "sistem" sözlərini işlətmir. Bilmədiyi sualda öz üslubunda qısa gözləmə cavabı yazır ("bir dəqiqə, baxım yazıram") və biznesə bildiriş göndərir.
 - **AI köməkçi → "Yazışmalarımdan öyrən"** düyməsi Instagram-dakı son yazışmaları və paneldən yazılan cavabları oxuyur. Yazılış ("qiymet"), "sən/siz", emoji və uzunluq barədə qısa bir üslub təsviri yaradır. Instagram bağlananda bu avtomatik edilir. WhatsApp API keçmiş yazışmaları vermir: orada üslub paneldən yazılan cavablardan öyrənilir.
 
-## Bildirişlər (Telegram)
+## Bildirişlər (WhatsApp, Telegram, Chrome, e-poçt)
+
+Müştəri **Ayarlar → Bildirişlər** bölməsində istədiyi kanalları qoşur (bir neçəsini birlikdə də):
+- **WhatsApp:** platformanın öz WhatsApp Business nömrəsindən gəlir. Meta-da *Utility* kateqoriyalı template təsdiqlənməlidir, məsələn: `🔔 {{1}}: {{2}} cavabınızı gözləyir: “{{3}}”` + "Cavab ver" URL düyməsi. Hər mesaj Meta tərəfindən ödənişlidir (utility tarifi). Qoşulanda müştəri kodu öz WhatsApp-ından göndərir.
+- **Chrome:** `npx web-push generate-vapid-keys` ilə `VAPID_*` dəyərlərini təyin edin. Android, kompüter və iPhone-da (Ana ekrana əlavə etdikdən sonra) işləyir.
+
+### Telegram
 
 1. @BotFather-də bot yaradın. `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` və uzun təsadüfi `TELEGRAM_WEBHOOK_SECRET` təyin edin. Webhook server işə düşəndə avtomatik qeydiyyatdan keçir.
 2. Müştəri **Ayarlar → Bildirişlər → "Telegram-ı qoş"** düyməsini basır və botda **Start**-a toxunur.
@@ -113,6 +119,10 @@ Meta webhook-larını lokalda yoxlamaq üçün HTTPS tunel lazımdır (məsələ
 
 Audit nəticələri və tövsiyələr: [`SECURITY.md`](SECURITY.md). İnteqrasiya testləri:
 `TEST_DATABASE_URL=postgres://… TEST_REDIS_URL=redis://… npm test` (CI-da avtomatik işləyir).
+
+## Serverə yerləşdirmə
+
+Addım-addım: [`docs/DEPLOY.md`](docs/DEPLOY.md) (Caddy/HTTPS, 2FA, backup, `ENCRYPTION_KEY`-in ehtiyat nüsxəsi).
 
 ## Təhlükəsizlik detalları
 

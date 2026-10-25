@@ -10,6 +10,7 @@ export interface SessionUser {
   workspaceId: string;
   role: 'owner' | 'agent';
   isAdmin: boolean;
+  mfa: boolean;
 }
 
 declare module 'fastify' {
@@ -27,7 +28,7 @@ const SID = config.isProd ? '__Host-sid' : 'sid';
 const PRE = config.isProd ? '__Host-pcsrf' : 'pcsrf';
 const SESSION_DAYS = 7;
 const cookieOpts = { httpOnly: true, secure: config.isProd, sameSite: 'lax' as const, path: '/' };
-const NO_SESSION = /^\/(public|webhooks|meta|healthz)(\/|$)/;
+const NO_SESSION = /^\/(public|webhooks|meta|healthz|sw\.js)(\/|$)/;
 
 export async function createSession(reply: FastifyReply, userId: string): Promise<void> {
   const token = randomToken();
@@ -55,13 +56,13 @@ export function registerAuth(app: FastifyInstance) {
     const token = req.cookies[SID];
     if (token) {
       const row = await one(
-        `SELECT s.csrf_token, s.expires_at < now() + interval '6 days' AS stale, u.id, u.email, u.email_verified_at, u.is_admin, m.workspace_id, m.role
+        `SELECT s.csrf_token, s.expires_at < now() + interval '6 days' AS stale, u.id, u.email, u.email_verified_at, u.is_admin, u.totp_enabled_at IS NOT NULL AS mfa, m.workspace_id, m.role
          FROM sessions s JOIN users u ON u.id = s.user_id JOIN memberships m ON m.user_id = u.id
          WHERE s.id_hash = $1 AND s.expires_at > now() LIMIT 1`,
         [sha256(token)],
       );
       if (row) {
-        req.user = { id: row.id, email: row.email, emailVerified: !!row.email_verified_at, workspaceId: row.workspace_id, role: row.role, isAdmin: row.is_admin };
+        req.user = { id: row.id, email: row.email, emailVerified: !!row.email_verified_at, workspaceId: row.workspace_id, role: row.role, isAdmin: row.is_admin, mfa: row.mfa };
         req.csrfToken = row.csrf_token;
         if (row.stale) {
           await q(`UPDATE sessions SET expires_at = now() + interval '${SESSION_DAYS} days' WHERE id_hash = $1`, [sha256(token)]);
@@ -98,6 +99,8 @@ export async function requireUser(req: FastifyRequest, reply: FastifyReply) {
 export async function requireAdmin(req: FastifyRequest, reply: FastifyReply) {
   if (!req.user) return reply.redirect('/login');
   if (!req.user.isAdmin) return reply.code(404).send('Not found');
+  // Admins must use two-factor login before touching customer accounts.
+  if (!req.user.mfa) return reply.redirect('/app/2fa?m=mfa_required');
 }
 
 export async function requireOwner(req: FastifyRequest, reply: FastifyReply) {

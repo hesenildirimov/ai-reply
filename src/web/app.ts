@@ -7,11 +7,14 @@ import { exchangeInstagramCode, instagramAuthorizeUrl, subscribeInstagram } from
 import type { ChannelRow } from '../channels/types.js';
 import { completeEmbeddedSignup } from '../channels/whatsapp.js';
 import { config } from '../config.js';
-import { encrypt, randomToken, sha256 } from '../crypto.js';
+import { decrypt, encrypt, randomToken, sha256 } from '../crypto.js';
 import { one, q, tx } from '../db.js';
 import { reserveReply, sendManualReply, WINDOW_MS } from '../pipeline.js';
 import { queue, redis } from '../queue.js';
 import { telegramEnabled } from '../telegram.js';
+import { newTotpSecret, otpauthUrl, verifyTotp } from '../totp.js';
+import { subscriptionSchema } from '../webpush.js';
+import QRCode from 'qrcode';
 import { destroySession, requireOwner, requireUser } from './auth.js';
 import { csrfField, html, pageHead, raw, type Safe } from './html.js';
 import { channelIcon, icon, type IconName } from './icons.js';
@@ -30,7 +33,12 @@ Object.assign(MESSAGES, {
   expired: { type: 'error', text: 'Abunəliyin müddəti bitib, AI cavablar dayandırılıb. Administratorla əlaqə saxlayın.' },
   bad_password: { type: 'error', text: 'Şifrə yanlışdır.' },
   learning: { type: 'ok', text: 'Yazışmalarınız oxunur. Üslub 1-2 dəqiqəyə hazır olacaq, sonra səhifəni yeniləyin.' },
-  tg_removed: { type: 'ok', text: 'Telegram bildirişləri ayrıldı.' },
+  tg_removed: { type: 'ok', text: 'Bildiriş kanalı ayrıldı.' },
+  mfa_required: { type: 'error', text: 'Admin paneli üçün iki faktorlu girişi qurmalısınız.' },
+  mfa_on: { type: 'ok', text: 'İki faktorlu giriş aktivdir.' },
+  mfa_off: { type: 'ok', text: 'İki faktorlu giriş söndürüldü.' },
+  bad_code: { type: 'error', text: 'Kod yanlışdır. Telefonunuzdakı vaxtın düzgün olduğunu yoxlayın.' },
+  push_on: { type: 'ok', text: 'Bu brauzerdə bildirişlər aktivdir.' },
 });
 
 const uuid = z.uuid();
@@ -52,6 +60,10 @@ const stat = (ic: IconName, label: string, value: unknown, meta: unknown = '', t
   html`<div class="stat ${tone}"><span class="stat-ic">${icon(ic)}</span><div><p class="stat-label">${label}</p><p class="stat-value">${value}</p>${meta ? html`<p class="stat-meta">${meta}</p>` : ''}</div></div>`;
 const confirmForm = (action: string, csrf: string, label: Safe, cls: string, confirm?: string, extra?: Safe) =>
   html`<form method="post" action="${action}" class="inline" ${confirm ? html`data-confirm="${confirm}"` : ''}>${csrfField(csrf)}${extra}<button class="${cls}">${label}</button></form>`;
+
+const notifyRow = (csrf: string, ic: IconName, title: string, sub: string, enabled: boolean, n: number, action: string, label: string) =>
+  html`<div class="notify-row"><span class="nt-ic">${icon(ic)}</span><div><b>${title}</b><small>${sub}</small></div>
+    ${enabled ? html`${n ? chip('ok', 'qoşulub') : ''}<form method="post" action="${action}" class="inline">${csrfField(csrf)}<button class="btn sm ${n ? 'secondary' : ''}">${n ? 'Daha birini qoş' : label}</button></form>` : html`<span class="chip neutral">qurulmayıb</span>`}</div>`;
 
 /** A platform account can belong to one workspace only; moving it drops the old workspace's data. */
 async function claimExternalAccount(type: 'whatsapp' | 'instagram', externalId: string, workspaceId: string) {
@@ -389,18 +401,29 @@ export function appRoutes(app: FastifyInstance) {
 
     // ---------- Settings ----------
     r.get('/app/settings', async (req, reply) => {
-      const tg = await q(`SELECT id FROM notify_targets WHERE workspace_id = $1 AND kind = 'telegram'`, [req.user!.workspaceId]);
+      const targets = await q<{ kind: string }>(`SELECT kind FROM notify_targets WHERE workspace_id = $1`, [req.user!.workspaceId]);
+      const count = (k: string) => targets.filter((t) => t.kind === k).length;
       return view(req, reply, 'Ayarlar', html`${pageHead('Ayarlar', html`Hesab: <b>${req.user!.email}</b>`)}
         <div class="form-grid">
           <section class="card span"><div class="card-head"><h2>${icon('zap')}Bildirişlər</h2></div>
-            <p class="muted">Müştəri sizin cavabınızı gözləyəndə (AI bilmədiyi sual, şikayət, sifariş təsdiqi) dərhal xəbər tutun.</p>
-            ${telegramEnabled()
-              ? html`${tg.length ? html`<div class="acct"><span>${icon('check')}<b>Telegram qoşulub</b> (${tg.length} çat)</span>
-                  ${confirmForm('/app/notifications/telegram/remove', req.csrfToken, html`Ayır`, 'btn sm danger-ghost')}</div>` : ''}
-                ${confirmForm('/app/notifications/telegram', req.csrfToken, html`${icon('link')}${tg.length ? 'Başqa Telegram əlavə et' : 'Telegram-ı qoş'}`, 'btn')}
-                <p class="hint">Düyməni basın, Telegram-da botu açıb <b>Start</b> basın. Hər gözləyən söhbət üçün bildiriş gələcək.</p>`
-              : html`<p class="hint">Telegram bildirişləri hələ qurulmayıb (TELEGRAM_BOT_TOKEN).</p>`}
+            <p class="muted">Müştəri sizin cavabınızı gözləyəndə (AI bilmədiyi sual, şikayət, sifariş təsdiqi) xəbər tutun. Bir neçə yolu birlikdə qoşa bilərsiniz.</p>
+            <div class="notify-grid">
+              ${notifyRow(req.csrfToken, 'whatsapp', 'WhatsApp', 'Şəxsi WhatsApp-ınıza mesaj', config.waAlertsEnabled, count('whatsapp'), '/app/notifications/whatsapp', 'WhatsApp-ı qoş')}
+              ${notifyRow(req.csrfToken, 'send', 'Telegram', 'Telegram botundan mesaj', telegramEnabled(), count('telegram'), '/app/notifications/telegram', 'Telegram-ı qoş')}
+              <div class="notify-row"><span class="nt-ic">${icon('globe')}</span><div><b>Chrome bildirişi</b><small>Kompüter və ya telefon brauzerində</small></div>
+                ${config.pushEnabled
+                  ? html`${count('webpush') ? chip('ok', `${count('webpush')} cihaz`) : ''}<button type="button" class="btn sm" id="push-enable" data-key="${config.VAPID_PUBLIC_KEY}" data-csrf="${req.csrfToken}">Bu cihazda aç</button>`
+                  : html`<span class="chip neutral">qurulmayıb</span>`}</div>
+            </div>
+            <p class="hint" id="push-status"></p>
+            ${targets.length ? confirmForm('/app/notifications/telegram/remove', req.csrfToken, html`Bütün bildiriş kanallarını ayır`, 'btn sm danger-ghost', 'Bütün bildiriş kanalları ayrılsın?') : ''}
             <p class="hint">${icon('inbox', 'i xs')} ${config.mailEnabled ? 'E-poçt bildirişləri də aktivdir.' : 'E-poçt bildirişi üçün SMTP qurulmalıdır.'}</p></section>
+          <section class="card span"><div class="card-head"><h2>${icon('shield')}İki faktorlu giriş</h2>
+              ${req.user!.mfa ? chip('ok', 'Aktiv') : chip('neutral', 'Söndürülüb')}</div>
+            <p class="muted">Şifrədən əlavə telefonunuzdakı Google Authenticator (və ya Authy) kodu tələb olunur. ${req.user!.isAdmin ? 'Admin üçün məcburidir.' : 'Tövsiyə olunur.'}</p>
+            ${req.user!.mfa
+              ? req.user!.isAdmin ? '' : html`<form method="post" action="/app/2fa/disable" class="inline-form">${csrfField(req.csrfToken)}<input name="code" inputmode="numeric" maxlength="6" placeholder="6 rəqəmli kod" required><button class="btn sm danger-ghost">Söndür</button></form>`
+              : html`<a class="btn" href="/app/2fa">${icon('shield')}Qur</a>`}</section>
           <section class="card"><div class="card-head"><h2>${icon('lock')}Şifrəni dəyiş</h2></div>
             <form method="post" action="/app/settings/password">${csrfField(req.csrfToken)}
               <label>Hazırkı şifrə<input name="current" type="password" required autocomplete="current-password"></label>
@@ -411,7 +434,71 @@ export function appRoutes(app: FastifyInstance) {
             ${req.user!.role === 'owner' ? html`<div class="danger-zone"><h3>Hesabı sil</h3><p class="muted">Bütün kanallar, söhbətlər və hesab həmişəlik silinəcək.</p>
               <form method="post" action="/app/settings/delete" data-confirm="Hesab və bütün məlumatlar həmişəlik silinsin?">${csrfField(req.csrfToken)}
                 <label>Təsdiq üçün şifrə<input name="password" type="password" required autocomplete="current-password"></label><button class="btn danger">${icon('trash')}Hesabı sil</button></form></div>` : ''}
-          </section></div>`);
+          </section></div>`, config.pushEnabled ? html`<script src="/public/push.js" defer></script>` : undefined);
+    });
+
+    // ---------- Two-factor login ----------
+    r.get('/app/2fa', async (req, reply) => {
+      if (req.user!.mfa) return reply.redirect('/app/settings?m=mfa_on');
+      const secret = newTotpSecret();
+      await redis.set(`mfa-setup:${req.user!.id}`, encrypt(secret), 'EX', 600);
+      const qr = await QRCode.toString(otpauthUrl(req.user!.email, secret), { type: 'svg', margin: 1, width: 200 });
+      return view(req, reply, 'İki faktorlu giriş', html`${pageHead('İki faktorlu girişi qurun', 'Telefonunuzda Google Authenticator, Authy və ya 1Password açın.')}
+        <section class="card mfa">
+          <ol class="mfa-steps"><li>Tətbiqdə <b>+</b> basın və bu QR kodu skan edin:</li></ol>
+          <div class="qr">${raw(qr)}</div>
+          <p class="muted">Skan edə bilmirsinizsə, bu açarı əl ilə daxil edin: <code>${secret.replace(/(.{4})/g, '$1 ').trim()}</code></p>
+          <ol class="mfa-steps" start="2"><li>Tətbiqin göstərdiyi 6 rəqəmli kodu yazın:</li></ol>
+          <form method="post" action="/app/2fa" class="inline-form">${csrfField(req.csrfToken)}
+            <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required placeholder="123456"><button class="btn">Təsdiqlə və aktiv et</button></form>
+        </section>`);
+    });
+
+    r.post('/app/2fa', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+      const pending = await redis.get(`mfa-setup:${req.user!.id}`);
+      if (!pending) return reply.redirect('/app/2fa');
+      const secret = decrypt(pending);
+      const step = verifyTotp(secret, String((req.body as any)?.code ?? ''), 0);
+      if (step === null) {
+        await redis.expire(`mfa-setup:${req.user!.id}`, 600);
+        return reply.redirect('/app/settings?m=bad_code');
+      }
+      await q('UPDATE users SET totp_secret_enc = $2, totp_enabled_at = now(), totp_last_step = $3 WHERE id = $1', [req.user!.id, encrypt(secret), step]);
+      await redis.del(`mfa-setup:${req.user!.id}`);
+      req.log.info({ event: 'mfa_enabled', user: req.user!.id }, 'security');
+      return reply.redirect('/app/settings?m=mfa_on');
+    });
+
+    r.post('/app/2fa/disable', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
+      if (req.user!.isAdmin) return reply.redirect('/app/settings?m=mfa_required');
+      const u = await one('SELECT totp_secret_enc, totp_last_step FROM users WHERE id = $1', [req.user!.id]);
+      const step = u?.totp_secret_enc ? verifyTotp(decrypt(u.totp_secret_enc), String((req.body as any)?.code ?? ''), Number(u.totp_last_step)) : null;
+      if (step === null) return reply.redirect('/app/settings?m=bad_code');
+      await q('UPDATE users SET totp_secret_enc = NULL, totp_enabled_at = NULL WHERE id = $1', [req.user!.id]);
+      req.log.info({ event: 'mfa_disabled', user: req.user!.id }, 'security');
+      return reply.redirect('/app/settings?m=mfa_off');
+    });
+
+    // ---------- Alert channels ----------
+    // WhatsApp: the owner sends a one-time code to the platform number (proves ownership, opens the chat).
+    r.post('/app/notifications/whatsapp', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+      if (!config.waAlertsEnabled) return reply.redirect('/app/settings');
+      const code = randomToken(6).replace(/[^A-Za-z0-9]/g, 'X').toUpperCase().slice(0, 8);
+      await redis.set(`walink:${code}`, JSON.stringify({ workspaceId: req.user!.workspaceId, userId: req.user!.id }), 'EX', 900);
+      return reply.redirect(`https://wa.me/${config.PLATFORM_WA_NUMBER}?text=${encodeURIComponent(`AIREPLY ${code}`)}`);
+    });
+
+    r.post('/app/notifications/push', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+      const p = subscriptionSchema.safeParse(req.body);
+      if (!config.pushEnabled || !p.success) return reply.code(400).send({ ok: false });
+      const ua = String(req.headers['user-agent'] ?? '');
+      const label = /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iPhone' : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : 'Brauzer';
+      await q(
+        `INSERT INTO notify_targets (workspace_id, user_id, kind, chat_id, label, data_enc) VALUES ($1, $2, 'webpush', $3, $4, $5)
+         ON CONFLICT (workspace_id, kind, chat_id) DO UPDATE SET data_enc = EXCLUDED.data_enc`,
+        [req.user!.workspaceId, req.user!.id, sha256(p.data.endpoint).toString('hex'), label, encrypt(JSON.stringify(p.data))],
+      );
+      return reply.send({ ok: true });
     });
 
     // Telegram linking: one-time code (hash in Redis, 15 min) passed via the bot's /start deep link.
@@ -422,7 +509,7 @@ export function appRoutes(app: FastifyInstance) {
       return reply.redirect(`https://t.me/${config.TELEGRAM_BOT_USERNAME}?start=${code}`);
     });
     r.post('/app/notifications/telegram/remove', async (req, reply) => {
-      await q(`DELETE FROM notify_targets WHERE workspace_id = $1 AND kind = 'telegram'`, [req.user!.workspaceId]);
+      await q(`DELETE FROM notify_targets WHERE workspace_id = $1`, [req.user!.workspaceId]);
       return reply.redirect('/app/settings?m=tg_removed');
     });
 

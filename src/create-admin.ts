@@ -14,7 +14,9 @@ if (!email.success) {
 
 let user = await one<{ id: string }>('SELECT id FROM users WHERE email = $1', [email.data]);
 if (user) {
-  await pool.query('UPDATE users SET is_admin = true WHERE id = $1', [user.id]);
+  // Re-running also resets two-factor login (recovery path for a lost phone; needs server access).
+  await pool.query('UPDATE users SET is_admin = true, totp_secret_enc = NULL, totp_enabled_at = NULL WHERE id = $1', [user.id]);
+  await pool.query('DELETE FROM sessions WHERE user_id = $1', [user.id]);
 } else {
   user = await tx(async (c) => {
     const u = (await c.query(`INSERT INTO users (email, password_hash, is_admin) VALUES ($1, '!', true) RETURNING id`, [email.data])).rows[0];

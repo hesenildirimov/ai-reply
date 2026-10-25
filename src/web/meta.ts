@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { removeChannel } from '../channels/index.js';
 import { parseInstagramWebhook } from '../channels/instagram.js';
 import type { ChannelRow, InboundEvent } from '../channels/types.js';
-import { parseWhatsAppWebhook } from '../channels/whatsapp.js';
+import { parseWhatsAppWebhook, sendWhatsAppText } from '../channels/whatsapp.js';
 import { config } from '../config.js';
 import { parseSignedRequest, randomToken, safeEqual, verifyMetaSignature } from '../crypto.js';
 import { one, q } from '../db.js';
@@ -34,6 +34,17 @@ async function handleEvents(req: FastifyRequest, events: InboundEvent[]) {
   }
 }
 
+async function linkWhatsAppAlerts(waId: string, text: string) {
+  const say = (t: string) => sendWhatsAppText(config.PLATFORM_WA_TOKEN!, config.PLATFORM_WA_PHONE_NUMBER_ID!, waId, t).catch(() => {});
+  const code = /AIREPLY\s+([A-Z0-9]{8})/i.exec(text)?.[1]?.toUpperCase();
+  const raw = code ? await redis.getdel(`walink:${code}`) : null;
+  if (!raw) return say('Bildirişləri qoşmaq üçün paneldə Ayarlar → Bildirişlər → "WhatsApp-ı qoş" düyməsini basın.');
+  const link = JSON.parse(raw) as { workspaceId: string; userId: string };
+  await q(`INSERT INTO notify_targets (workspace_id, user_id, kind, chat_id, label) VALUES ($1, $2, 'whatsapp', $3, $3) ON CONFLICT DO NOTHING`, [link.workspaceId, link.userId, waId]);
+  const ws = await one('SELECT name FROM workspaces WHERE id = $1', [link.workspaceId]);
+  await say(`✅ Bildirişlər qoşuldu: ${ws?.name ?? ''}. Müştəri cavabınızı gözləyəndə buraya yazacağıq.`);
+}
+
 async function deleteForPlatformUser(userId: string) {
   const channels = await q<ChannelRow>(`SELECT * FROM channels WHERE external_id = $1`, [userId]);
   for (const ch of channels) await removeChannel(ch);
@@ -54,7 +65,11 @@ export function metaRoutes(app: FastifyInstance) {
         }
       }
     }
-    await handleEvents(req, parseWhatsAppWebhook(body));
+    const events = parseWhatsAppWebhook(body);
+    // Messages to the platform's own number are alert sign-ups, not customer chats.
+    const platform = config.waAlertsEnabled ? events.filter((e) => e.channelExternalId === config.PLATFORM_WA_PHONE_NUMBER_ID) : [];
+    for (const ev of platform) if (ev.type === 'message') await linkWhatsAppAlerts(ev.userId, ev.text ?? '');
+    await handleEvents(req, events.filter((e) => !platform.includes(e)));
     return reply.send('EVENT_RECEIVED');
   });
 

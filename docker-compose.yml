@@ -1,5 +1,5 @@
 # Production-like stack. Secrets come from .env (never commit it).
-# Only the web app is published, and only on localhost: put a TLS reverse proxy (e.g. Caddy) in front.
+# Only Caddy (TLS) is published to the internet; web, db and redis stay on the internal network.
 services:
   db:
     image: postgres:16
@@ -23,7 +23,6 @@ services:
     build: .
     env_file: .env
     environment: *dbenv
-    ports: ["127.0.0.1:3000:3000"]
     read_only: true
     security_opt: ["no-new-privileges:true"]
     tmpfs: [/tmp]
@@ -39,4 +38,18 @@ services:
     tmpfs: [/tmp]
     restart: unless-stopped
     depends_on: { migrate: { condition: service_completed_successfully }, redis: { condition: service_started } }
-volumes: { pgdata: {}, redisdata: {} }
+  caddy:
+    image: caddy:2
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment: { DOMAIN: "${DOMAIN:?set DOMAIN in .env, e.g. app.example.az}" }
+    volumes: [./Caddyfile:/etc/caddy/Caddyfile:ro, caddy_data:/data, caddy_config:/config]
+    restart: unless-stopped
+    depends_on: [web]
+  backup:
+    image: postgres:16
+    environment: { PGPASSWORD: "${POSTGRES_PASSWORD}", BACKUP_KEEP_DAYS: "${BACKUP_KEEP_DAYS:-14}" }
+    volumes: [./backups:/backups, ./scripts/backup.sh:/backup.sh:ro]
+    entrypoint: ["sh", "/backup.sh"]
+    restart: unless-stopped
+    depends_on: [db]
+volumes: { pgdata: {}, redisdata: {}, caddy_data: {}, caddy_config: {} }

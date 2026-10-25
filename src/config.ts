@@ -36,6 +36,17 @@ const schema = z.object({
   TELEGRAM_WEBHOOK_SECRET: z.string().regex(/^[A-Za-z0-9_-]{16,256}$/).optional().catch(undefined),
   TELEGRAM_API_BASE: z.url().default('https://api.telegram.org'),
 
+  // WhatsApp alerts from the platform's own WhatsApp Business number (approved utility template)
+  PLATFORM_WA_PHONE_NUMBER_ID: optional,
+  PLATFORM_WA_TOKEN: optional,
+  PLATFORM_WA_NUMBER: z.string().regex(/^\d{8,15}$/).optional().catch(undefined), // digits only, e.g. 994501234567
+  PLATFORM_WA_TEMPLATE: optional,
+  PLATFORM_WA_TEMPLATE_LANG: z.string().default('az'),
+  // Browser (Chrome) push: npx web-push generate-vapid-keys
+  VAPID_PUBLIC_KEY: optional,
+  VAPID_PRIVATE_KEY: optional,
+  VAPID_SUBJECT: z.string().default('mailto:support@example.com'),
+
   SMTP_URL: optional,
   MAIL_FROM: z.string().default('AI Reply <no-reply@example.com>'),
 
@@ -70,5 +81,7 @@ export const config = {
   appOrigin: new URL(env.APP_URL).origin,
   whatsappEnabled: Boolean(env.META_APP_ID && env.META_APP_SECRET && env.WA_EMBEDDED_SIGNUP_CONFIG_ID),
   mailEnabled: Boolean(env.SMTP_URL),
+  waAlertsEnabled: Boolean(env.PLATFORM_WA_PHONE_NUMBER_ID && env.PLATFORM_WA_TOKEN && env.PLATFORM_WA_NUMBER && env.PLATFORM_WA_TEMPLATE),
+  pushEnabled: Boolean(env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY),
   instagramEnabled: Boolean(env.IG_APP_ID && env.IG_APP_SECRET),
 };

@@ -8,7 +8,7 @@ Qiymətləndirmə: ✅ yoxlanıldı/qaydasındadır · 🔧 auditdə düzəldild
 - ✅ Meta token-ları DB-də AES-256-GCM ilə şifrələnir. Sessiya və şifrə linki token-larının yalnız SHA-256 hash-i saxlanır.
 - ✅ Loglara `Authorization`, cookie və CSRF başlıqları yazılmır. URL query string-ləri (OAuth `code`) loglanmır. Telegram token-ı olan URL xəta mesajlarına düşmür.
 - 🔧 Production-da SMTP yoxdursa, məktub mətnləri (şifrə linkləri) artıq loga yazılmır.
-- ⚠️ `ENCRYPTION_KEY` itsə, bütün kanal token-ları oxunmaz olur. Onu ayrıca, təhlükəsiz yerdə ehtiyat nüsxə kimi saxlayın.
+- 🔧 `ENCRYPTION_KEY`-in barmaq izi DB-də saxlanır; səhv açarla sistem işə düşmür. Ehtiyat nüsxə qaydası: `docs/DEPLOY.md` §3.
 
 ## 2. Authentication
 - ✅ Şifrələr Argon2id ilə hash-lənir (OWASP parametrləri). Mövcud olmayan hesab üçün də hash yoxlaması aparılır ki, cavab müddətindən hesabın varlığı bilinməsin.
@@ -16,7 +16,7 @@ Qiymətləndirmə: ✅ yoxlanıldı/qaydasındadır · 🔧 auditdə düzəldild
 - ✅ Şifrə linkləri birdəfəlikdir, 72 saat (unutma halında 1 saat) etibarlıdır. Şifrə təyin olunanda bütün sessiyalar və digər açıq linklər ləğv edilir.
 - ✅ Login cəhdləri IP üzrə dəqiqədə 10, e-poçt üzrə 15 dəqiqədə 10 ilə məhdudlaşdırılıb.
 - ⚠️ E-poçt üzrə bloklamadan sui-istifadə edib başqasının hesabını 15 dəqiqəlik bloklamaq olar. Hazırkı miqyasda qəbul ediləndir.
-- ⚠️ Admin hesabı üçün iki faktorlu giriş (TOTP) tövsiyə olunur.
+- 🔧 İki faktorlu giriş (TOTP, RFC 6238) əlavə olundu: admin üçün məcburidir, müştərilər üçün istəyə bağlıdır. Kod təkrar istifadə edilə bilmir (time-step yadda saxlanır), 5 cəhddən sonra bloklanır. Bərpa: serverdə `create-admin` əmri.
 
 ## 3. Authorization (IDOR/BOLA)
 - ✅ Bütün müştəri sorğuları sessiyadakı `workspace_id` ilə məhdudlaşdırılıb (söhbət, cavab, silmə, kanal, export).
@@ -38,6 +38,10 @@ Qiymətləndirmə: ✅ yoxlanıldı/qaydasındadır · 🔧 auditdə düzəldild
 - 🔧 `trustProxy` yalnız 1 hop-a etibar edir. Əvvəl hamısına etibar edirdi və `X-Forwarded-For` saxtalaşdırılaraq IP rate limit-dən yayınmaq olurdu.
 - 🔧 Redis dayananda rate limiter bütün saytı dondururdu. İndi sorğular davam edir.
 
+## 5b. Bildiriş kanalları
+- 🔧 Chrome push: server push servisinə sorğu göndərdiyi üçün endpoint yalnız real push servislərinə (FCM, Mozilla, Microsoft, Apple) icazəlidir (SSRF qorunması). Abunəlik şifrəli saxlanır.
+- 🔧 WhatsApp və Telegram qoşulması birdəfəlik, 15 dəqiqəlik kodla olur. Nömrə/çat sahibi özü kodu göndərir, başqasının nömrəsinə bildiriş yazdırmaq olmur.
+
 ## 6. Data protection
 - ✅ Mesajlar 90 gündən sonra avtomatik silinir. Kanal ayrılanda və ya hesab silinəndə bütün məlumatlar dərhal silinir. JSON export var. Meta data-deletion callback-ləri işləyir.
 - 🔧 Queue job-ları (mesaj mətni daşıyır) artıq Redis-də 1 saatdan çox saxlanmır (uğursuzlar 7 gün).
@@ -52,7 +56,7 @@ Qiymətləndirmə: ✅ yoxlanıldı/qaydasındadır · 🔧 auditdə düzəldild
 ## 8. Configuration
 - ✅ Production rejimində HTTPS `APP_URL` və Anthropic açarı məcburidir. HSTS, CSP, `frame-ancestors none` və `Referrer-Policy: same-origin` aktivdir.
 - 🔧 `docker-compose`-da Postgres üçün `app` default parolu silindi, artıq `POSTGRES_PASSWORD` məcburidir. Redis parol tələb edir. Web portu yalnız `127.0.0.1`-də açılır. Konteynerlər `read_only` və `no-new-privileges` ilə işləyir, `node` istifadəçisi kimi.
-- ⚠️ TLS-i reverse proxy (Caddy və ya Nginx) ilə qurun. Postgres və Redis portlarını internetə açmayın.
+- 🔧 Caddy əlavə olundu: avtomatik Let's Encrypt, HTTP→HTTPS, access log yoxdur (URL-lərdə birdəfəlik token ola bilər). İnternetə yalnız 80/443 açıqdır.
 
 ## 9. Business logic
 - ✅ Limit, ödəniş tarixi və rol yalnız serverdə yoxlanır. Müştəri bunları dəyişə bilmir. Limitin azaldılması atomik `UPDATE … WHERE` ilə edilir (race yoxdur).
@@ -71,7 +75,7 @@ Qiymətləndirmə: ✅ yoxlanıldı/qaydasındadır · 🔧 auditdə düzəldild
 
 ## 12. Infrastructure & deployment
 - 🔧 GitHub Actions CI əlavə olundu: typecheck, unit və inteqrasiya testləri (Postgres və Redis ilə), `npm audit`.
-- ⚠️ Postgres üçün gündəlik avtomatik backup və bərpa testi qurun. Redis-də AOF aktivdir.
+- 🔧 Gündəlik avtomatik Postgres backup (`backup` servisi, 14 gün) və `scripts/restore.sh`. ⚠️ Backup-ları serverdən kənara şifrəli köçürün və ayda bir bərpanı yoxlayın.
 - ⚠️ Sirləri hostinqin secret manager-ində saxlayın, `.env` faylını serverdə `chmod 600` edin.
 
 ## 13. Testing

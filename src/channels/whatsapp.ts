@@ -91,3 +91,19 @@ export async function markWhatsAppRead(token: string, phoneNumberId: string, mes
 export async function unsubscribeWhatsApp(token: string, wabaId: string): Promise<void> {
   await graph(G(), fbPath(`${wabaId}/subscribed_apps`), { method: 'DELETE', token, appSecretProof: true });
 }
+
+/** Template message (works outside the 24h window). Params can't contain newlines/tabs or long runs of spaces. */
+export async function sendWhatsAppTemplate(token: string, phoneNumberId: string, to: string, name: string, lang: string, params: string[]): Promise<string> {
+  const clean = (s: string) => s.replace(/[\n\t]+/g, ' ').replace(/ {4,}/g, ' ').trim().slice(0, 300) || '-';
+  const res = await graph<{ messages: { id: string }[] }>(G(), fbPath(`${phoneNumberId}/messages`), {
+    token,
+    appSecretProof: true,
+    json: {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: { name, language: { code: lang }, components: [{ type: 'body', parameters: params.map((p) => ({ type: 'text', text: clean(p) })) }] },
+    },
+  });
+  return res.messages[0]!.id;
+}

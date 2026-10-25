@@ -90,6 +90,39 @@ describe.skipIf(!enabled)('security (integration)', () => {
     expect(page).toContain('&lt;script&gt;');
   });
 
+  it('forces admins to set up two-factor login and enforces it at login', async () => {
+    const { encrypt } = await import('../src/crypto.js');
+    const { newTotpSecret, totpCode, currentStep } = await import('../src/totp.js');
+    await db.q(`UPDATE users SET is_admin = true WHERE email = 'b@test.az'`);
+    const b = await login('b@test.az');
+    expect((await app.inject({ url: '/admin', headers: { cookie: b.cookie } })).headers.location).toBe('/app/2fa?m=mfa_required');
+    const secret = newTotpSecret();
+    await db.q(`UPDATE users SET totp_secret_enc = $1, totp_enabled_at = now() WHERE email = 'b@test.az'`, [encrypt(secret)]);
+    // Password alone no longer creates a session.
+    const page = await app.inject({ url: '/login' });
+    const pre = page.cookies.find((c) => c.name === 'pcsrf')!;
+    const token = /name="_csrf" value="([^"]+)"/.exec(page.body)![1]!;
+    const res = await app.inject({ method: 'POST', url: '/login', headers: { ...ORIGIN, cookie: `pcsrf=${pre.value}` }, payload: { _csrf: token, email: 'b@test.az', password: 'correct-horse-battery' } });
+    expect(res.headers.location).toBe('/login/2fa');
+    expect(res.cookies.find((c) => c.name === 'sid')).toBeUndefined();
+    const mfa = `pcsrf=${pre.value}; mfa=${res.cookies.find((c) => c.name === 'mfa')!.value}`;
+    const bad = await app.inject({ method: 'POST', url: '/login/2fa', headers: { ...ORIGIN, cookie: mfa }, payload: { _csrf: token, code: '000000' } });
+    expect(bad.headers.location).toBe('/login/2fa?m=bad_code');
+    const code = totpCode(secret, currentStep());
+    const good = await app.inject({ method: 'POST', url: '/login/2fa', headers: { ...ORIGIN, cookie: mfa }, payload: { _csrf: token, code } });
+    expect(good.headers.location).toBe('/app');
+    expect(good.cookies.find((c) => c.name === 'sid')).toBeDefined();
+  });
+
+  it('accepts browser push subscriptions only for real push services (no SSRF)', async () => {
+    const { subscriptionSchema } = await import('../src/webpush.js');
+    const keys = { p256dh: 'B'.repeat(87), auth: 'A'.repeat(22) };
+    expect(subscriptionSchema.safeParse({ endpoint: 'https://fcm.googleapis.com/fcm/send/abc', keys }).success).toBe(true);
+    for (const endpoint of ['http://fcm.googleapis.com/x', 'https://169.254.169.254/latest', 'https://redis:6379/', 'https://fcm.googleapis.com.evil.com/x', 'https://fcm.googleapis.com:8443/x']) {
+      expect(subscriptionSchema.safeParse({ endpoint, keys }).success).toBe(false);
+    }
+  });
+
   it('rejects Telegram updates without the secret header', async () => {
     const res = await app.inject({ method: 'POST', url: '/webhooks/telegram', payload: { message: { chat: { id: 1, type: 'private' }, text: '/stop' } } });
     expect(res.statusCode).toBe(401);

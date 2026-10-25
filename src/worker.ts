@@ -5,6 +5,7 @@ import { config } from './config.js';
 import { decrypt, encrypt } from './crypto.js';
 import { pool, q } from './db.js';
 import { processEcho, processReply } from './pipeline.js';
+import { assertEncryptionKey } from './keycheck.js';
 import { learnStyle } from './style.js';
 import { QUEUE, queue, redis, type JobData } from './queue.js';
 
@@ -30,6 +31,8 @@ async function maintenance() {
     }
   }
 }
+
+await assertEncryptionKey();
 
 const worker = new Worker<Data>(
   QUEUE,

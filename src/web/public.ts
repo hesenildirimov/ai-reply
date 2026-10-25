@@ -2,7 +2,8 @@ import { hash, verify } from '@node-rs/argon2';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { config } from '../config.js';
-import { randomToken, sha256 } from '../crypto.js';
+import { decrypt, randomToken, sha256 } from '../crypto.js';
+import { verifyTotp } from '../totp.js';
 import { one, q } from '../db.js';
 import { sendMail } from '../mailer.js';
 import { redis } from '../queue.js';
@@ -21,6 +22,7 @@ export const MESSAGES: Record<string, PageOpts['flash']> = {
   locked: { type: 'error', text: 'Çox sayda uğursuz cəhd. 15 dəqiqə sonra yenidən yoxlayın.' },
   password_set: { type: 'ok', text: 'Şifrə təyin edildi. İndi daxil olun.' },
   invalid: { type: 'error', text: 'Məlumatlar düzgün deyil. Yenidən yoxlayın.' },
+  bad_code: { type: 'error', text: 'Kod yanlışdır və ya artıq istifadə olunub.' },
   account_deleted: { type: 'ok', text: 'Hesabınız və bütün məlumatlarınız silindi.' },
 };
 
@@ -74,7 +76,7 @@ export function publicRoutes(app: FastifyInstance) {
       req.log.warn({ event: 'login_locked', account: sha256(p.data.email).toString('hex').slice(0, 16) }, 'security');
       return reply.redirect('/login?m=locked');
     }
-    const u = await one<{ id: string; password_hash: string; email_verified_at: Date | null }>('SELECT id, password_hash, email_verified_at FROM users WHERE email = $1', [p.data.email]);
+    const u = await one<{ id: string; password_hash: string; email_verified_at: Date | null; totp_enabled_at: Date | null }>('SELECT id, password_hash, email_verified_at, totp_enabled_at FROM users WHERE email = $1', [p.data.email]);
     const ok = await verify(u?.password_hash ?? DUMMY_HASH, p.data.password).catch(() => false);
     // email_verified_at is set when the user sets a password from their invite link.
     if (!u || !ok || !u.email_verified_at) {
@@ -83,8 +85,45 @@ export function publicRoutes(app: FastifyInstance) {
       return reply.redirect('/login?m=bad_login');
     }
     await redis.del(key);
+    if (u.totp_enabled_at) {
+      // Password OK; the session is only created after the 6-digit code (5 min, 5 attempts).
+      const t = randomToken();
+      await redis.set(`mfa:${sha256(t).toString('hex')}`, u.id, 'EX', 300);
+      reply.setCookie('mfa', t, { httpOnly: true, secure: config.isProd, sameSite: 'strict', path: '/login', maxAge: 300 });
+      return reply.redirect('/login/2fa');
+    }
     await createSession(reply, u.id);
     req.log.info({ event: 'login_ok', user: u.id }, 'security');
+    return reply.redirect('/app');
+  });
+
+  app.get('/login/2fa', (req, reply) =>
+    view(req, reply, 'Təsdiq kodu', html`<section class="auth card"><div class="auth-brand">${logo}<h1>Təsdiq kodu</h1><p class="muted">Authenticator tətbiqindəki 6 rəqəmli kodu yazın</p></div>
+      <form method="post" action="/login/2fa">${csrfField(req.csrfToken)}
+        <label>Kod<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required autofocus></label>
+        <button class="btn block">Təsdiqlə</button></form></section>`),
+  );
+
+  app.post('/login/2fa', { config: AUTH_LIMIT }, async (req, reply) => {
+    const t = req.cookies.mfa;
+    const key = t ? `mfa:${sha256(t).toString('hex')}` : '';
+    const userId = key ? await redis.get(key) : null;
+    if (!userId) return reply.redirect('/login?m=bad_login');
+    const tries = await redis.incr(`${key}:n`);
+    await redis.expire(`${key}:n`, 300);
+    const u = await one('SELECT totp_secret_enc, totp_last_step FROM users WHERE id = $1', [userId]);
+    const step = u?.totp_secret_enc ? verifyTotp(decrypt(u.totp_secret_enc), String((req.body as any)?.code ?? ''), Number(u.totp_last_step)) : null;
+    // Atomic: the same code (time step) can never be used twice.
+    const ok = step !== null && tries <= 5 && (await one('UPDATE users SET totp_last_step = $2 WHERE id = $1 AND totp_last_step < $2 RETURNING id', [userId, step]));
+    if (!ok) {
+      req.log.warn({ event: 'mfa_failed', user: userId, tries }, 'security');
+      if (tries >= 5) await redis.del(key);
+      return reply.redirect(tries >= 5 ? '/login?m=locked' : '/login/2fa?m=bad_code');
+    }
+    await redis.del(key, `${key}:n`);
+    reply.clearCookie('mfa', { path: '/login' });
+    await createSession(reply, userId);
+    req.log.info({ event: 'login_ok', user: userId, mfa: true }, 'security');
     return reply.redirect('/app');
   });
 

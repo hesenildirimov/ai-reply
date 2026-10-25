@@ -8,6 +8,7 @@ import Fastify from 'fastify';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { queue, redis } from './queue.js';
+import { assertEncryptionKey } from './keycheck.js';
 import { registerTelegramWebhook } from './telegram.js';
 import { adminRoutes } from './web/admin.js';
 import { appRoutes } from './web/app.js';
@@ -48,7 +49,7 @@ export async function buildServer() {
         imgSrc: ["'self'", 'data:', 'https:'],
         connectSrc: ["'self'", 'https://graph.facebook.com', 'https://www.facebook.com', 'https://connect.facebook.net'],
         frameSrc: ['https://www.facebook.com', 'https://web.facebook.com', 'https://business.facebook.com'],
-        formAction: ["'self'", 'https://t.me'], // Telegram link redirect after POST
+        formAction: ["'self'", 'https://t.me', 'https://wa.me', 'https://api.whatsapp.com'], // alert sign-up redirects after POST
         frameAncestors: ["'none'"],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
@@ -67,6 +68,9 @@ export async function buildServer() {
   await app.register(rateLimit, { global: true, max: 300, timeWindow: '1 minute', redis, skipOnError: true });
   await app.register(staticFiles, { root: path.resolve('public'), prefix: '/public/', maxAge: '1h' });
 
+  // Service worker must be served from the root to control /app pages.
+  app.get('/sw.js', { config: { rateLimit: false } }, (req, reply) => reply.header('Cache-Control', 'no-cache').sendFile('sw.js'));
+
   registerAuth(app);
   publicRoutes(app);
   legalRoutes(app);
@@ -84,6 +88,7 @@ export async function buildServer() {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  await assertEncryptionKey();
   const app = await buildServer();
   const close = async () => {
     await app.close();

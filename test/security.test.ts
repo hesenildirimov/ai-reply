@@ -43,3 +43,17 @@ describe('html', async () => {
     expect(html`${['<a>', raw('<b>')]}`.value).toBe('&lt;a&gt;<b>');
   });
 });
+
+describe('totp', async () => {
+  const t = await import('../src/totp.js');
+  it('matches RFC 6238 test vector and blocks replay', () => {
+    const secret = t.base32Encode(Buffer.from('12345678901234567890'));
+    expect(t.totpCode(secret, Math.floor(59 / 30))).toBe('287082'); // RFC 6238 SHA-1, T=59s (last 6 digits)
+    const now = 1_700_000_000_000;
+    const code = t.totpCode(secret, t.currentStep(now));
+    const step = t.verifyTotp(secret, code, 0, now);
+    expect(step).toBe(t.currentStep(now));
+    expect(t.verifyTotp(secret, code, step!, now)).toBeNull();
+    expect(t.verifyTotp(secret, '000000', 0, now)).toBeNull();
+  });
+});
