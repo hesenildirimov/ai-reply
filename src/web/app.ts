@@ -9,7 +9,7 @@ import { completeEmbeddedSignup } from '../channels/whatsapp.js';
 import { config } from '../config.js';
 import { decrypt, encrypt, randomToken, sha256 } from '../crypto.js';
 import { one, q, tx } from '../db.js';
-import { reserveReply, sendManualReply, WINDOW_MS } from '../pipeline.js';
+import { reserveReply } from '../pipeline.js';
 import { queue, redis } from '../queue.js';
 import { telegramEnabled } from '../telegram.js';
 import { newTotpSecret, otpauthUrl, verifyTotp } from '../totp.js';
@@ -18,6 +18,7 @@ import QRCode from 'qrcode';
 import { destroySession, requireOwner, requireUser } from './auth.js';
 import { csrfField, html, pageHead, raw, type Safe } from './html.js';
 import { channelIcon, icon, type IconName } from './icons.js';
+import { convRow, CONV_LIST_SQL } from './inbox.js';
 import { ARGON, MESSAGES, passwordSchema, view } from './public.js';
 
 Object.assign(MESSAGES, {
@@ -71,17 +72,6 @@ async function claimExternalAccount(type: 'whatsapp' | 'instagram', externalId: 
   for (const ch of others) await q('DELETE FROM channels WHERE id = $1', [ch.id]);
 }
 
-const CONV_LIST_SQL = `SELECT c.id, c.display_name, c.external_user_id, c.needs_human, coalesce(c.ai_paused_until > now(), false) AS paused, c.last_message_at, ch.type,
-    (SELECT body FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last,
-    (SELECT sender FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_sender
-  FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE c.workspace_id = $1`;
-
-const convRow = (c: any, activeId?: string) => html`<a class="conv ${c.id === activeId ? 'on' : ''} ${c.needs_human ? 'attn' : ''}" href="/app/inbox/${c.id}">
-  ${avatar(c.display_name || c.external_user_id, c.type)}
-  <span class="conv-main"><span class="conv-top"><b>${c.display_name || c.external_user_id}</b><time>${when(c.last_message_at)}</time></span>
-  <span class="conv-last">${c.last_sender === 'ai' ? html`${icon('bot', 'i xs')} ` : c.last_sender === 'human' ? 'Siz: ' : ''}${String(c.last ?? '').slice(0, 90)}</span>
-  ${c.needs_human ? chip('warn', 'Operator gözləyir') : c.paused ? chip('neutral', 'AI dayandırılıb') : ''}</span></a>`;
-
 export function appRoutes(app: FastifyInstance) {
   app.register(async (r) => {
     r.addHook('preHandler', requireUser);
@@ -99,7 +89,7 @@ export function appRoutes(app: FastifyInstance) {
                   (SELECT count(*)::int FROM conversations WHERE workspace_id = $1 AND needs_human) AS waiting`,
           [w],
         ),
-        q(`${CONV_LIST_SQL} ORDER BY c.needs_human DESC, c.last_message_at DESC LIMIT 5`, [w]),
+        q(`${CONV_LIST_SQL} AND c.status = 'open' ORDER BY c.needs_human DESC, c.last_message_at DESC LIMIT 5`, [w]),
       ]);
       const used = usage?.ai_replies ?? 0;
       const pct = ws.monthly_reply_limit ? Math.min(100, Math.round((used / ws.monthly_reply_limit) * 100)) : 100;
@@ -135,98 +125,6 @@ export function appRoutes(app: FastifyInstance) {
               </ol></section>
           </div>
         </div>`);
-    });
-
-    // ---------- Inbox (two-pane) ----------
-    const inbox = async (req: FastifyRequest, activeId?: string) => {
-      const w = req.user!.workspaceId;
-      const onlyHuman = (req.query as any)?.f === 'human';
-      const convs = await q(`${CONV_LIST_SQL} ${onlyHuman ? 'AND c.needs_human' : ''} ORDER BY c.last_message_at DESC LIMIT 200`, [w]);
-      const waiting = (await one(`SELECT count(*)::int AS n FROM conversations WHERE workspace_id = $1 AND needs_human`, [w])).n;
-      let pane: Safe;
-      const c = activeId
-        ? await one(
-            `SELECT c.*, coalesce(c.ai_paused_until > now(), false) AS paused, ch.type FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE c.id = $1 AND c.workspace_id = $2`,
-            [activeId, w],
-          )
-        : undefined;
-      if (activeId && !c) return null;
-      if (!c) {
-        pane = html`<div class="empty pane-empty">${icon('chat', 'i lg')}<h2>Söhbət seçin</h2><p>Soldakı siyahıdan bir söhbət seçin. Müştərinin yazdıqlarını, AI-nin cavablarını görəcək və özünüz cavab yaza biləcəksiniz.</p></div>`;
-      } else {
-        const msgs = await q(`SELECT * FROM (SELECT sender, body, created_at FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 200) t ORDER BY created_at`, [c.id]);
-        const open = !!c.last_inbound_at && Date.now() - new Date(c.last_inbound_at).getTime() < WINDOW_MS;
-        const name = c.display_name || c.external_user_id;
-        const aiOn = !c.needs_human && !c.paused;
-        const toggle = (label: string, ic: IconName) => confirmForm(`/app/inbox/${c.id}/ai`, req.csrfToken, html`${icon(ic)}${label}`, 'btn sm secondary', undefined, html`<input type="hidden" name="action" value="${aiOn ? 'pause' : 'resume'}">`);
-        const banner = c.needs_human
-          ? html`<div class="banner warn">${icon('headset')}<span><b>Müştəri operator gözləyir.</b> AI bu söhbətdə dayanıb, cavabı siz yazın.</span>${toggle('AI-ni bərpa et', 'play')}</div>`
-          : c.paused
-            ? html`<div class="banner neutral">${icon('pause')}<span>AI bu söhbətdə dayandırılıb (${fmt(c.ai_paused_until)} tarixinə qədər).</span>${toggle('AI-ni bərpa et', 'play')}</div>`
-            : html`<div class="banner ok">${icon('bot')}<span>AI bu söhbətə avtomatik cavab verir.</span>${toggle('Dayandır', 'pause')}</div>`;
-        pane = html`<div class="thread-head"><a class="icon-btn back" href="/app/inbox" aria-label="Geri">${icon('back')}</a>${avatar(name, c.type)}
-            <div><b>${name}</b><small>${typeLabel(c.type)}</small></div>
-            ${confirmForm(`/app/inbox/${c.id}/delete`, req.csrfToken, icon('trash'), 'icon-btn', 'Söhbət həmişəlik silinsin?')}</div>
-          ${banner}
-          <div class="thread" id="thread">${msgs.map((m) => html`<div class="msg ${m.sender}"><div class="bubble">${m.body}</div>
-            <small>${m.sender === 'ai' ? html`${icon('bot', 'i xs')} AI · ` : m.sender === 'human' ? 'Siz · ' : ''}${fmt(m.created_at)}</small></div>`)}</div>
-          ${open
-            ? html`<form class="composer" method="post" action="/app/inbox/${c.id}/reply">${csrfField(req.csrfToken)}<input type="hidden" name="nonce" value="${randomToken(16)}">
-                <textarea name="text" rows="2" maxlength="${c.type === 'whatsapp' ? 4096 : 1000}" required placeholder="Cavab yazın… (göndərəndə AI bu söhbətdə 12 saat dayanır)"></textarea>
-                <button class="btn" aria-label="Göndər">${icon('send')}</button></form>`
-            : html`<div class="composer closed">${icon('lock')}<span>24 saatlıq cavab müddəti bitib (Meta qaydası). Müştəri yenidən yazanda cavab verə biləcəksiniz.</span></div>`}
-          ${c.type === 'instagram' ? html`<p class="hint">Instagram tətbiqindən də cavab verə bilərsiniz, onda da AI avtomatik dayanır.</p>` : ''}`;
-      }
-      return html`<div class="inbox ${c ? 'has-active' : ''}" data-autorefresh="30">
-        <aside class="inbox-list">
-          <div class="inbox-head"><h1>Söhbətlər</h1>
-            <div class="seg"><a href="/app/inbox" class="${onlyHuman ? '' : 'on'}">Hamısı</a><a href="/app/inbox?f=human" class="${onlyHuman ? 'on' : ''}">Operator gözləyir${waiting ? html` <span class="count">${waiting}</span>` : ''}</a></div></div>
-          ${convs.length ? html`<div class="conv-list">${convs.map((x) => convRow(x, c?.id))}</div>` : html`<div class="empty">${icon('inbox', 'i lg')}<p>${onlyHuman ? 'Operator gözləyən söhbət yoxdur.' : 'Hələ söhbət yoxdur.'}</p></div>`}
-        </aside>
-        <section class="pane">${pane}</section></div>`;
-    };
-
-    r.get('/app/inbox', async (req, reply) => view(req, reply, 'Söhbətlər', (await inbox(req))!, undefined, true));
-    r.get('/app/inbox/:id', async (req, reply) => {
-      const id = idParam(req);
-      const body = id ? await inbox(req, id) : null;
-      if (!body) return reply.code(404).send('Not found');
-      return view(req, reply, 'Söhbət', body, undefined, true);
-    });
-
-    r.post('/app/inbox/:id/reply', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
-      const id = idParam(req);
-      const text = z.string().trim().min(1).max(4096).safeParse((req.body as any)?.text).data;
-      if (!id || !text) return reply.redirect(`/app/inbox?m=invalid`);
-      try {
-        const nonce = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/).safeParse((req.body as any)?.nonce).data ?? randomToken(16);
-        const res = await sendManualReply(req.user!.workspaceId, id, text, nonce);
-        if (res === 'not_found') return reply.code(404).send('Not found');
-        if (res === 'sent') await q('UPDATE conversations SET needs_human = false WHERE id = $1', [id]);
-        return reply.redirect(`/app/inbox/${id}?m=${res === 'sent' ? 'sent' : 'window_closed'}`);
-      } catch (e) {
-        req.log.warn({ err: e }, 'manual send failed');
-        return reply.redirect(`/app/inbox/${id}?m=send_failed`);
-      }
-    });
-
-    r.post('/app/inbox/:id/ai', async (req, reply) => {
-      const id = idParam(req);
-      if (!id) return reply.code(404).send('Not found');
-      const resume = (req.body as any)?.action === 'resume';
-      await q(
-        resume
-          ? 'UPDATE conversations SET needs_human = false, ai_paused_until = NULL WHERE id = $1 AND workspace_id = $2'
-          : `UPDATE conversations SET ai_paused_until = now() + interval '30 days' WHERE id = $1 AND workspace_id = $2`,
-        [id, req.user!.workspaceId],
-      );
-      return reply.redirect(`/app/inbox/${id}?m=saved`);
-    });
-
-    r.post('/app/inbox/:id/delete', async (req, reply) => {
-      const id = idParam(req);
-      if (id) await q('DELETE FROM conversations WHERE id = $1 AND workspace_id = $2', [id, req.user!.workspaceId]);
-      return reply.redirect('/app/inbox?m=saved');
     });
 
     // ---------- Assistant ----------

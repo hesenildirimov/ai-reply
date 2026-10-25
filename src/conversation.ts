@@ -2,6 +2,7 @@ import { SendError, sendText, textLimit, type SendOpts } from './channels/index.
 import type { ChannelRow } from './channels/types.js';
 import { one, q } from './db.js';
 import { notifyWaiting } from './notify.js';
+import { publish } from './realtime.js';
 
 /** Meta only allows free-form replies within 24h of the customer's last message. */
 export const WINDOW_MS = 24 * 3600 * 1000;
@@ -66,6 +67,7 @@ export async function deliver(c: Pick<ConvCtx, 'id' | 'workspace_id' | 'external
   }
   await q(`UPDATE messages SET status = 'sent', external_id = $2, created_at = now() WHERE id = $1`, [claimed.id, mid]);
   await q('UPDATE conversations SET last_message_at = now() WHERE id = $1', [c.id]);
+  await publish(c.workspace_id, { type: 'message', conversationId: c.id });
   return 'sent';
 }
 

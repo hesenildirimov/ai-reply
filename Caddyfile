@@ -1,7 +1,9 @@
 # TLS reverse proxy: automatic Let's Encrypt certificates, HTTP→HTTPS redirect, HTTP/2 and HTTP/3.
 # No access log on purpose: URLs can carry one-time tokens (password links, OAuth codes).
 {$DOMAIN} {
-	encode zstd gzip
+	# Never compress Server-Sent Events (it would buffer live inbox updates).
+	@compressible not path /app/events
+	encode @compressible zstd gzip
 	reverse_proxy web:3000
 	header -Server
 	request_body {

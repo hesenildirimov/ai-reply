@@ -144,7 +144,7 @@ export function automationRoutes(app: FastifyInstance) {
       const targets = await q(`SELECT id, name FROM automations WHERE workspace_id = $1 AND trigger = 'quick_reply' AND id <> $2 ORDER BY name`, [w, a.id]);
       const runs = await q(`SELECT r.*, coalesce(c.username, c.display_name, '') AS who FROM automation_runs r LEFT JOIN contacts c ON c.id = r.contact_id WHERE r.automation_id = $1 ORDER BY r.matched_at DESC LIMIT 15`, [a.id]);
       const versions = await q(`SELECT version, created_at FROM automation_versions WHERE automation_id = $1 ORDER BY version DESC LIMIT 10`, [a.id]);
-      const ch = chs.find((c) => c.id === a.channel_id) ?? chs.find((c) => capability(a.trigger, c).status === 'available') ?? null;
+      const ch = chs.find((c) => c.id === a.channel_id) ?? chs.find((c) => capability(a.trigger, c).status === 'available') ?? chs.find((c) => c.type === 'instagram') ?? chs[0] ?? null;
       const cap = a.trigger === 'follow' ? capability('follow', null) : capability(a.trigger, ch);
       const editable = can(req.user, 'automations.write');
       const runChip = (s: string) => chip(s === 'sent' ? 'ok' : s === 'failed' ? 'danger' : s === 'skipped' ? 'neutral' : 'info', { sent: 'göndərildi', failed: 'xəta', skipped: 'keçildi', matched: 'uyğun', running: 'icrada' }[s] ?? s);

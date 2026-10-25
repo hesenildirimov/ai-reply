@@ -133,12 +133,12 @@
       }
     }
     if (!trig.length) trig.push(h('p', { class: 'muted' }, D.trigger === 'story_mention' ? 'Sizi story-də qeyd edən hər kəs üçün işləyir.' : D.trigger === 'quick_reply' ? 'Başqa avtomatlaşdırmadakı düymə bu axına yönləndirəndə işləyir.' : ''));
-    nodes.push(h('div', { class: 'block trigger' }, h('div', { class: 'block-head' }, h('b', {}, '⚡ Trigger')), ...trig));
+    nodes.push(h('div', { class: 'fblock trigger' }, h('div', { class: 'block-head' }, h('b', {}, '⚡ Trigger')), ...trig));
 
     cfg.steps.forEach((s, i) => {
       nodes.push(h('div', { class: 'connector' }));
       const meta = STEP_TYPES[s.type];
-      const block = h('div', { class: `block step-${s.type}`, draggable: !ro, ondragstart: () => (dragFrom = i), ondragover: (e) => { e.preventDefault(); block.classList.add('drop'); }, ondragleave: () => block.classList.remove('drop'),
+      const block = h('div', { class: `fblock step-${s.type}`, draggable: !ro, ondragstart: () => (dragFrom = i), ondragover: (e) => { e.preventDefault(); block.classList.add('drop'); }, ondragleave: () => block.classList.remove('drop'),
         ondrop: (e) => { e.preventDefault(); if (dragFrom == null || dragFrom === i) return; const [m] = cfg.steps.splice(dragFrom, 1); cfg.steps.splice(i, 0, m); dragFrom = null; render(); } },
         h('div', { class: 'block-head' }, ro ? null : h('span', { class: 'grip', title: 'Sürüşdürün' }, '⋮⋮'), h('b', {}, `${i + 1}. ${meta.icon} ${meta.label}`),
           ro ? null : h('span', { class: 'block-actions' },

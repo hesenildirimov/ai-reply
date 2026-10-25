@@ -16,6 +16,7 @@ document.addEventListener('click', (e) => {
 const thread = document.getElementById('thread');
 if (thread) thread.scrollTop = thread.scrollHeight;
 document.querySelectorAll('.composer textarea').forEach((t) => {
+  if (t.closest('.inbox3')) return; // inbox.js handles its own composer
   t.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); t.form.requestSubmit(); }
   });

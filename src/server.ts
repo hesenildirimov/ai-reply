@@ -13,6 +13,7 @@ import { registerTelegramWebhook } from './telegram.js';
 import { adminRoutes } from './web/admin.js';
 import { appRoutes } from './web/app.js';
 import { automationRoutes } from './web/automations.js';
+import { inboxRoutes } from './web/inbox.js';
 import { registerAuth } from './web/auth.js';
 import { legalRoutes } from './web/legal.js';
 import { metaRoutes } from './web/meta.js';
@@ -51,6 +52,7 @@ export async function buildServer() {
         scriptSrc: ["'self'", 'https://connect.facebook.net'],
         styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'], // FB SDK injects inline styles
         imgSrc: ["'self'", 'data:', 'https:'],
+        mediaSrc: ["'self'", 'https:'], // Instagram CDN video/audio in the inbox
         connectSrc: ["'self'", 'https://graph.facebook.com', 'https://www.facebook.com', 'https://connect.facebook.net'],
         frameSrc: ['https://www.facebook.com', 'https://web.facebook.com', 'https://business.facebook.com'],
         formAction: ["'self'", 'https://t.me', 'https://wa.me', 'https://api.whatsapp.com'], // alert sign-up redirects after POST
@@ -92,6 +94,7 @@ export async function buildServer() {
   metaRoutes(app);
   appRoutes(app);
   automationRoutes(app);
+  inboxRoutes(app);
   adminRoutes(app);
 
   app.setErrorHandler((err: any, req, reply) => {
