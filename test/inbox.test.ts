@@ -84,7 +84,7 @@ describe.skipIf(!enabled)('P2 inbox (integration)', () => {
     await db.q(`INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, 'analyst')`, [A.workspaceId, u.id]);
     const a = await inbound('IGA', 'UA2', 'Salam');
     const s = await loginAs(app, 'analyst@test.az');
-    expect((await app.inject({ url: `/app/inbox/${a.conversation_id}`, headers: s.headers })).statusCode).toBe(200);
+    expect((await app.inject({ url: `/app/inbox/${a.conversation_id}`, headers: s.headers })).statusCode).toBe(403); // analysts: analytics only, no conversation content (audit F-03)
     for (const [path, payload] of [['reply', { text: 'hi' }], ['status', { status: 'closed' }], ['assign', { user_id: 'me' }]] as const) {
       const res = await app.inject({ method: 'POST', url: `/app/inbox/${a.conversation_id}/${path}`, headers: s.headers, payload: { _csrf: s.csrf, ...payload } });
       expect(res.statusCode).toBe(403);

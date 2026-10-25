@@ -11,7 +11,7 @@ import { decrypt, encrypt, randomToken, sha256 } from '../crypto.js';
 import { one, q, tx } from '../db.js';
 import { audit } from '../events.js';
 import { reserveReply } from '../pipeline.js';
-import { checkLimit, LIMIT_KEYS, LIMIT_LABELS, limitsOf, usageOf } from '../plans.js';
+import { aiBudgetExceeded, checkLimit, LIMIT_KEYS, LIMIT_LABELS, limitsOf, usageOf } from '../plans.js';
 import { queue, redis } from '../queue.js';
 import { telegramEnabled } from '../telegram.js';
 import { newTotpSecret, otpauthUrl, verifyTotp } from '../totp.js';
@@ -34,6 +34,7 @@ Object.assign(MESSAGES, {
   sent: { type: 'ok', text: 'Göndərildi. AI bu söhbətdə 12 saat dayandırıldı.' },
   send_failed: { type: 'error', text: 'Göndərmək alınmadı. Bir az sonra yenidən cəhd edin.' },
   limit: { type: 'error', text: 'Aylıq AI cavab limitiniz bitib.' },
+  ai_budget: { type: 'error', text: 'AI büdcəsi bitib.' },
   expired: { type: 'error', text: 'Abunəliyin müddəti bitib, AI cavablar dayandırılıb. Administratorla əlaqə saxlayın.' },
   bad_password: { type: 'error', text: 'Şifrə yanlışdır.' },
   learning: { type: 'ok', text: 'Yazışmalarınız oxunur. Üslub 1-2 dəqiqəyə hazır olacaq, sonra səhifəni yeniləyin.' },
@@ -100,7 +101,7 @@ export function appRoutes(app: FastifyInstance) {
                   (SELECT count(*)::int FROM conversations WHERE workspace_id = $1 AND needs_human) AS waiting`,
           [w],
         ),
-        q(`${CONV_LIST_SQL} AND c.status = 'open' ORDER BY c.needs_human DESC, c.last_message_at DESC LIMIT 5`, [w]),
+        can(req.user, 'inbox.view') ? q(`${CONV_LIST_SQL} AND c.status = 'open' ORDER BY c.needs_human DESC, c.last_message_at DESC LIMIT 5`, [w]) : Promise.resolve([]),
       ]);
       const used = usage?.ai_replies ?? 0;
       const pct = ws.monthly_reply_limit ? Math.min(100, Math.round((used / ws.monthly_reply_limit) * 100)) : 100;
@@ -161,7 +162,7 @@ export function appRoutes(app: FastifyInstance) {
     });
 
     // ---------- Assistant ----------
-    r.get('/app/assistant', async (req, reply) => {
+    r.get('/app/assistant', { preHandler: requirePerm('assistant.write') }, async (req, reply) => {
       const a = await one('SELECT * FROM assistants WHERE workspace_id = $1', [req.user!.workspaceId]);
       return view(req, reply, 'AI köməkçi', html`${pageHead('AI köməkçi', 'AI yalnız burada yazdığınız məlumatlara əsasən cavab verir. Bilmədiyi sualı sizə ötürür.')}
         <form method="post" action="/app/assistant" class="form-grid">${csrfField(req.csrfToken)}
@@ -192,7 +193,7 @@ export function appRoutes(app: FastifyInstance) {
         </form>`);
     });
 
-    r.post('/app/assistant', async (req, reply) => {
+    r.post('/app/assistant', { preHandler: requirePerm('assistant.write') }, async (req, reply) => {
       const p = z
         .object({
           business_name: z.string().trim().min(1).max(120),
@@ -210,11 +211,12 @@ export function appRoutes(app: FastifyInstance) {
         `UPDATE assistants SET business_name = $2, knowledge = $3, style_guide = $4, style_preset = $5, handoff_message = $6, enabled = $7, ai_disclosure = $8, updated_at = now() WHERE workspace_id = $1`,
         [req.user!.workspaceId, d.business_name, d.knowledge, d.style_guide, d.style_preset, d.handoff_message, !!d.enabled, !!d.ai_disclosure],
       );
+      await audit(req.user!.workspaceId, req.user!.id, 'assistant.update', 'workspace', req.user!.workspaceId, { enabled: !!d.enabled });
       return reply.redirect('/app/assistant?m=saved');
     });
 
     // One learning run per workspace at a time; each run is a single small AI call.
-    r.post('/app/assistant/learn', { config: { rateLimit: { max: 3, timeWindow: '1 hour' } } }, async (req, reply) => {
+    r.post('/app/assistant/learn', { preHandler: requirePerm('assistant.write'), config: { rateLimit: { max: 3, timeWindow: '1 hour' } } }, async (req, reply) => {
       await queue.add('learn_style', { kind: 'learn_style', workspaceId: req.user!.workspaceId }, { jobId: `learn-${req.user!.workspaceId}-${Math.floor(Date.now() / 600_000)}` });
       return reply.redirect('/app/assistant?m=learning');
     });
@@ -226,10 +228,11 @@ export function appRoutes(app: FastifyInstance) {
         <form class="composer" method="post" action="/app/test">${csrfField(req.csrfToken)}
           <textarea name="message" rows="2" maxlength="1000" required placeholder="Müştərinin mesajını yazın…"></textarea><button class="btn" aria-label="Göndər">${icon('send')}</button></form>
       </section>`;
-    r.get('/app/test', (req, reply) => view(req, reply, 'Test', testPage(req)));
-    r.post('/app/test', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
+    r.get('/app/test', { preHandler: requirePerm('assistant.write') }, (req, reply) => view(req, reply, 'Test', testPage(req)));
+    r.post('/app/test', { preHandler: requirePerm('assistant.write'), config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
       const msg = z.string().trim().min(1).max(1000).safeParse((req.body as any)?.message).data;
       if (!msg) return reply.redirect('/app/test?m=invalid');
+      if (await aiBudgetExceeded(req.user!.workspaceId)) return reply.redirect('/app/test?m=ai_budget');
       const quota = await reserveReply(req.user!.workspaceId);
       if (quota !== 'ok') return reply.redirect(`/app/test?m=${quota}`);
       const a = await one('SELECT * FROM assistants WHERE workspace_id = $1', [req.user!.workspaceId]);
@@ -374,7 +377,7 @@ export function appRoutes(app: FastifyInstance) {
                   : html`<span class="chip neutral">qurulmayıb</span>`}</div>
             </div>
             <p class="hint" id="push-status"></p>
-            ${targets.length ? confirmForm('/app/notifications/telegram/remove', req.csrfToken, html`Bütün bildiriş kanallarını ayır`, 'btn sm danger-ghost', 'Bütün bildiriş kanalları ayrılsın?') : ''}
+            ${targets.length ? confirmForm('/app/notifications/telegram/remove', req.csrfToken, html`Bildiriş kanallarımı ayır`, 'btn sm danger-ghost', 'Bütün bildiriş kanalları ayrılsın?') : ''}
             <p class="hint">${icon('inbox', 'i xs')} ${config.mailEnabled ? 'E-poçt bildirişləri də aktivdir.' : 'E-poçt bildirişi üçün SMTP qurulmalıdır.'}</p></section>
           <section class="card span"><div class="card-head"><h2>${icon('shield')}İki faktorlu giriş</h2>
               ${req.user!.mfa ? chip('ok', 'Aktiv') : chip('neutral', 'Söndürülüb')}</div>
@@ -388,7 +391,7 @@ export function appRoutes(app: FastifyInstance) {
               <label>Yeni şifrə (min. 10 simvol)<input name="password" type="password" required minlength="10" maxlength="200" autocomplete="new-password"></label>
               <button class="btn">Dəyiş</button></form></section>
           <section class="card"><div class="card-head"><h2>${icon('download')}Məlumatlarım</h2></div>
-            <p class="muted">Bütün ayarlarınızı və yazışmalarınızı JSON faylı kimi yükləyin.</p><a class="btn secondary" href="/app/settings/export">${icon('download')}Yüklə</a>
+            <p class="muted">Bütün ayarlarınızı və yazışmalarınızı JSON faylı kimi yükləyin.</p>${can(req.user, 'data.export') ? html`<a class="btn secondary" href="/app/settings/export">${icon('download')}Yüklə</a>` : html`<span class="muted">Yalnız hesab sahibi.</span>`}
             ${req.user!.role === 'owner' ? html`<div class="danger-zone"><h3>Hesabı sil</h3><p class="muted">Bütün kanallar, söhbətlər və hesab həmişəlik silinəcək.</p>
               <form method="post" action="/app/settings/delete" data-confirm="Hesab və bütün məlumatlar həmişəlik silinsin?">${csrfField(req.csrfToken)}
                 <label>Təsdiq üçün şifrə<input name="password" type="password" required autocomplete="current-password"></label><button class="btn danger">${icon('trash')}Hesabı sil</button></form></div>` : ''}
@@ -467,7 +470,8 @@ export function appRoutes(app: FastifyInstance) {
       return reply.redirect(`https://t.me/${config.TELEGRAM_BOT_USERNAME}?start=${code}`);
     });
     r.post('/app/notifications/telegram/remove', async (req, reply) => {
-      await q(`DELETE FROM notify_targets WHERE workspace_id = $1`, [req.user!.workspaceId]);
+      // Only the caller's own alert channels: one member must not be able to silence everybody else's alerts.
+      await q(`DELETE FROM notify_targets WHERE workspace_id = $1 AND user_id = $2`, [req.user!.workspaceId, req.user!.id]);
       return reply.redirect('/app/settings?m=tg_removed');
     });
 
@@ -481,8 +485,9 @@ export function appRoutes(app: FastifyInstance) {
       return reply.redirect('/login?m=password_set');
     });
 
-    r.get('/app/settings/export', async (req, reply) => {
+    r.get('/app/settings/export', { preHandler: requirePerm('data.export'), config: { rateLimit: { max: 3, timeWindow: '1 hour' } } }, async (req, reply) => {
       const w = req.user!.workspaceId;
+      await audit(w, req.user!.id, 'workspace.export', 'workspace', w);
       const data = {
         exported_at: new Date().toISOString(),
         user: { email: req.user!.email },

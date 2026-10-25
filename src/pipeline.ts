@@ -1,9 +1,11 @@
 export { deliver, WINDOW_MS } from './conversation.js';
 import { emit } from './webhooks.js';
+import { SendError } from './channels/index.js';
+import { checkReply } from './guard.js';
 import { aiRetryable, generateReply } from './ai.js';
 import { aiConfig } from './aiconfig.js';
 import { buildContext } from './context.js';
-import { automationBlocked, checkLimit, limitAlert, LIMIT_LABELS } from './plans.js';
+import { aiBudgetExceeded, automationBlocked, limitAlert, LIMIT_LABELS } from './plans.js';
 import { deliver, failedBody, handoff, inWindow, loadConv, WINDOW_MS } from './conversation.js';
 import { instagramUsername } from './channels/instagram.js';
 import type { ChannelRow, InboundEvent } from './channels/types.js';
@@ -108,6 +110,12 @@ export async function processReply(conversationId: string, messageId: string, fi
   return r === 'busy' || r === 'throttled' ? r : 'done';
 }
 
+/** Everything the business itself has stated (general info + active knowledge items): the reference for checkReply. */
+async function businessFacts(workspaceId: string, general: string): Promise<string> {
+  const items = await q<{ t: string }>(`SELECT title || ' ' || body AS t FROM knowledge_items WHERE workspace_id = $1 AND active`, [workspaceId]);
+  return `${general}\n${items.map((i) => i.t).join('\n')}`;
+}
+
 async function replyLocked(conversationId: string, messageId: string, finalAttempt: boolean): Promise<void | 'throttled'> {
   const c = await loadConv(conversationId);
   // Only the newest message's job acts (debounce); closed window or broken channel = nothing to do.
@@ -154,14 +162,12 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
   if (hourly!.n >= CONV_HOURLY_CAP) return handoff(c, '', 'çox sayda mesaj (spam ola bilər)', messageId);
 
   // Cost guardrails: workspace AI budget (plan) and a per-minute burst limit.
-  for (const k of ['ai_budget_usd_day', 'ai_budget_usd_month'] as const) {
-    const lim = await checkLimit(c.workspace_id, k, 0);
-    if (!lim.ok) {
-      if ((await redis.set(`budget-alert:${c.workspace_id}:${k}:${new Date().toISOString().slice(0, 10)}`, '1', 'EX', 86400, 'NX')) === 'OK') {
-        await audit(c.workspace_id, null, 'ai.budget_exceeded', 'workspace', c.workspace_id, { limit: k, used: lim.used, max: lim.limit });
-      }
-      return handoff(c, a.handoff_message, 'AI büdcəsi bitib', messageId);
+  const spent = await aiBudgetExceeded(c.workspace_id);
+  if (spent) {
+    if ((await redis.set(`budget-alert:${c.workspace_id}:${spent.key}:${new Date().toISOString().slice(0, 10)}`, '1', 'EX', 86400, 'NX')) === 'OK') {
+      await audit(c.workspace_id, null, 'ai.budget_exceeded', 'workspace', c.workspace_id, { limit: spent.key, used: spent.used, max: spent.limit });
     }
+    return handoff(c, a.handoff_message, 'AI büdcəsi bitib', messageId);
   }
   const minute = Math.floor(Date.now() / 60_000);
   const calls = await redis.incr(`airpm:${c.workspace_id}:${minute}`);
@@ -197,8 +203,23 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
   const fresh = await loadConv(conversationId);
   if (!fresh || fresh.latest_in !== messageId || fresh.needs_human || fresh.ai_paused || !inWindow(fresh)) return;
 
-  if (result.kind === 'handoff') return handoff(fresh, result.holdingReply || a.handoff_message, result.reason, messageId);
-  await deliver(fresh, result.text, 'ai', key);
+  const facts = await businessFacts(c.workspace_id, a.knowledge);
+  if (result.kind === 'handoff') {
+    const hold = result.holdingReply && checkReply(result.holdingReply, facts).ok ? result.holdingReply : a.handoff_message;
+    return handoff(fresh, hold, result.reason, messageId);
+  }
+  const verdict = checkReply(result.text, facts);
+  if (!verdict.ok) {
+    await audit(c.workspace_id, null, 'ai.reply_blocked', 'conversation', c.id, { reason: verdict.reason, detail: verdict.detail.slice(0, 80) });
+    return handoff(fresh, a.handoff_message, verdict.reason === 'unverified_price' ? 'AI bazada olmayan qiymət yazdı (göndərilmədi)' : 'AI tanınmayan link yazdı (göndərilmədi)', messageId);
+  }
+  try {
+    await deliver(fresh, result.text, 'ai', key);
+  } catch (e) {
+    // Monthly automated-message allowance used up by concurrent replies: staff takes over, nothing was sent.
+    if (e instanceof SendError && e.reason === 'plan_limit') return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj (aylıq avtomatik mesaj limiti)');
+    throw e;
+  }
 }
 
 /** Instagram echo of a message we did not send through the API = staff replied in the Instagram app. */

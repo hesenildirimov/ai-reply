@@ -1,7 +1,7 @@
 import { lookup } from 'node:dns';
 import http from 'node:http';
 import https from 'node:https';
-import { isIP, type LookupFunction } from 'node:net';
+import { BlockList, isIP, type LookupFunction } from 'node:net';
 import { config } from './config.js';
 import { decrypt, hmacSha256 } from './crypto.js';
 import { one, q } from './db.js';
@@ -38,15 +38,31 @@ export async function emit(workspaceId: string, event: WebhookEvent, data: Recor
   }
 }
 
-/** Private, loopback, link-local, CGNAT, multicast and reserved ranges (SSRF protection). */
+const V4_BLOCK = new BlockList();
+for (const [net, bits] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24],
+  ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24], ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4]] as const) V4_BLOCK.addSubnet(net, bits, 'ipv4');
+const V6_BLOCK = new BlockList();
+for (const [net, bits] of [['::', 128], ['::1', 128], ['::', 96], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8], ['2001:db8::', 32], ['2002::', 16], ['64:ff9b::', 96], ['64:ff9b:1::', 48], ['100::', 64], ['2001::', 32]] as const)
+  V6_BLOCK.addSubnet(net, bits, 'ipv6');
+
+/** IPv4 hidden inside an IPv6 address (::ffff:a.b.c.d / ::ffff:7f00:1 and their long forms), or null. */
+function embeddedV4(ip6: string): string | null {
+  const host = URL.parse(`http://[${ip6}]/`)?.hostname.slice(1, -1).toLowerCase(); // canonical compressed form
+  const m = host && /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+  if (!m) return host?.startsWith('::ffff:') && isIP(host.slice(7)) === 4 ? host.slice(7) : null;
+  const hi = parseInt(m[1]!, 16), lo = parseInt(m[2]!, 16);
+  return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+}
+
+/** Private, loopback, link-local, CGNAT, multicast and reserved ranges, including IPv4 embedded in IPv6 (SSRF protection). */
 export function isPrivateAddress(ip: string): boolean {
-  if (isIP(ip) === 6) {
-    const v = ip.toLowerCase();
-    if (v.startsWith('::ffff:')) return isPrivateAddress(v.slice(7));
-    return v === '::' || v === '::1' || /^(fc|fd|fe[89ab]|ff)/.test(v) || v.startsWith('64:ff9b:') || v.startsWith('2001:db8');
+  const v = isIP(ip);
+  if (v === 4) return V4_BLOCK.check(ip, 'ipv4');
+  if (v === 6) {
+    const v4 = embeddedV4(ip);
+    return v4 ? V4_BLOCK.check(v4, 'ipv4') : V6_BLOCK.check(ip, 'ipv6');
   }
-  const [a, b] = ip.split('.').map(Number) as [number, number];
-  return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 198 && (b === 18 || b === 19));
+  return true; // not an IP address: refuse
 }
 
 const allowPrivate = () => !config.isProd && process.env.WEBHOOK_ALLOW_PRIVATE === '1'; // local testing only

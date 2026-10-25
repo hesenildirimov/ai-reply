@@ -31,6 +31,7 @@ describe.skipIf(!enabled)('security (integration)', () => {
     db = await import('../src/db.js');
     const { encrypt } = await import('../src/crypto.js');
     await db.pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
+    await (await import('../src/queue.js')).redis.flushdb(); // no rate-limit counters left over from other test files
     for (const f of readdirSync('migrations').filter((x) => x.endsWith('.sql')).sort()) await db.pool.query(readFileSync(`migrations/${f}`, 'utf8'));
     const pw = await hash('correct-horse-battery');
     for (const name of ['a', 'b']) {

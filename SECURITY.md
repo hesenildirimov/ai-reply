@@ -91,3 +91,23 @@ Qiymətləndirmə: ✅ yoxlanıldı/qaydasındadır · 🔧 auditdə düzəldild
 - 🔧 **AI xərci**: gündəlik/aylıq büdcə (təxmini, `ai_usage` jurnalından), workspace üzrə dəqiqəlik limit (`AI_WORKSPACE_RPM`), çağırış başına `max_tokens`, 30 san. timeout.
 - ✅ Testlər: `test/reliability|automations|inbox|analytics|saas.test.ts`. Rollar, tenant izolyasiyası, SSRF, imza, CSV, limitlər, birləşdirmə, idempotent göndərmə, təkrarlanan webhook, paralel worker-lər yoxlanılır.
 - ⚠️ Model davranışı (qiymət uydurmamaq, prompt injection) unit testlə yoxlanıla bilməz: `scripts/eval-prices.ts` real API açarı ilə əl ilə işlədilməlidir.
+
+## 15. Production audit (2026-10) — status
+Tools: Semgrep (GitHub rules), Gitleaks (history clean), OSV-Scanner + npm audit (0 vulns), OWASP ZAP (local, unauthenticated).
+Regression tests: `test/security.test.ts`, `test/tenant-isolation.test.ts` (every route as tenant A with tenant B's ids).
+
+| Id | Risk | Finding | Status |
+|---|---|---|---|
+| F-01 | High | Agent/analyst could change knowledge/prices and switch the AI off | ✅ `assistant.write` + audit |
+| F-02 | High | Any role could export all conversations | ✅ owner only (`data.export`), audited, 3/hour |
+| F-03 | Medium | Analysts could read conversations | ✅ `inbox.view` (owner/admin/agent) |
+| F-04 | Medium | Any member deleted everyone's alert channels | ✅ only own targets |
+| F-05/06 | Low | "Test" open to all roles, no AI budget | ✅ `assistant.write` + budget |
+| F-07 | Medium | SSRF via IPv4-mapped IPv6 (`[::ffff:127.0.0.1]`) | ✅ `BlockList` incl. embedded IPv4, 6to4, NAT64 |
+| F-08 | Low | Invite race exceeded member limit | ✅ advisory lock |
+| F-09 | Medium | Concurrent replies overshot monthly message limit | ✅ atomic reservation at send time |
+| F-10 | Medium | Summary of customer text placed in system prompt | ✅ moved to user turn as marked data |
+| F-11 | Medium | AI text sent unchecked (unknown prices / links) | ✅ `src/guard.ts` → handoff + audit |
+| F-12…F-21 | Low–Medium | DB superuser, webhook rate limit, GCM tag length, lockout DoS, CSP wildcards, media URL/SVG, admin audit, session lifetime, image pinning, backup encryption | ⏳ open (plan steps 5–6) |
+
+Not verified: real model behaviour (`scripts/eval-prices.ts` needs a key), real Meta webhooks/data-deletion ids, IPv6 exploitation, production TLS.

@@ -1,4 +1,5 @@
 import { emit } from './webhooks.js';
+import { limitAlert, reserveAutomated } from './plans.js';
 import { SendError, sendText, textLimit, type SendOpts } from './channels/index.js';
 import type { ChannelRow } from './channels/types.js';
 import { one, q } from './db.js';
@@ -47,6 +48,10 @@ export const inWindow = (c: Pick<ConvCtx, 'last_inbound_at'>) => !!c.last_inboun
  */
 export async function deliver(c: Pick<ConvCtx, 'id' | 'workspace_id' | 'external_user_id' | 'channel'>, text: string, sender: 'ai' | 'human' | 'bot', key: string, opts: SendOpts = {}, kind: 'text' | 'private_reply' = 'text'): Promise<'sent' | 'duplicate'> {
   const body = text.slice(0, textLimit(c.channel));
+  if (sender !== 'human' && !(await reserveAutomated(c.workspace_id, key))) {
+    await limitAlert(c.workspace_id, 'bot_messages_month');
+    throw new SendError('plan_limit', true, false); // definite, not retryable: nothing was sent
+  }
   const claimed =
     (await one<{ id: string; body: string }>(
       `INSERT INTO messages (workspace_id, conversation_id, direction, sender, body, status, idempotency_key, kind)

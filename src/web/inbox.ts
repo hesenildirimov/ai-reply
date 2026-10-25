@@ -255,6 +255,8 @@ const fail = (req: FastifyRequest, reply: FastifyReply, id: string, m: string, c
 export function inboxRoutes(app: FastifyInstance) {
   app.register(async (r) => {
     r.addHook('preHandler', requireUser);
+    // Reading conversations is personal data: analysts (analytics only) are excluded server-side.
+    r.addHook('preHandler', requirePerm('inbox.view'));
     const perm = (p: Permission) => ({ preHandler: requirePerm(p) });
     const owned = async (req: FastifyRequest) => {
       const id = idParam(req);

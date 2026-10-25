@@ -4,7 +4,7 @@ import { config } from '../config.js';
 import { one, q, tx } from '../db.js';
 import { audit } from '../events.js';
 import { sendMail } from '../mailer.js';
-import { checkLimit } from '../plans.js';
+import { checkLimit, limitsOf } from '../plans.js';
 import { requirePerm, requireUser, type Role } from './auth.js';
 import { csrfField, html, pageHead, raw } from './html.js';
 import { icon } from './icons.js';
@@ -93,11 +93,19 @@ export function teamRoutes(app: FastifyInstance) {
       if (!mayManage(req.user!.role, p.data.role, p.data.role)) return reply.redirect('/app/team?m=member_forbidden');
       if (!(await checkLimit(w0, 'members')).ok) return reply.redirect('/app/team?m=member_limit');
       if (await one('SELECT 1 FROM users WHERE email = $1', [p.data.email])) return reply.redirect('/app/team?m=member_exists');
+      const max = (await limitsOf(w0)).members;
       const userId = await tx(async (c) => {
-        const u = (await c.query(`INSERT INTO users (email, password_hash) VALUES ($1, '!') RETURNING id`, [p.data.email])).rows[0];
+        // Serialise invites per workspace so concurrent requests can't overshoot the member limit.
+        await c.query(`SELECT pg_advisory_xact_lock(hashtext('members:' || $1))`, [w0]);
+        const n = (await c.query(`SELECT count(*)::int AS n FROM memberships WHERE workspace_id = $1`, [w0])).rows[0].n;
+        if (max !== null && n >= max) return null;
+        const u = (await c.query(`INSERT INTO users (email, password_hash) VALUES ($1, '!') ON CONFLICT (email) DO NOTHING RETURNING id`, [p.data.email])).rows[0];
+        if (!u) return undefined;
         await c.query(`INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, $3)`, [w0, u.id, p.data.role]);
         return u.id as string;
       });
+      if (userId === null) return reply.redirect('/app/team?m=member_limit');
+      if (!userId) return reply.redirect('/app/team?m=member_exists');
       const link = await passwordLink(userId, '72 hours');
       await audit(w0, req.user!.id, 'member.invite', 'user', userId, { role: p.data.role });
       if (config.mailEnabled) await sendMail(p.data.email, 'AI Reply komandasına dəvət', `Salam! Sizi AI Reply komandasına (${ROLE_LABELS[p.data.role]}) dəvət etdilər.\nŞifrənizi təyin edin (72 saat etibarlıdır):\n${link}`).catch(() => {});

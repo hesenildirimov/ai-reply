@@ -48,14 +48,37 @@ export async function checkLimit(workspaceId: string, key: LimitKey, adding = 1)
   return { ok: limit === null || used + adding <= limit, used: Math.round(used * 100) / 100, limit };
 }
 
+const botCounter = async (workspaceId: string) => {
+  const key = `botmsg:${workspaceId}:${new Date().toISOString().slice(0, 7)}`;
+  // Seeded once per month from the database, then kept atomically in Redis.
+  if (!(await redis.exists(key))) await redis.set(key, String(await usageOf(workspaceId, 'bot_messages_month')), 'EX', 40 * 86400, 'NX');
+  return key;
+};
+
 /**
  * Plan limits that stop automated (bot/AI) messages: active contacts over the plan, or the monthly automated-message
- * allowance used up. Incoming messages are always stored and staff can still reply by hand.
+ * allowance used up. Incoming messages are always stored and staff can still reply by hand. (Read-only check.)
  */
 export async function automationBlocked(workspaceId: string): Promise<LimitKey | null> {
   if (!(await checkLimit(workspaceId, 'contacts', 0)).ok) return 'contacts';
-  if (!(await checkLimit(workspaceId, 'bot_messages_month', 1)).ok) return 'bot_messages_month';
+  const limit = (await limitsOf(workspaceId)).bot_messages_month;
+  if (limit !== null && Number(await redis.get(await botCounter(workspaceId))) >= limit) return 'bot_messages_month';
   return null;
+}
+
+/**
+ * Atomically reserves one automated message right before it is sent (once per idempotency key, so retries of the
+ * same message don't count twice). Concurrent sends therefore cannot overshoot the monthly limit.
+ */
+export async function reserveAutomated(workspaceId: string, key: string): Promise<boolean> {
+  const limit = (await limitsOf(workspaceId)).bot_messages_month;
+  const counter = await botCounter(workspaceId);
+  if ((await redis.set(`botres:${workspaceId}:${key}`, '1', 'EX', 7 * 86400, 'NX')) !== 'OK') return true;
+  // Always counted (also without a limit) so the counter stays equal to real usage if a limit is set later.
+  if ((await redis.incr(counter)) <= (limit ?? Infinity)) return true;
+  await redis.decr(counter);
+  await redis.del(`botres:${workspaceId}:${key}`);
+  return false;
 }
 
 /** One audit entry per workspace, limit and day (shown in the audit log and the admin panel). */
@@ -63,4 +86,16 @@ export async function limitAlert(workspaceId: string, key: string, meta: Record<
   if ((await redis.set(`limit-alert:${workspaceId}:${key}:${new Date().toISOString().slice(0, 10)}`, '1', 'EX', 86400, 'NX')) === 'OK') {
     await audit(workspaceId, null, 'plan.limit_reached', 'workspace', workspaceId, { limit: key, ...meta });
   }
+}
+
+/** AI budget (day or month) spent: no new AI calls. Unlike checkLimit, a budget of 0 means "no AI at all". */
+export async function aiBudgetExceeded(workspaceId: string): Promise<{ key: LimitKey; used: number; limit: number } | null> {
+  const limits = await limitsOf(workspaceId);
+  for (const key of ['ai_budget_usd_day', 'ai_budget_usd_month'] as const) {
+    const limit = limits[key];
+    if (limit === null) continue;
+    const used = await usageOf(workspaceId, key);
+    if (used >= limit) return { key, used: Math.round(used * 100) / 100, limit };
+  }
+  return null;
 }

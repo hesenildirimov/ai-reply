@@ -96,15 +96,15 @@ export type Role = 'owner' | 'admin' | 'agent' | 'analyst';
 export type Permission =
   | 'inbox.reply' | 'inbox.manage' | 'contacts.write' | 'automations.write' | 'assistant.write'
   | 'channels.manage' | 'team.manage' | 'billing.view' | 'analytics.view' | 'workspace.delete'
-  | 'contacts.export' | 'integrations.manage' | 'audit.view';
+  | 'contacts.export' | 'integrations.manage' | 'audit.view' | 'inbox.view' | 'data.export';
 
 /** Backend permission matrix. Every write route checks this (UI hiding is only cosmetic). */
 const PERMS: Record<Role, Permission[]> = {
-  owner: ['inbox.reply', 'inbox.manage', 'contacts.write', 'automations.write', 'assistant.write', 'channels.manage', 'team.manage', 'billing.view', 'analytics.view', 'workspace.delete',
+  owner: ['inbox.view', 'data.export', 'inbox.reply', 'inbox.manage', 'contacts.write', 'automations.write', 'assistant.write', 'channels.manage', 'team.manage', 'billing.view', 'analytics.view', 'workspace.delete',
     'contacts.export', 'integrations.manage', 'audit.view'],
-  admin: ['inbox.reply', 'inbox.manage', 'contacts.write', 'automations.write', 'assistant.write', 'channels.manage', 'team.manage', 'billing.view', 'analytics.view',
+  admin: ['inbox.view', 'inbox.reply', 'inbox.manage', 'contacts.write', 'automations.write', 'assistant.write', 'channels.manage', 'team.manage', 'billing.view', 'analytics.view',
     'contacts.export', 'integrations.manage', 'audit.view'],
-  agent: ['inbox.reply', 'inbox.manage', 'contacts.write', 'analytics.view'],
+  agent: ['inbox.view', 'inbox.reply', 'inbox.manage', 'contacts.write', 'analytics.view'],
   analyst: ['analytics.view'],
 };
 export const can = (user: SessionUser | null, p: Permission) => !!user && (PERMS[user.role] ?? []).includes(p);
