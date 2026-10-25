@@ -25,8 +25,10 @@ export function decryptWithInfo(payload: string): { plain: string; stale: boolea
   if (v !== 'v1' || !iv || !tag || !ct) throw new Error('Unsupported ciphertext');
   for (const [i, key] of getKeys().entries()) {
     try {
-      const d = createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64url'));
-      d.setAuthTag(Buffer.from(tag, 'base64url'));
+      const t = Buffer.from(tag, 'base64url');
+      if (t.length !== 16) throw new Error('bad tag length'); // never accept truncated GCM tags
+      const d = createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64url'), { authTagLength: 16 });
+      d.setAuthTag(t);
       return { plain: Buffer.concat([d.update(Buffer.from(ct, 'base64url')), d.final()]).toString('utf8'), stale: i > 0 };
     } catch {
       // try next key

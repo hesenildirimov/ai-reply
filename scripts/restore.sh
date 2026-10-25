@@ -5,6 +5,6 @@
 set -eu
 [ -f "${1:-}" ] || { echo "usage: $0 <dump file>"; exit 1; }
 docker compose stop web worker
-docker compose exec -T db pg_restore -U app -d aireply --clean --if-exists --no-owner < "$1"
+docker compose exec -T db pg_restore -U aireply_owner -d aireply --clean --if-exists --no-owner < "$1"
 docker compose start web worker
 echo "restored $1"

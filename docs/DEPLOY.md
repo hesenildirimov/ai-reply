@@ -17,7 +17,7 @@ DNS-də domenin (məsələn `app.sizinbiznes.az`) **A record**-unu serverin IP-s
 | `NODE_ENV` | `production` |
 | `APP_URL` / `DOMAIN` | `https://app.sizinbiznes.az` / `app.sizinbiznes.az` |
 | `ENCRYPTION_KEY` | `openssl rand -base64 32` |
-| `POSTGRES_PASSWORD`, `REDIS_PASSWORD` | `openssl rand -hex 24` (hər biri ayrıca) |
+| `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `APP_DB_PASSWORD` | `openssl rand -hex 24` (hər biri ayrıca). Tətbiq bazaya məhdud `app_rw` rolu ilə qoşulur, superuser yalnız miqrasiya və backup üçündür |
 | `ANTHROPIC_API_KEY` | console.anthropic.com |
 | Meta, Telegram, WhatsApp bildiriş və VAPID dəyərləri | README-dəki bölmələrə baxın |
 
@@ -55,15 +55,15 @@ Miqrasiyalar (`migrations/NNN_*.sql`) hər buraxılışda avtomatik və ardıcı
 
 Yeniləmədən **əvvəl** həmişə backup götürün:
 ```bash
-docker compose exec backup sh -c 'pg_dump -h db -U app -d aireply -Fc -f /backups/pre-update-$(date -u +%Y%m%d-%H%M).dump'
+docker compose exec backup sh -c 'pg_dump -h db -U aireply_owner -d aireply -Fc -f /backups/pre-update-$(date -u +%Y%m%d-%H%M).dump'
 git log --oneline -1                     # hazırkı versiyanı qeyd edin
 ```
 
 Problem olarsa (məs. 010-dan sonra):
 ```bash
 git checkout <əvvəlki-commit>
-docker compose exec -T db psql -U app aireply < migrations/down/010_saas.down.sql
-docker compose exec -T db psql -U app aireply -c "DELETE FROM schema_migrations WHERE name = '010_saas.sql'"
+docker compose exec -T db psql -U aireply_owner aireply < migrations/down/010_saas.down.sql
+docker compose exec -T db psql -U aireply_owner aireply -c "DELETE FROM schema_migrations WHERE name = '010_saas.sql'"
 docker compose up -d --build
 ```
 Down faylları yalnız həmin miqrasiyanın əlavə etdiyi cədvəl və sütunları silir: o vaxtdan bəri yazılmış məlumatlar (məs. webhook-lar, kontakt birləşdirmələri) itir. Məlumat itkisi qəbuledilməzdirsə, down əvəzinə yenilənmədən əvvəlki backup-dan bərpa edin (`scripts/restore.sh`).

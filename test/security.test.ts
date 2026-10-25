@@ -354,3 +354,13 @@ describe('AI output guard (unit)', () => {
     expect(JSON.stringify(sys)).not.toContain('S-INJ');
   });
 });
+
+describe('crypto hardening (unit)', () => {
+  it('F-15 rejects AES-GCM ciphertexts with a truncated auth tag', async () => {
+    const { encrypt, decrypt } = await import('../src/crypto.js');
+    const [v, iv, tag, ct] = encrypt('ig-token').split(':');
+    const short = [v, iv, Buffer.from(tag!, 'base64url').subarray(0, 4).toString('base64url'), ct].join(':');
+    expect(() => decrypt(short)).toThrow();
+    expect(decrypt([v, iv, tag, ct].join(':'))).toBe('ig-token');
+  });
+});

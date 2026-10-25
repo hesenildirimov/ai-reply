@@ -11,7 +11,8 @@ import { redis } from '../queue.js';
 import { sha256 } from '../crypto.js';
 import { telegramEnabled, tgSend } from '../telegram.js';
 
-const META = { csrf: false, rateLimit: false } as const;
+// Meta delivers in bursts from many IPs: a generous per-IP cap still stops floods of unsigned junk (audit F-14).
+const META = { csrf: false, rateLimit: { max: 1200, timeWindow: '1 minute' } } as const;
 
 function verifyChallenge(req: FastifyRequest, reply: FastifyReply) {
   const qs = req.query as Record<string, string | undefined>;
