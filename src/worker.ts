@@ -1,5 +1,6 @@
 import { DelayedError, UnrecoverableError, Worker, type Job } from 'bullmq';
 import { Redis } from 'ioredis';
+import { processComment, resumeRun } from './automations/engine.js';
 import { SendError } from './channels/index.js';
 import { GraphError } from './channels/graph.js';
 import { refreshInstagramToken } from './channels/instagram.js';
@@ -84,6 +85,8 @@ async function run(job: Job<Data>, token?: string) {
     }
     if (d.kind === 'ig_echo') return await processEcho(d.channelId, d.userId, d.mid, d.text);
     if (d.kind === 'learn_style') return void (await learnStyle(d.workspaceId));
+    if (d.kind === 'comment') return await processComment(d.event);
+    if (d.kind === 'automation_step') return await resumeRun(d.runId, d.step);
     if (d.kind === 'maintenance') return await maintenance();
   } catch (e) {
     if (e instanceof DelayedError) throw e;

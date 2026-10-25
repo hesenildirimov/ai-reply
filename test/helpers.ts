@@ -85,3 +85,24 @@ export const igMessage = (igId: string, from: string, mid: string, text: string)
 
 /** Runs migrations dir listing for the test that checks it. */
 export const migrationFiles = () => readdirSync('migrations').filter((x) => x.endsWith('.sql')).sort();
+
+/** Inserts an automation (+ version row) directly. */
+export async function createAutomation(workspaceId: string, trigger: string, config: unknown, status = 'active', name = trigger) {
+  const { one, q } = await import('../src/db.js');
+  const { configSchema } = await import('../src/automations/schema.js');
+  const cfg = configSchema.parse(config);
+  const a = await one(`INSERT INTO automations (workspace_id, name, trigger, status, config) VALUES ($1, $2, $3, $4, $5) RETURNING id`, [workspaceId, name, trigger, status, cfg]);
+  await q(`INSERT INTO automation_versions (automation_id, version, config) VALUES ($1, 1, $2)`, [a.id, cfg]);
+  return a.id as string;
+}
+
+/** Logs in through the real form (CSRF cookie + token); returns session cookie + CSRF token. */
+export async function loginAs(app: import('fastify').FastifyInstance, email: string) {
+  const page = await app.inject({ url: '/login' });
+  const pre = page.cookies.find((c) => c.name === 'pcsrf')!;
+  const token = /name="_csrf" value="([^"]+)"/.exec(page.body)![1]!;
+  const res = await app.inject({ method: 'POST', url: '/login', headers: { origin: 'http://localhost:3000', cookie: `pcsrf=${pre.value}` }, payload: { _csrf: token, email, password: 'correct-horse-battery' } });
+  const cookie = `sid=${res.cookies.find((c) => c.name === 'sid')!.value}`;
+  const csrf = /name="_csrf" value="([^"]+)"/.exec((await app.inject({ url: '/app/settings', headers: { cookie } })).body)![1]!;
+  return { cookie, csrf, headers: { cookie, origin: 'http://localhost:3000' } };
+}

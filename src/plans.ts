@@ -1,0 +1,47 @@
+import { one } from './db.js';
+
+export const LIMIT_KEYS = ['contacts', 'channels', 'active_automations', 'members', 'bot_messages_month', 'ai_budget_usd_month', 'ai_budget_usd_day', 'history_days'] as const;
+export type LimitKey = (typeof LIMIT_KEYS)[number];
+export const LIMIT_LABELS: Record<LimitKey, string> = {
+  contacts: 'Aktiv kontaktlar (30 gün)',
+  channels: 'Bağlı hesablar',
+  active_automations: 'Aktiv avtomatlaşdırmalar',
+  members: 'Komanda üzvləri',
+  bot_messages_month: 'Avtomatik mesajlar (ay)',
+  ai_budget_usd_month: 'AI büdcəsi, $ (ay, təxmini)',
+  ai_budget_usd_day: 'AI büdcəsi, $ (gün, təxmini)',
+  history_days: 'Tarixçə və analitika (gün)',
+};
+
+/** Effective limits = plan limits overridden per workspace. null = unlimited. */
+export async function limitsOf(workspaceId: string): Promise<Record<LimitKey, number | null>> {
+  const row = await one<{ limits: Record<string, number | null> | null; overrides: Record<string, number | null> }>(
+    `SELECT p.limits, w.limit_overrides AS overrides FROM workspaces w LEFT JOIN plans p ON p.id = w.plan_id WHERE w.id = $1`,
+    [workspaceId],
+  );
+  const merged = { ...(row?.limits ?? {}), ...(row?.overrides ?? {}) };
+  return Object.fromEntries(LIMIT_KEYS.map((k) => [k, typeof merged[k] === 'number' ? merged[k] : null])) as Record<LimitKey, number | null>;
+}
+
+const USAGE_SQL: Record<LimitKey, string | null> = {
+  contacts: `SELECT count(*)::float AS n FROM contacts WHERE workspace_id = $1 AND last_seen_at > now() - interval '30 days'`,
+  channels: `SELECT count(*)::float AS n FROM channels WHERE workspace_id = $1`,
+  active_automations: `SELECT count(*)::float AS n FROM automations WHERE workspace_id = $1 AND status = 'active'`,
+  members: `SELECT count(*)::float AS n FROM memberships WHERE workspace_id = $1`,
+  bot_messages_month: `SELECT count(*)::float AS n FROM messages WHERE workspace_id = $1 AND sender IN ('bot', 'ai') AND status = 'sent' AND created_at >= date_trunc('month', now())`,
+  ai_budget_usd_month: `SELECT coalesce(sum(est_cost_usd), 0)::float AS n FROM ai_usage WHERE workspace_id = $1 AND created_at >= date_trunc('month', now())`,
+  ai_budget_usd_day: `SELECT coalesce(sum(est_cost_usd), 0)::float AS n FROM ai_usage WHERE workspace_id = $1 AND created_at >= date_trunc('day', now())`,
+  history_days: null,
+};
+
+export async function usageOf(workspaceId: string, key: LimitKey): Promise<number> {
+  const sql = USAGE_SQL[key];
+  return sql ? Number((await one<{ n: number }>(sql, [workspaceId]))?.n ?? 0) : 0;
+}
+
+/** Backend enforcement point. `adding` = how many units the action would add. */
+export async function checkLimit(workspaceId: string, key: LimitKey, adding = 1): Promise<{ ok: boolean; used: number; limit: number | null }> {
+  const limit = (await limitsOf(workspaceId))[key];
+  const used = await usageOf(workspaceId, key);
+  return { ok: limit === null || used + adding <= limit, used: Math.round(used * 100) / 100, limit };
+}

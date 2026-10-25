@@ -22,6 +22,7 @@ export interface PageOpts {
 const NAV = [
   ['/app', 'Panel', 'grid'],
   ['/app/inbox', 'Söhbətlər', 'chat'],
+  ['/app/automations', 'Avtomatlaşdırma', 'zap'],
   ['/app/assistant', 'AI köməkçi', 'bot'],
   ['/app/channels', 'Kanallar', 'plug'],
   ['/app/test', 'Test et', 'flask'],

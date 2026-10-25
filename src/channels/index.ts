@@ -30,7 +30,7 @@ export interface SendOpts {
 export async function sendText(ch: ChannelRow, to: string, text: string, opts: SendOpts = {}): Promise<string> {
   const token = decrypt(ch.access_token_enc);
   try {
-    return ch.type === 'whatsapp' ? await sendWhatsAppText(token, ch.external_id, to, text) : await sendInstagramText(token, ch.external_id, to, text, opts);
+    return ch.type === 'whatsapp' ? await sendWhatsAppText(token, ch.external_id, to, text, opts.quickReplies) : await sendInstagramText(token, ch.external_id, to, text, opts);
   } catch (e) {
     if (!(e instanceof GraphError)) throw new SendError('network', false, false);
     if (e.tokenInvalid) {

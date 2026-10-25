@@ -8,7 +8,7 @@ export interface SessionUser {
   email: string;
   emailVerified: boolean;
   workspaceId: string;
-  role: 'owner' | 'agent';
+  role: Role;
   isAdmin: boolean;
   mfa: boolean;
 }
@@ -91,6 +91,26 @@ export function registerAuth(app: FastifyInstance) {
     }
   });
 }
+
+export type Role = 'owner' | 'admin' | 'agent' | 'analyst';
+export type Permission =
+  | 'inbox.reply' | 'inbox.manage' | 'contacts.write' | 'automations.write' | 'assistant.write'
+  | 'channels.manage' | 'team.manage' | 'billing.view' | 'analytics.view' | 'workspace.delete';
+
+/** Backend permission matrix. Every write route checks this (UI hiding is only cosmetic). */
+const PERMS: Record<Role, Permission[]> = {
+  owner: ['inbox.reply', 'inbox.manage', 'contacts.write', 'automations.write', 'assistant.write', 'channels.manage', 'team.manage', 'billing.view', 'analytics.view', 'workspace.delete'],
+  admin: ['inbox.reply', 'inbox.manage', 'contacts.write', 'automations.write', 'assistant.write', 'channels.manage', 'team.manage', 'billing.view', 'analytics.view'],
+  agent: ['inbox.reply', 'inbox.manage', 'contacts.write', 'analytics.view'],
+  analyst: ['analytics.view'],
+};
+export const can = (user: SessionUser | null, p: Permission) => !!user && (PERMS[user.role] ?? []).includes(p);
+
+/** preHandler factory: 403 unless the signed-in user has the permission. */
+export const requirePerm = (p: Permission) => async (req: FastifyRequest, reply: FastifyReply) => {
+  if (!req.user) return reply.redirect('/login');
+  if (!can(req.user, p)) return reply.code(403).type('text/plain; charset=utf-8').send('Bu əməliyyat üçün icazəniz yoxdur.');
+};
 
 export async function requireUser(req: FastifyRequest, reply: FastifyReply) {
   if (!req.user) return reply.redirect('/login');

@@ -1,3 +1,4 @@
+import type { InboundEvent } from './channels/types.js';
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import { config } from './config.js';
@@ -8,7 +9,9 @@ export const QUEUE = 'messages';
 export type JobData =
   | { kind: 'reply'; conversationId: string; messageId: string }
   | { kind: 'ig_echo'; channelId: string; userId: string; mid: string; text: string }
-  | { kind: 'learn_style'; workspaceId: string };
+  | { kind: 'learn_style'; workspaceId: string }
+  | { kind: 'comment'; event: Extract<InboundEvent, { type: 'comment' }> }
+  | { kind: 'automation_step'; runId: string; step: number };
 
 export const queue = new Queue<JobData>(QUEUE, {
   connection: redis,

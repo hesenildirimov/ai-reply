@@ -18,11 +18,15 @@ export function parseWhatsAppWebhook(body: any): InboundEvent[] {
       const names = new Map<string, string>((v.contacts ?? []).map((c: any) => [c?.wa_id, c?.profile?.name ?? '']));
       for (const m of v.messages ?? []) {
         if (typeof m?.from !== 'string' || typeof m?.id !== 'string') continue;
+        const reply = m.interactive?.button_reply ?? m.interactive?.list_reply;
         const text =
           m.type === 'text' ? m.text?.body
           : m.type === 'button' ? m.button?.text
-          : m.type === 'interactive' ? (m.interactive?.button_reply?.title ?? m.interactive?.list_reply?.title)
+          : m.type === 'interactive' ? reply?.title
+          : typeof m[m.type]?.caption === 'string' ? m[m.type].caption
           : null;
+        const mediaObj = ['image', 'video', 'audio', 'document', 'sticker'].includes(m.type) ? m[m.type] : null;
+        const payload = m.type === 'interactive' ? reply?.id : m.type === 'button' ? m.button?.payload : undefined;
         out.push({
           type: 'message',
           channelType: 'whatsapp',
@@ -31,6 +35,9 @@ export function parseWhatsAppWebhook(body: any): InboundEvent[] {
           userName: names.get(m.from) ?? '',
           mid: m.id,
           text: typeof text === 'string' && text.trim() ? text : null,
+          kind: payload ? 'quick_reply' : mediaObj && !text ? 'media' : 'text',
+          media: mediaObj ? [{ type: m.type, id: String(mediaObj.id ?? '') }] : undefined,
+          payload: typeof payload === 'string' ? payload : undefined,
         });
       }
     }
@@ -70,11 +77,15 @@ export async function completeEmbeddedSignup(code: string, wabaId: string, phone
   };
 }
 
-export async function sendWhatsAppText(token: string, phoneNumberId: string, to: string, text: string): Promise<string> {
+export async function sendWhatsAppText(token: string, phoneNumberId: string, to: string, text: string, quickReplies?: { title: string; payload: string }[]): Promise<string> {
+  // Up to 3 reply buttons (title ≤ 20 chars) — WhatsApp's interactive "button" message.
+  const message = quickReplies?.length
+    ? { type: 'interactive', interactive: { type: 'button', body: { text: text.slice(0, 1024) }, action: { buttons: quickReplies.slice(0, 3).map((q) => ({ type: 'reply', reply: { id: q.payload.slice(0, 256), title: q.title.slice(0, 20) } })) } } }
+    : { type: 'text', text: { body: text.slice(0, WA_TEXT_LIMIT), preview_url: false } };
   const res = await graph<{ messages: { id: string }[] }>(G(), fbPath(`${phoneNumberId}/messages`), {
     token,
     appSecretProof: true,
-    json: { messaging_product: 'whatsapp', recipient_type: 'individual', to, type: 'text', text: { body: text.slice(0, WA_TEXT_LIMIT), preview_url: false } },
+    json: { messaging_product: 'whatsapp', recipient_type: 'individual', to, ...message },
   });
   return res.messages[0]!.id;
 }

@@ -1,5 +1,6 @@
+export { deliver, WINDOW_MS } from './conversation.js';
 import { aiRetryable, generateReply, type Turn } from './ai.js';
-import { SendError, sendText, textLimit, type SendOpts } from './channels/index.js';
+import { deliver, failedBody, handoff, inWindow, loadConv, WINDOW_MS } from './conversation.js';
 import { instagramUsername } from './channels/instagram.js';
 import type { ChannelRow, InboundEvent } from './channels/types.js';
 import { markWhatsAppRead } from './channels/whatsapp.js';
@@ -7,17 +8,25 @@ import { config } from './config.js';
 import { decrypt } from './crypto.js';
 import { one, q } from './db.js';
 import { notifyWaiting } from './notify.js';
+import { runMessageAutomations } from './automations/engine.js';
+import { upsertContact, type ContactRow } from './contacts.js';
 import { recordEvent } from './events.js';
+import { publish } from './realtime.js';
 import { withLock } from './locks.js';
 import { queue, redis } from './queue.js';
 
-/** Meta only allows free-form replies within 24h of the customer's last message. */
-export const WINDOW_MS = 24 * 3600 * 1000;
 const HUMAN_PAUSE = "interval '12 hours'";
 const HUMAN_KEYWORDS = /(?<!\p{L})(operator|human|agent|insan|canl[ıi]|menecer|оператор|менеджер|человек)(?!\p{L})/iu;
+const STOP_RE = /^(stop|unsubscribe|dayan|dayandir|dayandır|abunelikden cix|abunəlikdən çıx|стоп)$/i;
+const START_RE = /^(start|basla|başla|старт)$/i;
 const MEDIA_PLACEHOLDER = '[Customer sent an attachment (photo/voice/video/sticker) that cannot be viewed]';
 
 export async function ingest(ev: InboundEvent): Promise<void> {
+  if (ev.type === 'comment') {
+    // Comments are processed by the worker (one job per comment id: duplicate webhooks collapse).
+    await queue.add('comment', { kind: 'comment', event: ev }, { jobId: `comment-${ev.commentId}` });
+    return;
+  }
   const ch = await one<ChannelRow>(`SELECT * FROM channels WHERE type = $1 AND external_id = $2 AND status = 'active'`, [ev.channelType, ev.channelExternalId]);
   if (!ch) return;
 
@@ -27,91 +36,36 @@ export async function ingest(ev: InboundEvent): Promise<void> {
     return;
   }
 
+  const contact = await upsertContact(ch, ev.userId, ev.userName);
+  if (contact.blocked) return; // blocked contacts are ignored entirely
   const conv = await one<{ id: string }>(
-    `INSERT INTO conversations (workspace_id, channel_id, external_user_id, display_name, last_inbound_at, last_message_at)
-     VALUES ($1, $2, $3, $4, now(), now())
+    `INSERT INTO conversations (workspace_id, channel_id, external_user_id, display_name, contact_id, last_inbound_at, last_message_at, unread_count)
+     VALUES ($1, $2, $3, $4, $5, now(), now(), 1)
      ON CONFLICT (channel_id, external_user_id) DO UPDATE
-       SET last_inbound_at = now(), last_message_at = now(),
+       SET last_inbound_at = now(), last_message_at = now(), contact_id = EXCLUDED.contact_id, status = 'open', unread_count = conversations.unread_count + 1,
            display_name = CASE WHEN EXCLUDED.display_name <> '' THEN EXCLUDED.display_name ELSE conversations.display_name END
      RETURNING id`,
-    [ch.workspace_id, ch.id, ev.userId, ev.userName.slice(0, 200)],
+    [ch.workspace_id, ch.id, ev.userId, ev.userName.slice(0, 200), contact.id],
   );
+  const body = ev.text ?? (ev.kind === 'story_mention' ? '[Story-də sizi qeyd etdi]' : MEDIA_PLACEHOLDER);
   const msg = await one<{ id: string }>(
-    `INSERT INTO messages (workspace_id, conversation_id, direction, sender, external_id, body)
-     VALUES ($1, $2, 'in', 'customer', $3, $4) ON CONFLICT DO NOTHING RETURNING id`,
-    [ch.workspace_id, conv!.id, ev.mid, (ev.text ?? MEDIA_PLACEHOLDER).slice(0, 8000)],
+    `INSERT INTO messages (workspace_id, conversation_id, direction, sender, external_id, body, status, kind, media, payload)
+     VALUES ($1, $2, 'in', 'customer', $3, $4, 'received', $5, $6, $7) ON CONFLICT DO NOTHING RETURNING id`,
+    [ch.workspace_id, conv!.id, ev.mid, body.slice(0, 8000), ev.kind ?? 'text', ev.media ? JSON.stringify(ev.media) : null, ev.payload?.slice(0, 1000) ?? null],
   );
-  if (!msg) return; // duplicate webhook delivery
+  if (!msg) {
+    await q(`UPDATE conversations SET unread_count = greatest(unread_count - 1, 0) WHERE id = $1`, [conv!.id]); // duplicate delivery
+    return;
+  }
+  // Funnel: the contact answered a flow message within 24h.
+  await q(`UPDATE automation_runs SET replied_at = now() WHERE contact_id = $1 AND sent_at > now() - interval '24 hours' AND replied_at IS NULL`, [contact.id]);
+  await publish(ch.workspace_id, { type: 'message', conversationId: conv!.id });
 
   // Read receipt is cosmetic: it must never block storing the message.
   if (ch.type === 'whatsapp') await Promise.resolve().then(() => markWhatsAppRead(decrypt(ch.access_token_enc), ch.external_id, ev.mid)).catch(() => {});
   // Debounce: customers often send several short messages; only the latest job replies.
-  await queue.add('reply', { kind: 'reply', conversationId: conv!.id, messageId: msg.id }, { delay: config.AI_DEBOUNCE_MS });
+  await queue.add('reply', { kind: 'reply', conversationId: conv!.id, messageId: msg.id }, { delay: config.AI_DEBOUNCE_MS, jobId: `reply-${msg.id}` });
 }
-
-interface ConvCtx {
-  id: string;
-  workspace_id: string;
-  external_user_id: string;
-  display_name: string;
-  needs_human: boolean;
-  ai_paused: boolean;
-  last_inbound_at: Date | null;
-  latest_in: string | null;
-  ai_sent: number;
-  channel: ChannelRow;
-}
-
-async function loadConv(conversationId: string): Promise<ConvCtx | undefined> {
-  const row = await one(
-    `SELECT c.id, c.workspace_id, c.external_user_id, c.display_name, c.needs_human, c.last_inbound_at,
-            coalesce(c.ai_paused_until > now(), false) AS ai_paused,
-            (SELECT id FROM messages WHERE conversation_id = c.id AND direction = 'in' ORDER BY created_at DESC LIMIT 1) AS latest_in,
-            (SELECT count(*)::int FROM messages WHERE conversation_id = c.id AND sender = 'ai') AS ai_sent,
-            to_jsonb(ch.*) AS channel
-     FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE c.id = $1`,
-    [conversationId],
-  );
-  return row as ConvCtx | undefined;
-}
-
-const inWindow = (c: Pick<ConvCtx, 'last_inbound_at'>) => !!c.last_inbound_at && Date.now() - new Date(c.last_inbound_at).getTime() < WINDOW_MS;
-
-/**
- * Idempotent send. The message row is claimed (status 'pending') under its idempotency key BEFORE calling Meta:
- * - key already sent / pending / unknown -> nothing is sent again (returns 'duplicate');
- * - key failed earlier with a definite Meta error -> the stored text is re-sent (no new AI call);
- * - Meta error -> row 'failed' (+ SendError, retryable or not); network error -> row 'unknown', never resent automatically.
- */
-export async function deliver(c: Pick<ConvCtx, 'id' | 'workspace_id' | 'external_user_id' | 'channel'>, text: string, sender: 'ai' | 'human', key: string, opts: SendOpts = {}): Promise<'sent' | 'duplicate'> {
-  const body = text.slice(0, textLimit(c.channel));
-  const claimed =
-    (await one<{ id: string; body: string }>(
-      `INSERT INTO messages (workspace_id, conversation_id, direction, sender, body, status, idempotency_key)
-       VALUES ($1, $2, 'out', $3, $4, 'pending', $5) ON CONFLICT (workspace_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING id, body`,
-      [c.workspace_id, c.id, sender, body, key],
-    )) ??
-    (await one<{ id: string; body: string }>(
-      `UPDATE messages SET status = 'pending', error = NULL WHERE workspace_id = $1 AND idempotency_key = $2 AND status = 'failed' RETURNING id, body`,
-      [c.workspace_id, key],
-    ));
-  if (!claimed) return 'duplicate';
-  let mid: string;
-  try {
-    mid = await sendText(c.channel, c.external_user_id, claimed.body, opts);
-  } catch (e) {
-    const se = e instanceof SendError ? e : new SendError('network', false, false);
-    await q(`UPDATE messages SET status = $2, error = $3 WHERE id = $1`, [claimed.id, se.definite ? 'failed' : 'unknown', se.reason]);
-    throw se;
-  }
-  await q(`UPDATE messages SET status = 'sent', external_id = $2, created_at = now() WHERE id = $1`, [claimed.id, mid]);
-  await q('UPDATE conversations SET last_message_at = now() WHERE id = $1', [c.id]);
-  return 'sent';
-}
-
-/** Body of an earlier attempt that failed definitively, so a retry re-sends it instead of paying for a new AI call. */
-const failedBody = async (workspaceId: string, key: string) =>
-  (await one<{ body: string; status: string }>(`SELECT body, status FROM messages WHERE workspace_id = $1 AND idempotency_key = $2`, [workspaceId, key])) ?? null;
 
 /** Counts one AI reply against the monthly limit. 'expired' = subscription not paid (paid_until passed). */
 export async function reserveReply(workspaceId: string): Promise<'ok' | 'limit' | 'expired'> {
@@ -132,13 +86,6 @@ export async function reserveReply(workspaceId: string): Promise<'ok' | 'limit' 
 
 /** Max AI replies per conversation per hour: stops one spammer from burning the business's monthly quota. */
 const CONV_HOURLY_CAP = 15;
-
-async function handoff(c: ConvCtx, holdingReply: string, reason: string, messageId: string): Promise<void> {
-  const flipped = await one(`UPDATE conversations SET needs_human = true WHERE id = $1 AND needs_human = false RETURNING id`, [c.id]);
-  if (!flipped) return;
-  if (holdingReply.trim()) await deliver(c, holdingReply, 'ai', `hold:${messageId}`).catch((e) => console.error('holding reply failed:', (e as Error).message));
-  await notifyWaiting(c.workspace_id, c.id, c.display_name || c.external_user_id, c.channel.type, reason);
-}
 
 /** Lock TTL must exceed the slowest path: Claude (30 s timeout × 2 tries) + Meta send + DB. */
 const CONV_LOCK_MS = 120_000;
@@ -164,8 +111,28 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
 
   const a = await one(`SELECT * FROM assistants WHERE workspace_id = $1`, [c.workspace_id]);
   const who = c.display_name || c.external_user_id;
-  // Staff is handling this conversation (or AI is off): just tell them a new message arrived.
-  if (c.needs_human || c.ai_paused || !a?.enabled) return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj');
+  // Staff is handling this conversation (assigned / handed over / paused): no bot, just tell them.
+  if (c.needs_human || c.ai_paused || c.assignee_user_id) return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj');
+
+  const contact = await one<ContactRow>(`SELECT * FROM contacts WHERE id = $1`, [c.contact_id]);
+  const latest = await one<{ id: string; kind: string; payload: string | null; body: string }>(`SELECT id, kind, payload, body FROM messages WHERE id = $1`, [messageId]);
+  if (contact && latest) {
+    // Opt-out / opt-in keywords (WhatsApp & Instagram policy: honour STOP).
+    if (STOP_RE.test(latest.body.trim())) {
+      await q(`UPDATE contacts SET opted_out = true WHERE id = $1`, [contact.id]);
+      return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'müştəri avtomatik mesajları dayandırdı (STOP)');
+    }
+    if (START_RE.test(latest.body.trim())) await q(`UPDATE contacts SET opted_out = false WHERE id = $1`, [contact.id]);
+    else if (contact.opted_out) return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj (avtomatik cavablar söndürülüb)');
+    // Rule-based flows first: they cost no AI tokens.
+    const since = await q<{ body: string }>(
+      `SELECT body FROM messages WHERE conversation_id = $1 AND direction = 'in' AND created_at > coalesce((SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'out'), '-infinity') ORDER BY created_at`,
+      [c.id],
+    );
+    const auto = await runMessageAutomations(c, contact, { id: latest.id, kind: latest.kind, payload: latest.payload, text: since.map((m) => m.body).join(' ') || latest.body });
+    if (auto !== 'none' && auto !== 'ai') return;
+  }
+  if (!a?.enabled) return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj');
 
   const recent = await q<{ sender: string; body: string }>(
     `SELECT sender, body FROM (SELECT sender, body, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') ORDER BY created_at DESC LIMIT 20) t ORDER BY created_at`,
