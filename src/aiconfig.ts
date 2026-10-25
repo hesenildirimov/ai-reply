@@ -10,6 +10,7 @@ const schema = z.object({
     max_output_tokens: z.number().int().positive(),
     history_token_budget: z.number().int().positive(),
     knowledge_token_budget: z.number().int().positive(),
+    pinned_knowledge_token_budget: z.number().int().nonnegative().default(4000),
     summary_after_messages: z.number().int().positive(),
   }),
 });

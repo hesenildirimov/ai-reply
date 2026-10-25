@@ -11,7 +11,8 @@ export type JobData =
   | { kind: 'ig_echo'; channelId: string; userId: string; mid: string; text: string }
   | { kind: 'learn_style'; workspaceId: string }
   | { kind: 'comment'; event: Extract<InboundEvent, { type: 'comment' }> }
-  | { kind: 'automation_step'; runId: string; step: number };
+  | { kind: 'automation_step'; runId: string; step: number }
+  | { kind: 'summarize'; conversationId: string; workspaceId: string };
 
 export const queue = new Queue<JobData>(QUEUE, {
   connection: redis,

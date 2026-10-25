@@ -1,0 +1,30 @@
+Synthetic workspace, 30-message chat. Token counts are ESTIMATES (chars/3.5); costs use config/ai-models.json prices and an assumed 120-token reply.
+
+20 catalogue items — after: whole knowledge pinned in cached prefix, route=smart
+┌──────────────────────────┬────────┬─────────┬───────┬────────────────────┬───────────┬───────────┐
+│ (index)                  │ cached │ dynamic │ total │ model              │ hit $     │ miss $    │
+├──────────────────────────┼────────┼─────────┼───────┼────────────────────┼───────────┼───────────┤
+│ before                   │ 1372   │ 358     │ 1730  │ 'claude-opus-5-5'  │ '0.00411' │ '0.01069' │
+│ after                    │ 1422   │ 358     │ 1780  │ 'claude-opus-5-5'  │ '0.00412' │ '0.01094' │
+│ after, simple msg → fast │ 1422   │ 358     │ 1780  │ 'claude-haiku-5-5' │ '0.00011' │ '0.00027' │
+└──────────────────────────┴────────┴─────────┴───────┴────────────────────┴───────────┴───────────┘
+
+80 catalogue items — after: whole knowledge pinned in cached prefix, route=smart
+┌──────────────────────────┬────────┬─────────┬───────┬────────────────────┬───────────┬───────────┐
+│ (index)                  │ cached │ dynamic │ total │ model              │ hit $     │ miss $    │
+├──────────────────────────┼────────┼─────────┼───────┼────────────────────┼───────────┼───────────┤
+│ before                   │ 3615   │ 358     │ 3973  │ 'claude-opus-5-5'  │ '0.00456' │ '0.02191' │
+│ after                    │ 3799   │ 358     │ 4157  │ 'claude-opus-5-5'  │ '0.00459' │ '0.02283' │
+│ after, simple msg → fast │ 3799   │ 358     │ 4157  │ 'claude-haiku-5-5' │ '0.00013' │ '0.00057' │
+└──────────────────────────┴────────┴─────────┴───────┴────────────────────┴───────────┴───────────┘
+
+300 catalogue items — after: per-message retrieval, route=smart
+┌──────────────────────────┬────────┬─────────┬───────┬────────────────────┬───────────┬───────────┐
+│ (index)                  │ cached │ dynamic │ total │ model              │ hit $     │ miss $    │
+├──────────────────────────┼────────┼─────────┼───────┼────────────────────┼───────────┼───────────┤
+│ before                   │ 11947  │ 358     │ 12305 │ 'claude-opus-5-5'  │ '0.00622' │ '0.06357' │
+│ after                    │ 598    │ 744     │ 1342  │ 'claude-opus-5-5'  │ '0.00550' │ '0.00837' │
+│ after, simple msg → fast │ 598    │ 744     │ 1342  │ 'claude-haiku-5-5' │ '0.00014' │ '0.00021' │
+└──────────────────────────┴────────┴─────────┴───────┴────────────────────┴───────────┴───────────┘
+
+Set MEASURE_EXACT=1 with a real ANTHROPIC_API_KEY to replace estimates with count_tokens.

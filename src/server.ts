@@ -13,7 +13,9 @@ import { registerTelegramWebhook } from './telegram.js';
 import { adminRoutes } from './web/admin.js';
 import { appRoutes } from './web/app.js';
 import { automationRoutes } from './web/automations.js';
+import { analyticsRoutes } from './web/analytics.js';
 import { inboxRoutes } from './web/inbox.js';
+import { knowledgeRoutes } from './web/knowledge.js';
 import { registerAuth } from './web/auth.js';
 import { legalRoutes } from './web/legal.js';
 import { metaRoutes } from './web/meta.js';
@@ -95,6 +97,8 @@ export async function buildServer() {
   appRoutes(app);
   automationRoutes(app);
   inboxRoutes(app);
+  analyticsRoutes(app);
+  knowledgeRoutes(app);
   adminRoutes(app);
 
   app.setErrorHandler((err: any, req, reply) => {

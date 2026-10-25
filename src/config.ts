@@ -12,9 +12,12 @@ const schema = z.object({
   ENCRYPTION_KEY: z.string().refine((v) => Buffer.from(v, 'base64').length === 32, 'ENCRYPTION_KEY must be 32 bytes base64'),
 
   ANTHROPIC_API_KEY: optional,
-  AI_MODEL: z.string().default('claude-opus-5-5'),
   AI_EFFORT: z.enum(['low', 'medium', 'high']).default('low'),
   AI_DEBOUNCE_MS: z.coerce.number().int().min(0).default(4000),
+  // 'on' = simple messages use the fast/cheap model from config/ai-models.json
+  AI_ROUTING: z.enum(['on', 'off']).default('on'),
+  // Max AI calls per workspace per minute (protects against bursts / runaway cost)
+  AI_WORKSPACE_RPM: z.coerce.number().int().min(1).default(30),
 
   // Meta app (WhatsApp Cloud API + Embedded Signup)
   META_APP_ID: optional,

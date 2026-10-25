@@ -1,5 +1,8 @@
 export { deliver, WINDOW_MS } from './conversation.js';
-import { aiRetryable, generateReply, type Turn } from './ai.js';
+import { aiRetryable, generateReply } from './ai.js';
+import { aiConfig } from './aiconfig.js';
+import { buildContext } from './context.js';
+import { checkLimit } from './plans.js';
 import { deliver, failedBody, handoff, inWindow, loadConv, WINDOW_MS } from './conversation.js';
 import { instagramUsername } from './channels/instagram.js';
 import type { ChannelRow, InboundEvent } from './channels/types.js';
@@ -10,7 +13,7 @@ import { one, q } from './db.js';
 import { notifyWaiting } from './notify.js';
 import { runMessageAutomations } from './automations/engine.js';
 import { upsertContact, type ContactRow } from './contacts.js';
-import { recordEvent } from './events.js';
+import { audit, recordEvent } from './events.js';
 import { publish } from './realtime.js';
 import { withLock } from './locks.js';
 import { queue, redis } from './queue.js';
@@ -95,12 +98,12 @@ const CONV_LOCK_MS = 120_000;
  * ('busy' = another worker is on it; the caller re-queues). `finalAttempt` = last BullMQ try: on AI failure we hand off
  * to staff instead of failing silently.
  */
-export async function processReply(conversationId: string, messageId: string, finalAttempt = true): Promise<'done' | 'busy'> {
+export async function processReply(conversationId: string, messageId: string, finalAttempt = true): Promise<'done' | 'busy' | 'throttled'> {
   const r = await withLock(`conv:${conversationId}`, CONV_LOCK_MS, () => replyLocked(conversationId, messageId, finalAttempt));
-  return r === 'busy' ? 'busy' : 'done';
+  return r === 'busy' || r === 'throttled' ? r : 'done';
 }
 
-async function replyLocked(conversationId: string, messageId: string, finalAttempt: boolean): Promise<void> {
+async function replyLocked(conversationId: string, messageId: string, finalAttempt: boolean): Promise<void | 'throttled'> {
   const c = await loadConv(conversationId);
   // Only the newest message's job acts (debounce); closed window or broken channel = nothing to do.
   if (!c || c.latest_in !== messageId || c.channel.status !== 'active' || !inWindow(c)) return;
@@ -134,15 +137,26 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
   }
   if (!a?.enabled) return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj');
 
-  const recent = await q<{ sender: string; body: string }>(
-    `SELECT sender, body FROM (SELECT sender, body, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') ORDER BY created_at DESC LIMIT 20) t ORDER BY created_at`,
-    [c.id],
-  );
-  const lastText = recent.at(-1)?.body ?? '';
+  const lastText = latest?.body ?? '';
   if (HUMAN_KEYWORDS.test(lastText)) return handoff(c, a.handoff_message, 'müştəri insanla danışmaq istəyir', messageId);
 
   const hourly = await one<{ n: number }>(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND sender = 'ai' AND created_at > now() - interval '1 hour'`, [c.id]);
   if (hourly!.n >= CONV_HOURLY_CAP) return handoff(c, '', 'çox sayda mesaj (spam ola bilər)', messageId);
+
+  // Cost guardrails: workspace AI budget (plan) and a per-minute burst limit.
+  for (const k of ['ai_budget_usd_day', 'ai_budget_usd_month'] as const) {
+    const lim = await checkLimit(c.workspace_id, k, 0);
+    if (!lim.ok) {
+      if ((await redis.set(`budget-alert:${c.workspace_id}:${k}:${new Date().toISOString().slice(0, 10)}`, '1', 'EX', 86400, 'NX')) === 'OK') {
+        await audit(c.workspace_id, null, 'ai.budget_exceeded', 'workspace', c.workspace_id, { limit: k, used: lim.used, max: lim.limit });
+      }
+      return handoff(c, a.handoff_message, 'AI büdcəsi bitib', messageId);
+    }
+  }
+  const minute = Math.floor(Date.now() / 60_000);
+  const calls = await redis.incr(`airpm:${c.workspace_id}:${minute}`);
+  if (calls === 1) await redis.expire(`airpm:${c.workspace_id}:${minute}`, 120);
+  if (calls > config.AI_WORKSPACE_RPM) return 'throttled';
 
   // Quota is charged once per inbound message, even if this job is retried.
   const firstTry = (await redis.set(`quota:${messageId}`, '1', 'EX', 86400, 'NX')) === 'OK';
@@ -155,10 +169,14 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
     if (name) await q('UPDATE conversations SET display_name = $2 WHERE id = $1', [c.id, name.slice(0, 200)]);
   }
 
-  const history: Turn[] = recent.map((m) => ({ role: m.sender === 'customer' ? 'user' : 'assistant', text: m.body }));
+  // Token-efficient context: budgeted recent turns + rolling summary + only the relevant knowledge items.
+  const ctx = await buildContext(c.id, c.workspace_id);
+  if (ctx.unsummarized >= aiConfig.limits.summary_after_messages) {
+    await queue.add('summarize', { kind: 'summarize', conversationId: c.id, workspaceId: c.workspace_id }, { jobId: `sum-${c.id}-${Math.floor(Date.now() / 600_000)}` });
+  }
   let result;
   try {
-    result = await generateReply(a, history, a.ai_disclosure && c.ai_sent === 0, { workspaceId: c.workspace_id, conversationId: c.id, purpose: 'reply' });
+    result = await generateReply(a, ctx.history, a.ai_disclosure && c.ai_sent === 0, { workspaceId: c.workspace_id, conversationId: c.id, purpose: 'reply', route: ctx.route }, ctx.extra);
   } catch (e) {
     await recordEvent(c.workspace_id, c.channel.id, aiRetryable(e) ? 'ai_timeout' : 'ai_error', (e as Error).name);
     if (aiRetryable(e) && !finalAttempt) throw e; // BullMQ retries with backoff

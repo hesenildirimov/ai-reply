@@ -14,6 +14,7 @@
     "max_output_tokens": 2000,
     "history_token_budget": 1500,
     "knowledge_token_budget": 1500,
+    "pinned_knowledge_token_budget": 4000,
     "summary_after_messages": 16
   }
 }

@@ -14,6 +14,7 @@ import { notifyChannelProblem } from './notify.js';
 import { processEcho, processReply } from './pipeline.js';
 import { QUEUE, queue, redis, type JobData } from './queue.js';
 import { learnStyle } from './style.js';
+import { updateSummary } from './context.js';
 
 type Data = JobData | { kind: 'maintenance' };
 
@@ -76,9 +77,11 @@ async function run(job: Job<Data>, token?: string) {
   try {
     if (d.kind === 'reply') {
       const final = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
-      if ((await processReply(d.conversationId, d.messageId, final)) === 'busy') {
-        // Another worker holds this conversation: try again shortly without consuming an attempt.
-        await job.moveToDelayed(Date.now() + 3000, token);
+      const r = await processReply(d.conversationId, d.messageId, final);
+      if (r !== 'done') {
+        // Busy (another worker holds this conversation) or throttled (workspace AI burst limit): retry later
+        // without consuming an attempt.
+        await job.moveToDelayed(Date.now() + (r === 'busy' ? 3000 : 15000), token);
         throw new DelayedError();
       }
       return;
@@ -87,6 +90,7 @@ async function run(job: Job<Data>, token?: string) {
     if (d.kind === 'learn_style') return void (await learnStyle(d.workspaceId));
     if (d.kind === 'comment') return await processComment(d.event);
     if (d.kind === 'automation_step') return await resumeRun(d.runId, d.step);
+    if (d.kind === 'summarize') return await updateSummary(d.conversationId, d.workspaceId);
     if (d.kind === 'maintenance') return await maintenance();
   } catch (e) {
     if (e instanceof DelayedError) throw e;
