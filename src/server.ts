@@ -16,6 +16,9 @@ import { automationRoutes } from './web/automations.js';
 import { analyticsRoutes } from './web/analytics.js';
 import { inboxRoutes } from './web/inbox.js';
 import { knowledgeRoutes } from './web/knowledge.js';
+import { contactRoutes } from './web/contacts.js';
+import { integrationRoutes } from './web/integrations.js';
+import { teamRoutes } from './web/team.js';
 import { registerAuth } from './web/auth.js';
 import { legalRoutes } from './web/legal.js';
 import { metaRoutes } from './web/meta.js';
@@ -99,6 +102,9 @@ export async function buildServer() {
   inboxRoutes(app);
   analyticsRoutes(app);
   knowledgeRoutes(app);
+  contactRoutes(app);
+  teamRoutes(app);
+  integrationRoutes(app);
   adminRoutes(app);
 
   app.setErrorHandler((err: any, req, reply) => {

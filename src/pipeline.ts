@@ -1,8 +1,9 @@
 export { deliver, WINDOW_MS } from './conversation.js';
+import { emit } from './webhooks.js';
 import { aiRetryable, generateReply } from './ai.js';
 import { aiConfig } from './aiconfig.js';
 import { buildContext } from './context.js';
-import { checkLimit } from './plans.js';
+import { automationBlocked, checkLimit, limitAlert, LIMIT_LABELS } from './plans.js';
 import { deliver, failedBody, handoff, inWindow, loadConv, WINDOW_MS } from './conversation.js';
 import { instagramUsername } from './channels/instagram.js';
 import type { ChannelRow, InboundEvent } from './channels/types.js';
@@ -63,6 +64,10 @@ export async function ingest(ev: InboundEvent): Promise<void> {
   // Funnel: the contact answered a flow message within 24h.
   await q(`UPDATE automation_runs SET replied_at = now() WHERE contact_id = $1 AND sent_at > now() - interval '24 hours' AND replied_at IS NULL`, [contact.id]);
   await publish(ch.workspace_id, { type: 'message', conversationId: conv!.id });
+  await emit(ch.workspace_id, 'message.received', {
+    message_id: msg.id, conversation_id: conv!.id, contact_id: contact.id, channel: ch.type, kind: ev.kind ?? 'text', text: body.slice(0, 2000),
+    contact: { username: contact.username, name: contact.display_name },
+  });
 
   // Read receipt is cosmetic: it must never block storing the message.
   if (ch.type === 'whatsapp') await Promise.resolve().then(() => markWhatsAppRead(decrypt(ch.access_token_enc), ch.external_id, ev.mid)).catch(() => {});
@@ -127,6 +132,11 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
     }
     if (START_RE.test(latest.body.trim())) await q(`UPDATE contacts SET opted_out = false WHERE id = $1`, [contact.id]);
     else if (contact.opted_out) return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj (avtomatik cavablar söndürülüb)');
+    const blocked = await automationBlocked(c.workspace_id);
+    if (blocked) {
+      await limitAlert(c.workspace_id, blocked);
+      return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, `yeni mesaj (tarif limiti: ${LIMIT_LABELS[blocked]})`);
+    }
     // Rule-based flows first: they cost no AI tokens.
     const since = await q<{ body: string }>(
       `SELECT body FROM messages WHERE conversation_id = $1 AND direction = 'in' AND created_at > coalesce((SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'out'), '-infinity') ORDER BY created_at`,

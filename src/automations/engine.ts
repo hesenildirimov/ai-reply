@@ -1,5 +1,7 @@
 import type { ChannelRow, InboundEvent } from '../channels/types.js';
 import { replyToComment } from '../channels/instagram.js';
+import { automationBlocked, limitAlert } from '../plans.js';
+import { emit } from '../webhooks.js';
 import { addTags, ensureConversation, hasTag, removeTags, setField, upsertContact, type ContactRow } from '../contacts.js';
 import { deliver, handoff, inWindow, loadConv, type ConvCtx } from '../conversation.js';
 import { decrypt } from '../crypto.js';
@@ -70,8 +72,14 @@ async function startRun(a: AutomationRow, triggerRef: string, contactId: string,
 const logStep = (runId: string, entry: Record<string, unknown>) =>
   q(`UPDATE automation_runs SET steps = steps || $2::jsonb WHERE id = $1`, [runId, JSON.stringify([{ ...entry, at: new Date().toISOString() }])]);
 
-const finish = (runId: string, status: 'sent' | 'failed' | 'skipped', reason = '') =>
-  q(`UPDATE automation_runs SET status = CASE WHEN status = 'sent' AND $2 <> 'failed' THEN 'sent' ELSE $2 END, reason = $3 WHERE id = $1`, [runId, status, reason.slice(0, 200)]);
+async function finish(runId: string, status: 'sent' | 'failed' | 'skipped', reason = '') {
+  const r = await one(
+    `UPDATE automation_runs SET status = CASE WHEN status = 'sent' AND $2 <> 'failed' THEN 'sent' ELSE $2 END, reason = $3 WHERE id = $1
+     RETURNING workspace_id, automation_id, contact_id, conversation_id, status, reason`,
+    [runId, status, reason.slice(0, 200)],
+  );
+  if (r) await emit(r.workspace_id, 'automation.run_finished', { run_id: runId, automation_id: r.automation_id, contact_id: r.contact_id, conversation_id: r.conversation_id, status: r.status, reason: r.reason });
+}
 
 export type StepOutcome = 'done' | 'ai' | 'handoff' | 'delayed' | 'failed';
 
@@ -203,7 +211,9 @@ export async function processComment(ev: Extract<InboundEvent, { type: 'comment'
   );
   if (!a) return;
   await q(`UPDATE ig_comments SET matched = true WHERE id = $1`, [ev.commentId]);
-  const conversationId = await ensureConversation(ch, contact);
+  const blocked = await automationBlocked(ch.workspace_id);
+  if (blocked) return limitAlert(ch.workspace_id, blocked);
+  const conversationId = await ensureConversation(ch, contact, ev.fromId);
   const run = await startRun(a, `comment:${ev.commentId}`, contact.id, conversationId);
   if (!run) return;
   const cfg = configSchema.parse(a.config);

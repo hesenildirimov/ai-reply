@@ -65,7 +65,6 @@
     document.querySelector('[data-toggle-profile]')?.addEventListener('click', () => root.classList.toggle('show-profile'));
   }
   bindPane();
-  document.addEventListener('change', (e) => { if (e.target.matches('[data-autosubmit]')) e.target.form.requestSubmit(); });
 
   // "Load more" appends the next page instead of navigating.
   document.addEventListener('click', async (e) => {

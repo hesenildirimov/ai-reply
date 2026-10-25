@@ -6,7 +6,7 @@ type Reply = { status?: number; json?: unknown; hang?: boolean };
 type Handler = (body: any, path: string) => Reply | undefined;
 
 export const fake = {
-  calls: [] as { path: string; body: any }[],
+  calls: [] as { path: string; body: any; raw?: string; headers?: Record<string, unknown> }[],
   handler: (() => undefined) as Handler,
   reset() {
     this.calls = [];
@@ -42,7 +42,7 @@ export async function startFake(port = Number(process.env.FAKE_PORT ?? 4011)) {
       try {
         body = JSON.parse(raw);
       } catch {}
-      fake.calls.push({ path, body });
+      fake.calls.push({ path, body, raw, headers: req.headers });
       const r = fake.handler(body, path) ?? defaults(path, body);
       if (r.hang) return; // simulate a timeout / dropped connection
       res.writeHead(r.status ?? 200, { 'content-type': 'application/json' });

@@ -17,6 +17,11 @@ Meta webhook → /webhooks/* (imza yoxlanır) → Postgres (dedupe) → Redis n�
 | `src/ai.ts` | Claude inteqrasiyası (prompt caching, `request_human` aləti, fallback) |
 | `src/channels/` | WhatsApp Cloud API, Instagram API (Instagram Login) |
 | `src/web/` | Giriş sistemi, CSRF, panel səhifələri, admin panel (`admin.ts`), hüquqi səhifələr, Meta callback-ləri |
+| `src/automations/` | Avtomatlaşdırma: trigger-lər, imkan matrisi, flow mühərriki (açar söz, şərhdən DM, story, düymələr) |
+| `src/context.ts`, `config/ai-models.json` | AI konteksti: bilik bazası seçimi, xülasə, model routing, token büdcələri |
+| `src/analytics.ts` | Analitika sorğuları (hamısı xam məlumatdan yenidən hesablanır) |
+| `src/plans.ts` | Tarif limitləri (serverdə yoxlanılır) |
+| `src/webhooks.ts` | Çıxan webhook-lar (HMAC imza, SSRF qoruması, təkrar cəhd) |
 | `src/create-admin.ts` | İlk admin hesabını yaradır |
 
 ## Lokal işə salma
@@ -76,9 +81,12 @@ Meta webhook-larını lokalda yoxlamaq üçün HTTPS tunel lazımdır (məsələ
 |---|---|
 | `instagram_business_basic` | Bağlanan peşəkar hesabın ID və istifadəçi adını göstərmək üçün |
 | `instagram_business_manage_messages` | Müştəri DM-lərini qəbul edib biznes adından cavab göndərmək üçün |
+| `instagram_business_manage_comments` | Açar sözlü şərhə bir dəfə private reply (DM) və ictimai cavab üçün |
 | `whatsapp_business_management` | Embedded Signup ilə WABA və nömrəni bağlamaq, webhook-a abunə olmaq üçün |
 | `whatsapp_business_messaging` | Müştəri mesajlarına 24 saat ərzində cavab göndərmək üçün |
 | Human Agent (lazım deyil) | Sistem 24 saatdan sonra mesaj göndərmir |
+
+Ətraflı addımlar, trigger→icazə cədvəli və təqdimat mətnləri: **`docs/META_APP_REVIEW.md`**.
 
 **Screencast** (hər icazə üçün ingiliscə subtitr əlavə edin):
 
@@ -148,7 +156,13 @@ Addım-addım: [`docs/DEPLOY.md`](docs/DEPLOY.md) (Caddy/HTTPS, 2FA, backup, `EN
 
 ## AI xərci
 
-Standart model `claude-opus-5-5`-dir (ən yüksək keyfiyyət, $4 / $20 / 1M token). Xərci təxminən 40 dəfə azaltmaq üçün `AI_MODEL=claude-haiku-5-5` təyin edin ($0.10 / $0.50). Sistem promptu cache-lənir (`cache_control`).
+Modellər, qiymətlər və token büdcələri `config/ai-models.json`-dadır. Sadə, qısa suallar sürətli modelə (`claude-haiku-5-5`), mürəkkəb və həssas suallar isə əsas modelə (`claude-opus-5-5`) gedir (`AI_ROUTING`).
+- Kiçik bilik bazası (≈4000 token) bütövlükdə cache-lənən hissəyə qoyulur. Böyük baza üçün isə hər mesaja yalnız uyğun maddələr seçilir.
+- Köhnə yazışma xülasə ilə əvəz olunur.
+- Hər çağırış `ai_usage` jurnalına yazılır: tokenlər, cache, təxmini xərc və gecikmə. Analitika səhifəsində görünür.
+- Biznes üzrə gündəlik/aylıq büdcə və dəqiqəlik limit var.
+
+Ölçmə: `npx tsx --env-file=.env scripts/measure-context.ts`. Nəticə təxminidir; real API açarı və `MEASURE_EXACT=1` ilə `count_tokens` istifadə olunur. Son nəticə `docs/token-measurement.txt` faylındadır.
 
 ## TikTok
 
@@ -156,4 +170,4 @@ TikTok-un DM API-si (Business Messaging API) hamı üçün açıq deyil, partnyo
 
 ## Növbəti addımlar
 
-Onlayn ödəniş (Payriff / Epoint), TikTok, Instagram şərhlərinə cavab, bir workspace-də bir neçə əməkdaş, bilik bazası üçün PDF və sayt importu.
+Onlayn ödəniş (Payriff / Epoint), TikTok (partnyor girişi lazımdır), bilik bazası üçün PDF və sayt importu, birbaşa CRM adapterləri (hazırda webhook + Make/Zapier/n8n vasitəsilə: `docs/INTEGRATIONS.md`), şərti budaqlanan vizual qrafik redaktor (indiki builder ardıcıl addımlar + düymə keçidləri + şərt addımıdır).

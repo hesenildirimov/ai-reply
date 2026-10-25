@@ -9,13 +9,15 @@ import { completeEmbeddedSignup } from '../channels/whatsapp.js';
 import { config } from '../config.js';
 import { decrypt, encrypt, randomToken, sha256 } from '../crypto.js';
 import { one, q, tx } from '../db.js';
+import { audit } from '../events.js';
 import { reserveReply } from '../pipeline.js';
+import { checkLimit, LIMIT_KEYS, LIMIT_LABELS, limitsOf, usageOf } from '../plans.js';
 import { queue, redis } from '../queue.js';
 import { telegramEnabled } from '../telegram.js';
 import { newTotpSecret, otpauthUrl, verifyTotp } from '../totp.js';
 import { subscriptionSchema } from '../webpush.js';
 import QRCode from 'qrcode';
-import { destroySession, requireOwner, requireUser } from './auth.js';
+import { can, destroySession, requireOwner, requirePerm, requireUser } from './auth.js';
 import { csrfField, html, pageHead, raw, type Safe } from './html.js';
 import { channelIcon, icon, type IconName } from './icons.js';
 import { convRow, CONV_LIST_SQL } from './inbox.js';
@@ -23,6 +25,7 @@ import { ARGON, MESSAGES, passwordSchema, view } from './public.js';
 
 Object.assign(MESSAGES, {
   saved: { type: 'ok', text: 'Yadda saxlanıldı.' },
+  channel_limit: { type: 'error', text: 'Tarifinizdə bağlı hesab limiti dolub. Artırmaq üçün bizimlə əlaqə saxlayın.' },
   ig_connected: { type: 'ok', text: 'Instagram hesabı bağlandı.' },
   wa_connected: { type: 'ok', text: 'WhatsApp nömrəsi bağlandı.' },
   disconnected: { type: 'ok', text: 'Kanal ayrıldı və onun bütün məlumatları silindi.' },
@@ -72,6 +75,14 @@ async function claimExternalAccount(type: 'whatsapp' | 'instagram', externalId: 
   for (const ch of others) await q('DELETE FROM channels WHERE id = $1', [ch.id]);
 }
 
+/** Plan limit on connected accounts; reconnecting an account the workspace already has is always allowed. */
+async function channelAllowed(workspaceId: string, type: string, externalId: string) {
+  if (await one(`SELECT 1 FROM channels WHERE workspace_id = $1 AND type = $2 AND external_id = $3`, [workspaceId, type, externalId])) return true;
+  const lim = await checkLimit(workspaceId, 'channels');
+  if (!lim.ok) await audit(workspaceId, null, 'plan.limit_reached', 'workspace', workspaceId, { limit: 'channels', used: lim.used, max: lim.limit });
+  return lim.ok;
+}
+
 export function appRoutes(app: FastifyInstance) {
   app.register(async (r) => {
     r.addHook('preHandler', requireUser);
@@ -93,12 +104,27 @@ export function appRoutes(app: FastifyInstance) {
       ]);
       const used = usage?.ai_replies ?? 0;
       const pct = ws.monthly_reply_limit ? Math.min(100, Math.round((used / ws.monthly_reply_limit) * 100)) : 100;
-      const steps = [
-        [a.knowledge.length > 50, 'Biznes məlumatlarını yazın', 'Qiymətlər, iş saatları, çatdırılma, FAQ', '/app/assistant'],
-        [chans.length > 0, 'Instagram və ya WhatsApp bağlayın', 'Bir kliklə, şifrə paylaşmadan', '/app/channels'],
-        [a.enabled, 'AI cavabları aktiv edin', 'Əvvəlcə "Test et" bölməsində yoxlayın', '/app/assistant'],
-      ] as const;
-      const allDone = steps.every((s) => s[0]);
+      const ob = await one(
+        `SELECT w.onboarding_dismissed_at IS NOT NULL AS dismissed,
+           EXISTS (SELECT 1 FROM knowledge_items k WHERE k.workspace_id = $1) AS kb,
+           EXISTS (SELECT 1 FROM ai_usage u WHERE u.workspace_id = $1 AND u.purpose = 'test') AS tested,
+           EXISTS (SELECT 1 FROM automations x WHERE x.workspace_id = $1 AND x.status = 'active') AS automation,
+           EXISTS (SELECT 1 FROM notify_targets n WHERE n.workspace_id = $1) AS notify,
+           (SELECT count(*) FROM memberships m WHERE m.workspace_id = $1) > 1 AS team
+         FROM workspaces w WHERE w.id = $1`,
+        [w],
+      );
+      const steps: [boolean, string, string, string][] = [
+        [a.knowledge.length > 50 || ob.kb, 'Biznes məlumatlarını yazın', 'Qiymətlər, iş saatları, çatdırılma — AI yalnız bunlara əsaslanır', '/app/knowledge'],
+        [chans.length > 0, 'Instagram və ya WhatsApp bağlayın', 'Rəsmi Meta girişi ilə, şifrə paylaşmadan', '/app/channels'],
+        [ob.tested, 'AI-ni sınayın', '"Test et" bölməsində müştəri kimi yazın', '/app/test'],
+        [a.enabled, 'AI cavabları aktiv edin', 'Hazır olduqda bir kliklə', '/app/assistant'],
+        [ob.automation, 'İlk avtomatlaşdırmanı qurun', 'Məs: şərhə DM ilə cavab, açar sözə cavab', '/app/automations/new'],
+        [ob.notify, 'Bildirişləri qoşun', 'Operator lazım olanda WhatsApp/Telegram/Chrome ilə xəbər', '/app/settings'],
+        [ob.team, 'Komandanı dəvət edin (istəyə bağlı)', 'Operator və analitik rolları', '/app/team'],
+      ];
+      const doneN = steps.filter((x) => x[0]).length;
+      const allDone = ob.dismissed || doneN === steps.length || !can(req.user, 'assistant.write');
       return view(req, reply, 'Panel', html`${ws.expired ? html`<p class="flash error">${icon('alert')}<span>${MESSAGES.expired!.text}</span></p>` : ''}
         ${pageHead(ws.name, html`AI köməkçi: ${a.enabled ? chip('ok', 'Aktiv') : chip('neutral', 'Deaktiv')}${ws.paid_until ? html` · Abunəlik: <b>${day(ws.paid_until)}</b> tarixinə qədər` : ''}`,
           html`<a class="btn" href="/app/inbox">${icon('chat')}Söhbətlərə keç</a>`)}
@@ -115,7 +141,9 @@ export function appRoutes(app: FastifyInstance) {
               : html`<div class="empty">${icon('chat', 'i lg')}<p>Hələ mesaj yoxdur. Kanal bağlayandan sonra müştəri mesajları burada görünəcək.</p></div>`}
           </section>
           <div class="stack">
-            ${allDone ? '' : html`<section class="card"><h2>Başlanğıc</h2><ol class="steps">${steps.map(([done, t, s, href]) =>
+            ${allDone ? '' : html`<section class="card"><div class="card-head"><h2>Başlanğıc · ${doneN}/${steps.length}</h2>
+              <form method="post" action="/app/onboarding/dismiss" class="inline">${csrfField(req.csrfToken)}<button class="btn sm ghost">Gizlət</button></form></div>
+              <div class="meter"><i style="width:${Math.round((doneN / steps.length) * 100)}%"></i></div><ol class="steps">${steps.map(([done, t, s, href]) =>
               html`<li class="${done ? 'done' : ''}"><a href="${href}">${icon(done ? 'check' : 'circle')}<span><b>${t}</b><small>${s}</small></span></a></li>`)}</ol></section>`}
             <section class="card how"><h2>Mesajlar necə idarə olunur?</h2>
               <ol>
@@ -125,6 +153,11 @@ export function appRoutes(app: FastifyInstance) {
               </ol></section>
           </div>
         </div>`);
+    });
+
+    r.post('/app/onboarding/dismiss', async (req, reply) => {
+      await q(`UPDATE workspaces SET onboarding_dismissed_at = now() WHERE id = $1`, [req.user!.workspaceId]);
+      return reply.redirect('/app');
     });
 
     // ---------- Assistant ----------
@@ -237,7 +270,7 @@ export function appRoutes(app: FastifyInstance) {
         <p class="hint">${icon('lock', 'i xs')} Yalnız mesajları oxumaq və cavab göndərmək icazəsi istəyirik. Kanalı ayıranda onun bütün yazışmaları silinir.</p>`, head);
     });
 
-    r.get('/app/channels/instagram/connect', { preHandler: requireOwner }, async (req, reply) => {
+    r.get('/app/channels/instagram/connect', { preHandler: requirePerm('channels.manage') }, async (req, reply) => {
       if (!config.instagramEnabled) return reply.redirect('/app/channels?m=connect_failed');
       const state = randomToken();
       await q(`INSERT INTO oauth_states (state_hash, workspace_id, provider, expires_at) VALUES ($1, $2, 'instagram', now() + interval '10 minutes')`, [
@@ -247,13 +280,14 @@ export function appRoutes(app: FastifyInstance) {
       return reply.redirect(instagramAuthorizeUrl(state));
     });
 
-    r.get('/oauth/instagram/callback', { preHandler: requireOwner }, async (req, reply) => {
+    r.get('/oauth/instagram/callback', { preHandler: requirePerm('channels.manage') }, async (req, reply) => {
       const { code, state } = req.query as Record<string, string | undefined>;
       if (!code || !state || state.length > 100) return reply.redirect('/app/channels?m=connect_failed');
       const st = await one(`DELETE FROM oauth_states WHERE state_hash = $1 AND provider = 'instagram' AND expires_at > now() RETURNING workspace_id`, [sha256(state)]);
       if (!st || st.workspace_id !== req.user!.workspaceId) return reply.redirect('/app/channels?m=connect_failed');
       try {
         const ig = await exchangeInstagramCode(code.replace(/#_$/, ''));
+        if (!(await channelAllowed(req.user!.workspaceId, 'instagram', ig.igId))) return reply.redirect('/app/channels?m=channel_limit');
         await subscribeInstagram(ig.token);
         await claimExternalAccount('instagram', ig.igId, req.user!.workspaceId);
         await q(
@@ -263,6 +297,7 @@ export function appRoutes(app: FastifyInstance) {
           [req.user!.workspaceId, ig.igId, `@${ig.username}`, encrypt(ig.token), ig.expiresAt, ig.scopes],
         );
         await queue.add('learn_style', { kind: 'learn_style', workspaceId: req.user!.workspaceId }, { delay: 5000 });
+        await audit(req.user!.workspaceId, req.user!.id, 'channel.connect', 'channel', ig.igId, { type: 'instagram', scopes: ig.scopes });
         return reply.redirect('/app/channels?m=ig_connected');
       } catch (e) {
         req.log.warn({ err: e }, 'instagram connect failed');
@@ -270,11 +305,12 @@ export function appRoutes(app: FastifyInstance) {
       }
     });
 
-    r.post('/app/channels/whatsapp/complete', { preHandler: requireOwner, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+    r.post('/app/channels/whatsapp/complete', { preHandler: requirePerm('channels.manage'), config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
       const p = z
         .object({ code: z.string().min(10).max(2000), waba_id: z.string().regex(/^\d{5,25}$/), phone_number_id: z.string().regex(/^\d{5,25}$/) })
         .safeParse(req.body);
       if (!p.success || !config.whatsappEnabled) return reply.code(400).send({ ok: false });
+      if (!(await channelAllowed(req.user!.workspaceId, 'whatsapp', p.data.phone_number_id))) return reply.code(403).send({ ok: false, error: MESSAGES.channel_limit!.text });
       try {
         const wa = await completeEmbeddedSignup(p.data.code, p.data.waba_id, p.data.phone_number_id);
         await claimExternalAccount('whatsapp', p.data.phone_number_id, req.user!.workspaceId);
@@ -284,6 +320,7 @@ export function appRoutes(app: FastifyInstance) {
              access_token_enc = EXCLUDED.access_token_enc, extra_enc = coalesce(EXCLUDED.extra_enc, channels.extra_enc), status = 'active', status_reason = '', scopes = '{whatsapp_business_messaging,whatsapp_business_management}'`,
           [req.user!.workspaceId, p.data.phone_number_id, p.data.waba_id, wa.displayName, encrypt(wa.token), wa.pin ? encrypt(JSON.stringify({ pin: wa.pin })) : null],
         );
+        await audit(req.user!.workspaceId, req.user!.id, 'channel.connect', 'channel', p.data.phone_number_id, { type: 'whatsapp' });
         return reply.send({ ok: true });
       } catch (e) {
         req.log.warn({ err: e }, 'whatsapp connect failed');
@@ -291,19 +328,41 @@ export function appRoutes(app: FastifyInstance) {
       }
     });
 
-    r.post('/app/channels/:id/disconnect', { preHandler: requireOwner }, async (req, reply) => {
+    r.post('/app/channels/:id/disconnect', { preHandler: requirePerm('channels.manage') }, async (req, reply) => {
       const id = idParam(req);
       const ch = id && (await one<ChannelRow>('SELECT * FROM channels WHERE id = $1 AND workspace_id = $2', [id, req.user!.workspaceId]));
-      if (ch) await removeChannel(ch);
+      if (ch) {
+        await removeChannel(ch);
+        await audit(req.user!.workspaceId, req.user!.id, 'channel.disconnect', 'channel', ch.external_id, { type: ch.type });
+      }
       return reply.redirect('/app/channels?m=disconnected');
     });
 
     // ---------- Settings ----------
     r.get('/app/settings', async (req, reply) => {
-      const targets = await q<{ kind: string }>(`SELECT kind FROM notify_targets WHERE workspace_id = $1`, [req.user!.workspaceId]);
+      const w0 = req.user!.workspaceId;
+      const targets = await q<{ kind: string }>(`SELECT kind FROM notify_targets WHERE workspace_id = $1`, [w0]);
       const count = (k: string) => targets.filter((t) => t.kind === k).length;
+      let planCard: Safe | '' = '';
+      if (can(req.user, 'billing.view')) {
+        const [plan, limits, usage] = await Promise.all([
+          one(`SELECT p.name, p.price_note, w.paid_until FROM workspaces w LEFT JOIN plans p ON p.id = w.plan_id WHERE w.id = $1`, [w0]),
+          limitsOf(w0),
+          Promise.all(LIMIT_KEYS.map((k) => usageOf(w0, k))),
+        ]);
+        const fmtN = (k: string, n: number) => (k.startsWith('ai_budget') ? `$${n.toFixed(2)}` : String(Math.round(n)));
+        planCard = html`<section class="card span"><div class="card-head"><h2>${icon('chart')}Tarif və limitlər</h2>${chip('ok', plan?.name ?? 'Fərdi')}</div>
+          <p class="muted">${plan?.price_note ?? ''}${plan?.paid_until ? html` · ödənilib: <b>${day(plan.paid_until)}</b>` : ''}. Limitlər serverdə yoxlanılır: dolanda avtomatik cavablar dayanır, siz isə əl ilə yazmağa davam edə bilirsiniz.</p>
+          <div class="table-wrap"><table><tbody>${LIMIT_KEYS.map((k, i) => {
+            const lim = limits[k];
+            const used = usage[i]!;
+            const pc = lim ? Math.min(100, Math.round((used / lim) * 100)) : 0;
+            return html`<tr><td>${LIMIT_LABELS[k]}</td><td class="num right">${k === 'history_days' ? `${lim ?? '∞'} gün` : html`${fmtN(k, used)} / ${lim === null ? '∞' : fmtN(k, lim)}`}
+              ${lim && k !== 'history_days' ? html`<div class="meter ${pc >= 100 ? 'danger' : pc >= 80 ? 'warn' : ''}"><i style="width:${pc}%"></i></div>` : ''}</td></tr>`;
+          })}</tbody></table></div></section>`;
+      }
       return view(req, reply, 'Ayarlar', html`${pageHead('Ayarlar', html`Hesab: <b>${req.user!.email}</b>`)}
-        <div class="form-grid">
+        <div class="form-grid">${planCard}
           <section class="card span"><div class="card-head"><h2>${icon('zap')}Bildirişlər</h2></div>
             <p class="muted">Müştəri sizin cavabınızı gözləyəndə (AI bilmədiyi sual, şikayət, sifariş təsdiqi) xəbər tutun. Bir neçə yolu birlikdə qoşa bilərsiniz.</p>
             <div class="notify-grid">

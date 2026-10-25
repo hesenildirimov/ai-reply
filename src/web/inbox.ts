@@ -381,7 +381,8 @@ export function inboxRoutes(app: FastifyInstance) {
     const backTo = async (req: FastifyRequest, reply: FastifyReply, contactId: string) => {
       const conv = await one(`SELECT id, workspace_id FROM conversations WHERE contact_id = $1 ORDER BY last_message_at DESC LIMIT 1`, [contactId]);
       if (conv) await publish(conv.workspace_id, { type: 'conversation', conversationId: conv.id });
-      return wantsJson(req) ? reply.send({ ok: true }) : reply.redirect(conv ? `/app/inbox/${conv.id}?m=saved` : `/app/contacts/${contactId}?m=saved`);
+      if (wantsJson(req)) return reply.send({ ok: true });
+      return reply.redirect(conv && (req.body as any)?.back !== 'contact' ? `/app/inbox/${conv.id}?m=saved` : `/app/contacts/${contactId}?m=saved`);
     };
     r.post('/app/contacts/:id/tags', perm('contacts.write'), async (req, reply) => {
       const ct = await ownedContact(req);

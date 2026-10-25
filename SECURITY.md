@@ -81,3 +81,13 @@ Qiymətləndirmə: ✅ yoxlanıldı/qaydasındadır · 🔧 auditdə düzəldild
 ## 13. Testing
 - 🔧 Əlavə olunan inteqrasiya testləri (`test/integration.test.ts`): giriş tələbi, CSRF və yanlış Origin, IDOR (oxuma/silmə/cavab), admin girişi, webhook imzası, deduplikasiya, XSS escape, Telegram secret, ödəniş tarixi və limit.
 - ⚠️ Çatışmayan testlər: şifrə linkinin təkrar istifadəsi və vaxtının bitməsi, login bloklanması, OAuth `state` replay-i, data-deletion callback-i, Instagram echo ilə AI-nin dayanması, prompt injection üçün qiymətləndirmə (eval) dəsti.
+
+## 14. P0–P4 əlavələri (2026-10)
+- 🔧 **Rollar** (`owner`, `admin`, `agent`, `analyst`): icazə matrisi `src/web/auth.ts` (`PERMS`) serverdə hər marşrutda yoxlanılır (`requirePerm`). Menyuda gizlətmək yalnız kosmetikdir. Admin başqa admin yarada və ya dəyişə bilmir, sahibi heç kim dəyişə bilmir. Üzv çıxarılanda bütün sessiyaları silinir.
+- 🔧 **Audit jurnalı** (`audit_log`, panel: Komanda → Audit jurnalı): üzv dəvəti/rol/çıxarma, kanal bağlama/ayırma, söhbət təyini və ötürmə, kontakt tag/bayraq/birləşdirmə/import/eksport, avtomatlaşdırma, bilik bazası, webhook, tarif limiti və AI büdcəsi. Mesaj mətni və sirlər yazılmır.
+- 🔧 **Webhook-lar (SSRF)**: yalnız `https`. Lokal, şəxsi, link-local (169.254.x — cloud metadata), CGNAT və multicast ünvanlar həm saxlanarkən, həm də qoşulma anında (DNS rebinding-ə qarşı `lookup` səviyyəsində) bloklanır. Yönləndirmələrə əməl olunmur, 10 san. timeout var. Secret AES-GCM ilə şifrəlidir və açar rotasiyasında yenidən şifrələnir. Sorğular HMAC-SHA256 ilə imzalanır (timestamp ilə).
+- 🔧 **CSV**: eksportda formula inyeksiyası qorunur (`= + - @` ilə başlayan xanalar). İmport yalnız öz workspace-indəki mövcud kontaktları dəyişir: maks. 5000 sətir, 1 MB, CSRF header tələb olunur.
+- 🔧 **Tarif limitləri** serverdə yoxlanılır (`src/plans.ts` → `checkLimit` / `automationBlocked`). Limit dolanda bot susur, gələn mesajlar itmir.
+- 🔧 **AI xərci**: gündəlik/aylıq büdcə (təxmini, `ai_usage` jurnalından), workspace üzrə dəqiqəlik limit (`AI_WORKSPACE_RPM`), çağırış başına `max_tokens`, 30 san. timeout.
+- ✅ Testlər: `test/reliability|automations|inbox|analytics|saas.test.ts`. Rollar, tenant izolyasiyası, SSRF, imza, CSV, limitlər, birləşdirmə, idempotent göndərmə, təkrarlanan webhook, paralel worker-lər yoxlanılır.
+- ⚠️ Model davranışı (qiymət uydurmamaq, prompt injection) unit testlə yoxlanıla bilməz: `scripts/eval-prices.ts` real API açarı ilə əl ilə işlədilməlidir.

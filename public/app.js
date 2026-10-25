@@ -30,3 +30,5 @@ if (box) {
     if (!document.hidden && (!t || (!t.value && document.activeElement !== t))) location.reload();
   }, Number(box.dataset.autorefresh) * 1000);
 }
+// Selects marked data-autosubmit submit their form on change (filters, role pickers).
+document.addEventListener('change', (e) => { if (e.target.matches && e.target.matches('[data-autosubmit]')) e.target.form.requestSubmit(); });

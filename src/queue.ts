@@ -12,7 +12,8 @@ export type JobData =
   | { kind: 'learn_style'; workspaceId: string }
   | { kind: 'comment'; event: Extract<InboundEvent, { type: 'comment' }> }
   | { kind: 'automation_step'; runId: string; step: number }
-  | { kind: 'summarize'; conversationId: string; workspaceId: string };
+  | { kind: 'summarize'; conversationId: string; workspaceId: string }
+  | { kind: 'webhook'; deliveryId: string };
 
 export const queue = new Queue<JobData>(QUEUE, {
   connection: redis,

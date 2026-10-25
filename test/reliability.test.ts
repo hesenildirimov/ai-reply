@@ -143,4 +143,17 @@ describe.skipIf(!enabled)('P0 reliability (integration)', () => {
       expect(verifyMetaSignature(Buffer.from(body.replace('hi', 'ha')), sig, ['test-meta-secret'])).toBe(false);
     });
   });
+  // Runs last in this file: it rebuilds the schema.
+  it('every rollback file reverses its migration and the migration re-applies cleanly (up → down → up)', async () => {
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const tables = async () => (await db.q(`SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY 1`)).map((t) => t.tablename);
+    const before = await tables();
+    const downs = readdirSync('migrations/down').filter((f) => f.endsWith('.down.sql')).sort().reverse();
+    expect(downs.length).toBeGreaterThanOrEqual(6);
+    for (const f of downs) await db.pool.query(readFileSync(`migrations/down/${f}`, 'utf8'));
+    const after = await tables();
+    for (const t of ['ai_usage', 'automations', 'plans', 'conversation_notes', 'knowledge_items', 'webhooks']) expect(after).not.toContain(t);
+    for (const f of downs.map((d) => d.replace('.down.sql', '.sql')).reverse()) await db.pool.query(readFileSync(`migrations/${f}`, 'utf8'));
+    expect(await tables()).toEqual(before);
+  });
 });

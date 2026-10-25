@@ -1,4 +1,6 @@
 import { one } from './db.js';
+import { audit } from './events.js';
+import { redis } from './queue.js';
 
 export const LIMIT_KEYS = ['contacts', 'channels', 'active_automations', 'members', 'bot_messages_month', 'ai_budget_usd_month', 'ai_budget_usd_day', 'history_days'] as const;
 export type LimitKey = (typeof LIMIT_KEYS)[number];
@@ -24,7 +26,7 @@ export async function limitsOf(workspaceId: string): Promise<Record<LimitKey, nu
 }
 
 const USAGE_SQL: Record<LimitKey, string | null> = {
-  contacts: `SELECT count(*)::float AS n FROM contacts WHERE workspace_id = $1 AND last_seen_at > now() - interval '30 days'`,
+  contacts: `SELECT count(*)::float AS n FROM contacts WHERE workspace_id = $1 AND merged_into IS NULL AND last_seen_at > now() - interval '30 days'`,
   channels: `SELECT count(*)::float AS n FROM channels WHERE workspace_id = $1`,
   active_automations: `SELECT count(*)::float AS n FROM automations WHERE workspace_id = $1 AND status = 'active'`,
   members: `SELECT count(*)::float AS n FROM memberships WHERE workspace_id = $1`,
@@ -44,4 +46,21 @@ export async function checkLimit(workspaceId: string, key: LimitKey, adding = 1)
   const limit = (await limitsOf(workspaceId))[key];
   const used = await usageOf(workspaceId, key);
   return { ok: limit === null || used + adding <= limit, used: Math.round(used * 100) / 100, limit };
+}
+
+/**
+ * Plan limits that stop automated (bot/AI) messages: active contacts over the plan, or the monthly automated-message
+ * allowance used up. Incoming messages are always stored and staff can still reply by hand.
+ */
+export async function automationBlocked(workspaceId: string): Promise<LimitKey | null> {
+  if (!(await checkLimit(workspaceId, 'contacts', 0)).ok) return 'contacts';
+  if (!(await checkLimit(workspaceId, 'bot_messages_month', 1)).ok) return 'bot_messages_month';
+  return null;
+}
+
+/** One audit entry per workspace, limit and day (shown in the audit log and the admin panel). */
+export async function limitAlert(workspaceId: string, key: string, meta: Record<string, unknown> = {}) {
+  if ((await redis.set(`limit-alert:${workspaceId}:${key}:${new Date().toISOString().slice(0, 10)}`, '1', 'EX', 86400, 'NX')) === 'OK') {
+    await audit(workspaceId, null, 'plan.limit_reached', 'workspace', workspaceId, { limit: key, ...meta });
+  }
 }

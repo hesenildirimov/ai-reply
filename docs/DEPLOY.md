@@ -49,3 +49,35 @@ Caddy SSL sertifikatını avtomatik alır və yeniləyir. HTTP sorğuları HTTPS
 ```bash
 git pull && docker compose up -d --build   # miqrasiyalar avtomatik işləyir
 ```
+
+## 7. Miqrasiyalar və geri qaytarma (rollback)
+Miqrasiyalar (`migrations/NNN_*.sql`) hər buraxılışda avtomatik və ardıcıl işləyir, hər biri tək tranzaksiyada. Hər birinin geri qaytarma faylı var: `migrations/down/NNN_*.down.sql`.
+
+Yeniləmədən **əvvəl** həmişə backup götürün:
+```bash
+docker compose exec backup sh -c 'pg_dump -h db -U app -d aireply -Fc -f /backups/pre-update-$(date -u +%Y%m%d-%H%M).dump'
+git log --oneline -1                     # hazırkı versiyanı qeyd edin
+```
+
+Problem olarsa (məs. 010-dan sonra):
+```bash
+git checkout <əvvəlki-commit>
+docker compose exec -T db psql -U app aireply < migrations/down/010_saas.down.sql
+docker compose exec -T db psql -U app aireply -c "DELETE FROM schema_migrations WHERE name = '010_saas.sql'"
+docker compose up -d --build
+```
+Down faylları yalnız həmin miqrasiyanın əlavə etdiyi cədvəl və sütunları silir: o vaxtdan bəri yazılmış məlumatlar (məs. webhook-lar, kontakt birləşdirmələri) itir. Məlumat itkisi qəbuledilməzdirsə, down əvəzinə yenilənmədən əvvəlki backup-dan bərpa edin (`scripts/restore.sh`).
+Bir neçə addım geri getmək üçün down fayllarını tərs ardıcıllıqla işlədin (010 → 009 → …). `006`/`007`-nin down-u kontakt və tarif məlumatlarını silir.
+
+## 8. Yeni mühit dəyişənləri (P0–P4)
+| Dəyişən | Standart | Mənası |
+|---|---|---|
+| `AI_ROUTING` | `on` | Sadə mesajlar sürətli/ucuz modelə (`config/ai-models.json` → `routing.fast`) |
+| `AI_WORKSPACE_RPM` | `30` | Bir biznes üçün dəqiqədə maksimum AI çağırışı |
+| `AI_MODEL`, `AI_MODEL_FAST` | config-dən | Modelləri env ilə dəyişmək (istəyə görə) |
+| `AI_MODELS_FILE` | `config/ai-models.json` | Model qiymətləri, routing, token büdcələri |
+| `ENCRYPTION_KEY_PREVIOUS` | — | Yalnız açar rotasiyası zamanı: köhnə açar. Worker məlumatları yeni açarla yenidən şifrələyir. Bitdikdən sonra silin |
+| `WEBHOOK_ALLOW_PRIVATE` | — | **Yalnız lokal test**: lokal IP-yə webhook. Production-da nəzərə alınmır |
+
+## 9. Tarif limitləri
+Tariflər `plans` cədvəlindədir (Start / Biznes / Pro, `migrations/007`). Admin panelində müştəri səhifəsindən tarif seçilir və istənilən limit fərdi olaraq dəyişdirilir ("limitsiz" və ya rəqəm). Limitlər serverdə yoxlanılır: kanallar, komanda üzvləri, aktiv avtomatlaşdırmalar, aktiv kontaktlar (30 gün), aylıq avtomatik mesaj sayı, AI büdcəsi (gün/ay), analitika tarixçəsi. Limit dolanda avtomatik cavablar dayanır, gələn mesajlar saxlanılır və əl ilə cavab vermək mümkün qalır. Hadisə audit jurnalına `plan.limit_reached` kimi yazılır.

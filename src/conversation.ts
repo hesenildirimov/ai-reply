@@ -1,3 +1,4 @@
+import { emit } from './webhooks.js';
 import { SendError, sendText, textLimit, type SendOpts } from './channels/index.js';
 import type { ChannelRow } from './channels/types.js';
 import { one, q } from './db.js';
@@ -80,6 +81,7 @@ export async function handoff(c: ConvCtx, holdingReply: string, reason: string, 
   if (!flipped) return;
   // Analytics: counts handed-over conversations (no message text stored).
   await q(`INSERT INTO audit_log (workspace_id, action, target_type, target_id, meta) VALUES ($1, 'conversation.handoff', 'conversation', $2, $3)`, [c.workspace_id, c.id, JSON.stringify({ reason: reason.slice(0, 80) })]);
+  await emit(c.workspace_id, 'conversation.handoff', { conversation_id: c.id, contact_id: c.contact_id, channel: c.channel.type, reason: reason.slice(0, 80) });
   if (holdingReply.trim()) await deliver(c, holdingReply, 'ai', `hold:${messageId}`).catch((e) => console.error('holding reply failed:', (e as Error).message));
   await notifyWaiting(c.workspace_id, c.id, c.display_name || c.external_user_id, c.channel.type, reason);
 }

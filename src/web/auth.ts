@@ -95,12 +95,15 @@ export function registerAuth(app: FastifyInstance) {
 export type Role = 'owner' | 'admin' | 'agent' | 'analyst';
 export type Permission =
   | 'inbox.reply' | 'inbox.manage' | 'contacts.write' | 'automations.write' | 'assistant.write'
-  | 'channels.manage' | 'team.manage' | 'billing.view' | 'analytics.view' | 'workspace.delete';
+  | 'channels.manage' | 'team.manage' | 'billing.view' | 'analytics.view' | 'workspace.delete'
+  | 'contacts.export' | 'integrations.manage' | 'audit.view';
 
 /** Backend permission matrix. Every write route checks this (UI hiding is only cosmetic). */
 const PERMS: Record<Role, Permission[]> = {
-  owner: ['inbox.reply', 'inbox.manage', 'contacts.write', 'automations.write', 'assistant.write', 'channels.manage', 'team.manage', 'billing.view', 'analytics.view', 'workspace.delete'],
-  admin: ['inbox.reply', 'inbox.manage', 'contacts.write', 'automations.write', 'assistant.write', 'channels.manage', 'team.manage', 'billing.view', 'analytics.view'],
+  owner: ['inbox.reply', 'inbox.manage', 'contacts.write', 'automations.write', 'assistant.write', 'channels.manage', 'team.manage', 'billing.view', 'analytics.view', 'workspace.delete',
+    'contacts.export', 'integrations.manage', 'audit.view'],
+  admin: ['inbox.reply', 'inbox.manage', 'contacts.write', 'automations.write', 'assistant.write', 'channels.manage', 'team.manage', 'billing.view', 'analytics.view',
+    'contacts.export', 'integrations.manage', 'audit.view'],
   agent: ['inbox.reply', 'inbox.manage', 'contacts.write', 'analytics.view'],
   analyst: ['analytics.view'],
 };

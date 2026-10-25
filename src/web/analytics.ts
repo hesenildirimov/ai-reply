@@ -1,3 +1,4 @@
+import { csvLine } from '../csv.js';
 import type { FastifyInstance } from 'fastify';
 import { aiStats, automationStats, commentFunnel, daily, filterSchema, overview, windowFor, type AnalyticsFilters } from '../analytics.js';
 import { TRIGGER_LABELS } from '../automations/capabilities.js';
@@ -137,13 +138,7 @@ export function analyticsRoutes(app: FastifyInstance) {
       const f = filterSchema.parse(req.query ?? {});
       const w = await windowFor(w0, f);
       const type = String((req.query as any)?.type ?? 'daily');
-      const cell = (v: unknown) => {
-        const s = v === null || v === undefined ? '' : v instanceof Date ? v.toISOString() : String(v);
-        // CSV injection guard: a leading = + - @ would run as a formula in Excel.
-        const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
-        return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
-      };
-      const line = (vals: unknown[]) => `${vals.map(cell).join(',')}\n`;
+      const line = csvLine;
       reply.header('Content-Type', 'text/csv; charset=utf-8').header('Content-Disposition', `attachment; filename="ai-reply-${type}-${w.from.toISOString().slice(0, 10)}.csv"`);
       if (type === 'daily') return reply.send(['﻿day,incoming,outgoing\n', ...(await daily(w0, f, w)).map((d) => line([d.day, d.incoming, d.outgoing]))].join(''));
       if (type === 'automations') {

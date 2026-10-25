@@ -1,3 +1,4 @@
+import { deliverWebhook } from './webhooks.js';
 import { DelayedError, UnrecoverableError, Worker, type Job } from 'bullmq';
 import { Redis } from 'ioredis';
 import { processComment, resumeRun } from './automations/engine.js';
@@ -42,7 +43,7 @@ async function refreshTokens() {
 /** During a key rotation (ENCRYPTION_KEY_PREVIOUS set) re-encrypts every secret with the current key. */
 async function reencryptSecrets() {
   if (!process.env.ENCRYPTION_KEY_PREVIOUS) return;
-  const cols: [string, string][] = [['channels', 'access_token_enc'], ['channels', 'extra_enc'], ['users', 'totp_secret_enc'], ['notify_targets', 'data_enc']];
+  const cols: [string, string][] = [['channels', 'access_token_enc'], ['channels', 'extra_enc'], ['users', 'totp_secret_enc'], ['notify_targets', 'data_enc'], ['webhooks', 'secret_enc']];
   for (const [table, col] of cols) {
     for (const row of await q(`SELECT id, ${col} AS v FROM ${table} WHERE ${col} IS NOT NULL`)) {
       const { plain, stale } = decryptWithInfo(row.v);
@@ -60,6 +61,7 @@ async function maintenance() {
   await q(`DELETE FROM messages WHERE created_at < now() - make_interval(days => $1)`, [config.RETENTION_DAYS]);
   await q(`DELETE FROM conversations c WHERE last_message_at < now() - make_interval(days => $1) AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)`, [config.RETENTION_DAYS]);
   await q(`DELETE FROM channel_events WHERE created_at < now() - interval '180 days'`);
+  await q(`DELETE FROM webhook_deliveries WHERE created_at < now() - interval '14 days'`);
   // A send that crashed mid-flight stays 'pending'; after 15 min mark it 'unknown' (shown to staff, never auto-resent).
   await q(`UPDATE messages SET status = 'unknown', error = 'interrupted' WHERE status = 'pending' AND created_at < now() - interval '15 minutes'`);
   await refreshTokens();
@@ -91,6 +93,7 @@ async function run(job: Job<Data>, token?: string) {
     if (d.kind === 'comment') return await processComment(d.event);
     if (d.kind === 'automation_step') return await resumeRun(d.runId, d.step);
     if (d.kind === 'summarize') return await updateSummary(d.conversationId, d.workspaceId);
+    if (d.kind === 'webhook') return await deliverWebhook(d.deliveryId, job.attemptsMade + 1, job.attemptsMade + 1 >= (job.opts.attempts ?? 1));
     if (d.kind === 'maintenance') return await maintenance();
   } catch (e) {
     if (e instanceof DelayedError) throw e;
