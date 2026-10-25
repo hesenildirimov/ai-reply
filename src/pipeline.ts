@@ -1,5 +1,5 @@
-import { generateReply, type Turn } from './ai.js';
-import { sendText, textLimit } from './channels/index.js';
+import { aiRetryable, generateReply, type Turn } from './ai.js';
+import { SendError, sendText, textLimit, type SendOpts } from './channels/index.js';
 import { instagramUsername } from './channels/instagram.js';
 import type { ChannelRow, InboundEvent } from './channels/types.js';
 import { markWhatsAppRead } from './channels/whatsapp.js';
@@ -7,7 +7,9 @@ import { config } from './config.js';
 import { decrypt } from './crypto.js';
 import { one, q } from './db.js';
 import { notifyWaiting } from './notify.js';
-import { queue } from './queue.js';
+import { recordEvent } from './events.js';
+import { withLock } from './locks.js';
+import { queue, redis } from './queue.js';
 
 /** Meta only allows free-form replies within 24h of the customer's last message. */
 export const WINDOW_MS = 24 * 3600 * 1000;
@@ -75,15 +77,41 @@ async function loadConv(conversationId: string): Promise<ConvCtx | undefined> {
 
 const inWindow = (c: Pick<ConvCtx, 'last_inbound_at'>) => !!c.last_inbound_at && Date.now() - new Date(c.last_inbound_at).getTime() < WINDOW_MS;
 
-async function deliver(c: ConvCtx, text: string, sender: 'ai' | 'human'): Promise<void> {
+/**
+ * Idempotent send. The message row is claimed (status 'pending') under its idempotency key BEFORE calling Meta:
+ * - key already sent / pending / unknown -> nothing is sent again (returns 'duplicate');
+ * - key failed earlier with a definite Meta error -> the stored text is re-sent (no new AI call);
+ * - Meta error -> row 'failed' (+ SendError, retryable or not); network error -> row 'unknown', never resent automatically.
+ */
+export async function deliver(c: Pick<ConvCtx, 'id' | 'workspace_id' | 'external_user_id' | 'channel'>, text: string, sender: 'ai' | 'human', key: string, opts: SendOpts = {}): Promise<'sent' | 'duplicate'> {
   const body = text.slice(0, textLimit(c.channel));
-  const mid = await sendText(c.channel, c.external_user_id, body);
-  await q(
-    `INSERT INTO messages (workspace_id, conversation_id, direction, sender, external_id, body) VALUES ($1, $2, 'out', $3, $4, $5) ON CONFLICT DO NOTHING`,
-    [c.workspace_id, c.id, sender, mid, body],
-  );
+  const claimed =
+    (await one<{ id: string; body: string }>(
+      `INSERT INTO messages (workspace_id, conversation_id, direction, sender, body, status, idempotency_key)
+       VALUES ($1, $2, 'out', $3, $4, 'pending', $5) ON CONFLICT (workspace_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING id, body`,
+      [c.workspace_id, c.id, sender, body, key],
+    )) ??
+    (await one<{ id: string; body: string }>(
+      `UPDATE messages SET status = 'pending', error = NULL WHERE workspace_id = $1 AND idempotency_key = $2 AND status = 'failed' RETURNING id, body`,
+      [c.workspace_id, key],
+    ));
+  if (!claimed) return 'duplicate';
+  let mid: string;
+  try {
+    mid = await sendText(c.channel, c.external_user_id, claimed.body, opts);
+  } catch (e) {
+    const se = e instanceof SendError ? e : new SendError('network', false, false);
+    await q(`UPDATE messages SET status = $2, error = $3 WHERE id = $1`, [claimed.id, se.definite ? 'failed' : 'unknown', se.reason]);
+    throw se;
+  }
+  await q(`UPDATE messages SET status = 'sent', external_id = $2, created_at = now() WHERE id = $1`, [claimed.id, mid]);
   await q('UPDATE conversations SET last_message_at = now() WHERE id = $1', [c.id]);
+  return 'sent';
 }
+
+/** Body of an earlier attempt that failed definitively, so a retry re-sends it instead of paying for a new AI call. */
+const failedBody = async (workspaceId: string, key: string) =>
+  (await one<{ body: string; status: string }>(`SELECT body, status FROM messages WHERE workspace_id = $1 AND idempotency_key = $2`, [workspaceId, key])) ?? null;
 
 /** Counts one AI reply against the monthly limit. 'expired' = subscription not paid (paid_until passed). */
 export async function reserveReply(workspaceId: string): Promise<'ok' | 'limit' | 'expired'> {
@@ -105,35 +133,55 @@ export async function reserveReply(workspaceId: string): Promise<'ok' | 'limit' 
 /** Max AI replies per conversation per hour: stops one spammer from burning the business's monthly quota. */
 const CONV_HOURLY_CAP = 15;
 
-async function handoff(c: ConvCtx, holdingReply: string, reason: string): Promise<void> {
+async function handoff(c: ConvCtx, holdingReply: string, reason: string, messageId: string): Promise<void> {
   const flipped = await one(`UPDATE conversations SET needs_human = true WHERE id = $1 AND needs_human = false RETURNING id`, [c.id]);
   if (!flipped) return;
-  if (holdingReply.trim()) await deliver(c, holdingReply, 'ai');
+  if (holdingReply.trim()) await deliver(c, holdingReply, 'ai', `hold:${messageId}`).catch((e) => console.error('holding reply failed:', (e as Error).message));
   await notifyWaiting(c.workspace_id, c.id, c.display_name || c.external_user_id, c.channel.type, reason);
 }
 
-export async function processReply(conversationId: string, messageId: string): Promise<void> {
+/** Lock TTL must exceed the slowest path: Claude (30 s timeout × 2 tries) + Meta send + DB. */
+const CONV_LOCK_MS = 120_000;
+
+/**
+ * Handles the newest inbound message of a conversation. Serialized per conversation with a Redis lock
+ * ('busy' = another worker is on it; the caller re-queues). `finalAttempt` = last BullMQ try: on AI failure we hand off
+ * to staff instead of failing silently.
+ */
+export async function processReply(conversationId: string, messageId: string, finalAttempt = true): Promise<'done' | 'busy'> {
+  const r = await withLock(`conv:${conversationId}`, CONV_LOCK_MS, () => replyLocked(conversationId, messageId, finalAttempt));
+  return r === 'busy' ? 'busy' : 'done';
+}
+
+async function replyLocked(conversationId: string, messageId: string, finalAttempt: boolean): Promise<void> {
   const c = await loadConv(conversationId);
   // Only the newest message's job acts (debounce); closed window or broken channel = nothing to do.
   if (!c || c.latest_in !== messageId || c.channel.status !== 'active' || !inWindow(c)) return;
+  const key = `ai:${messageId}`;
+  const earlier = await failedBody(c.workspace_id, key);
+  if (earlier && earlier.status !== 'failed') return; // already answered (or possibly answered): never twice
+  if (earlier) return void (await deliver(c, earlier.body, 'ai', key)); // resend stored text, no new AI call
+
   const a = await one(`SELECT * FROM assistants WHERE workspace_id = $1`, [c.workspace_id]);
   const who = c.display_name || c.external_user_id;
   // Staff is handling this conversation (or AI is off): just tell them a new message arrived.
   if (c.needs_human || c.ai_paused || !a?.enabled) return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj');
 
   const recent = await q<{ sender: string; body: string }>(
-    `SELECT sender, body FROM (SELECT sender, body, created_at FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 20) t ORDER BY created_at`,
+    `SELECT sender, body FROM (SELECT sender, body, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') ORDER BY created_at DESC LIMIT 20) t ORDER BY created_at`,
     [c.id],
   );
   const lastText = recent.at(-1)?.body ?? '';
-  if (HUMAN_KEYWORDS.test(lastText)) return handoff(c, a.handoff_message, 'müştəri insanla danışmaq istəyir');
+  if (HUMAN_KEYWORDS.test(lastText)) return handoff(c, a.handoff_message, 'müştəri insanla danışmaq istəyir', messageId);
 
   const hourly = await one<{ n: number }>(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND sender = 'ai' AND created_at > now() - interval '1 hour'`, [c.id]);
-  if (hourly!.n >= CONV_HOURLY_CAP) return handoff(c, '', 'çox sayda mesaj (spam ola bilər)');
+  if (hourly!.n >= CONV_HOURLY_CAP) return handoff(c, '', 'çox sayda mesaj (spam ola bilər)', messageId);
 
-  const quota = await reserveReply(c.workspace_id);
+  // Quota is charged once per inbound message, even if this job is retried.
+  const firstTry = (await redis.set(`quota:${messageId}`, '1', 'EX', 86400, 'NX')) === 'OK';
+  const quota = firstTry ? await reserveReply(c.workspace_id) : 'ok';
   if (quota === 'expired') return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'abunəlik bitib, AI cavab vermir');
-  if (quota === 'limit') return handoff(c, a.handoff_message, 'aylıq AI limiti bitib');
+  if (quota === 'limit') return handoff(c, a.handoff_message, 'aylıq AI limiti bitib', messageId);
 
   if (c.channel.type === 'instagram' && !c.display_name) {
     const name = await instagramUsername(decrypt(c.channel.access_token_enc), c.external_user_id);
@@ -141,14 +189,21 @@ export async function processReply(conversationId: string, messageId: string): P
   }
 
   const history: Turn[] = recent.map((m) => ({ role: m.sender === 'customer' ? 'user' : 'assistant', text: m.body }));
-  const result = await generateReply(a, history, a.ai_disclosure && c.ai_sent === 0);
+  let result;
+  try {
+    result = await generateReply(a, history, a.ai_disclosure && c.ai_sent === 0, { workspaceId: c.workspace_id, conversationId: c.id, purpose: 'reply' });
+  } catch (e) {
+    await recordEvent(c.workspace_id, c.channel.id, aiRetryable(e) ? 'ai_timeout' : 'ai_error', (e as Error).name);
+    if (aiRetryable(e) && !finalAttempt) throw e; // BullMQ retries with backoff
+    return handoff(c, a.handoff_message, 'AI cavab verə bilmədi', messageId); // never leave the customer silently unanswered
+  }
 
   // Re-check: a newer message, a human takeover or a pause may have happened while the model ran.
   const fresh = await loadConv(conversationId);
   if (!fresh || fresh.latest_in !== messageId || fresh.needs_human || fresh.ai_paused || !inWindow(fresh)) return;
 
-  if (result.kind === 'handoff') return handoff(fresh, result.holdingReply || a.handoff_message, result.reason);
-  await deliver(fresh, result.text, 'ai');
+  if (result.kind === 'handoff') return handoff(fresh, result.holdingReply || a.handoff_message, result.reason, messageId);
+  await deliver(fresh, result.text, 'ai', key);
 }
 
 /** Instagram echo of a message we did not send through the API = staff replied in the Instagram app. */
@@ -169,11 +224,12 @@ export async function processEcho(channelId: string, userId: string, mid: string
 export type ManualResult = 'sent' | 'window_closed' | 'not_found';
 
 /** Staff reply from the inbox. Pauses the AI on that conversation. */
-export async function sendManualReply(workspaceId: string, conversationId: string, text: string): Promise<ManualResult> {
+export async function sendManualReply(workspaceId: string, conversationId: string, text: string, nonce: string): Promise<ManualResult> {
   const c = await loadConv(conversationId);
   if (!c || c.workspace_id !== workspaceId) return 'not_found';
   if (!inWindow(c)) return 'window_closed';
-  await deliver(c, text, 'human');
+  // nonce comes from the form: a double-click or browser resubmit can't send the same reply twice.
+  await deliver(c, text, 'human', `human:${nonce}`);
   await q(`UPDATE conversations SET ai_paused_until = now() + ${HUMAN_PAUSE} WHERE id = $1`, [c.id]);
   return 'sent';
 }

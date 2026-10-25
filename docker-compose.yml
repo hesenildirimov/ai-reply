@@ -23,6 +23,11 @@ services:
     build: .
     env_file: .env
     environment: *dbenv
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/readyz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     read_only: true
     security_opt: ["no-new-privileges:true"]
     tmpfs: [/tmp]

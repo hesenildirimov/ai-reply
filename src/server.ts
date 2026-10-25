@@ -24,7 +24,10 @@ export async function buildServer() {
     bodyLimit: 512 * 1024,
     logger: {
       level: config.isProd ? 'info' : 'debug',
-      redact: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-csrf-token"]'],
+      redact: {
+        paths: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-csrf-token"]', '*.access_token', '*.token', '*.password', '*.code', '*.secret'],
+        censor: '[redacted]',
+      },
       // Query strings can carry OAuth codes / tokens: never log them.
       serializers: { req: (r) => ({ method: r.method, url: r.url.split('?')[0], ip: r.ip }) },
     },
@@ -67,6 +70,17 @@ export async function buildServer() {
   // skipOnError: a Redis outage must not take the whole site down with it.
   await app.register(rateLimit, { global: true, max: 300, timeWindow: '1 minute', redis, skipOnError: true });
   await app.register(staticFiles, { root: path.resolve('public'), prefix: '/public/', maxAge: '1h' });
+
+  // Readiness: DB and Redis reachable (used by Docker healthcheck / uptime monitor). No details leaked.
+  app.get('/readyz', { config: { rateLimit: false } }, async (req, reply) => {
+    try {
+      await pool.query('SELECT 1');
+      await redis.ping();
+      return { ok: true };
+    } catch {
+      return reply.code(503).send({ ok: false });
+    }
+  });
 
   // Service worker must be served from the root to control /app pages.
   app.get('/sw.js', { config: { rateLimit: false } }, (req, reply) => reply.header('Cache-Control', 'no-cache').sendFile('sw.js'));

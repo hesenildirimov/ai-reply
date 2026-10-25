@@ -1,11 +1,15 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 
-let key: Buffer | undefined;
-function getKey(): Buffer {
-  key ??= Buffer.from(process.env.ENCRYPTION_KEY ?? '', 'base64');
-  if (key.length !== 32) throw new Error('ENCRYPTION_KEY must be 32 bytes base64');
-  return key;
+let keys: Buffer[] | undefined;
+/** [current, previous?]. ENCRYPTION_KEY_PREVIOUS is only set during a key rotation. */
+function getKeys(): Buffer[] {
+  if (!keys) {
+    keys = [process.env.ENCRYPTION_KEY, process.env.ENCRYPTION_KEY_PREVIOUS].filter(Boolean).map((k) => Buffer.from(k!, 'base64'));
+    if (keys[0]?.length !== 32 || keys.some((k) => k.length !== 32)) throw new Error('ENCRYPTION_KEY must be 32 bytes base64');
+  }
+  return keys;
 }
+const getKey = () => getKeys()[0]!;
 
 /** AES-256-GCM. Format: v1:<iv>:<tag>:<ciphertext> (base64url). */
 export function encrypt(plain: string): string {
@@ -15,13 +19,23 @@ export function encrypt(plain: string): string {
   return ['v1', iv, c.getAuthTag(), ct].map((p) => (typeof p === 'string' ? p : p.toString('base64url'))).join(':');
 }
 
-export function decrypt(payload: string): string {
+/** Decrypts with the current key, falling back to the previous one during rotation. */
+export function decryptWithInfo(payload: string): { plain: string; stale: boolean } {
   const [v, iv, tag, ct] = payload.split(':');
   if (v !== 'v1' || !iv || !tag || !ct) throw new Error('Unsupported ciphertext');
-  const d = createDecipheriv('aes-256-gcm', getKey(), Buffer.from(iv, 'base64url'));
-  d.setAuthTag(Buffer.from(tag, 'base64url'));
-  return Buffer.concat([d.update(Buffer.from(ct, 'base64url')), d.final()]).toString('utf8');
+  for (const [i, key] of getKeys().entries()) {
+    try {
+      const d = createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64url'));
+      d.setAuthTag(Buffer.from(tag, 'base64url'));
+      return { plain: Buffer.concat([d.update(Buffer.from(ct, 'base64url')), d.final()]).toString('utf8'), stale: i > 0 };
+    } catch {
+      // try next key
+    }
+  }
+  throw new Error('Unable to decrypt (wrong ENCRYPTION_KEY)');
 }
+
+export const decrypt = (payload: string) => decryptWithInfo(payload).plain;
 
 export const randomToken = (bytes = 32) => randomBytes(bytes).toString('base64url');
 export const randomDigits = (n: number) => Array.from({ length: n }, () => randomInt(10)).join('');

@@ -25,7 +25,7 @@ export async function learnStyle(workspaceId: string): Promise<'ok' | 'not_enoug
     chars += s.length;
   }
   if (picked.length < MIN_SAMPLES) return 'not_enough';
-  const guide = await learnStyleGuide(picked);
+  const guide = await learnStyleGuide(picked, { workspaceId, purpose: 'style' });
   if (!guide) return 'not_enough';
   await q('UPDATE assistants SET style_guide = $2, style_learned_at = now() WHERE workspace_id = $1', [workspaceId, guide]);
   return 'ok';

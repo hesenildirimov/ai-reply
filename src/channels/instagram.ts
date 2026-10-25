@@ -37,7 +37,7 @@ export async function exchangeInstagramCode(code: string) {
   });
   // `user_id` is the professional account id used in webhooks (`id` is app-scoped).
   const me = await graph<{ user_id: string; username: string }>(IG(), fbPath('me'), { token: long.access_token, query: { fields: 'user_id,username' } });
-  return { token: long.access_token, expiresAt: new Date(Date.now() + long.expires_in * 1000), igId: String(me.user_id), username: me.username };
+  return { token: long.access_token, expiresAt: new Date(Date.now() + long.expires_in * 1000), igId: String(me.user_id), username: me.username, scopes: granted };
 }
 
 export async function refreshInstagramToken(token: string) {
@@ -52,10 +52,13 @@ export const subscribeInstagram = (token: string) =>
 
 export const unsubscribeInstagram = (token: string) => graph(IG(), fbPath('me/subscribed_apps'), { method: 'DELETE', token });
 
-export async function sendInstagramText(token: string, igId: string, to: string, text: string): Promise<string> {
+export async function sendInstagramText(token: string, igId: string, to: string, text: string, opts: { commentId?: string; quickReplies?: { title: string; payload: string }[] } = {}): Promise<string> {
+  const message: Record<string, unknown> = { text: text.slice(0, IG_TEXT_LIMIT) };
+  // Quick replies: max 13, title max 20 chars, text only (Meta limits).
+  if (opts.quickReplies?.length) message.quick_replies = opts.quickReplies.slice(0, 13).map((q) => ({ content_type: 'text', title: q.title.slice(0, 20), payload: q.payload.slice(0, 1000) }));
   const r = await graph<{ message_id: string }>(IG(), fbPath(`${igId}/messages`), {
     token,
-    json: { recipient: { id: to }, message: { text: text.slice(0, IG_TEXT_LIMIT) } },
+    json: { recipient: opts.commentId ? { comment_id: opts.commentId } : { id: to }, message },
   });
   return r.message_id;
 }

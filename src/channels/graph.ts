@@ -13,6 +13,14 @@ export class GraphError extends Error {
   get tokenInvalid() {
     return this.code === 190 || this.status === 401;
   }
+  /** Throttling: app/user/page rate limits (4, 17, 32, 613, 80002-80008) or HTTP 429. */
+  get rateLimited() {
+    return this.status === 429 || [4, 17, 32, 613].includes(this.code ?? -1) || ((this.code ?? 0) >= 80002 && (this.code ?? 0) <= 80008);
+  }
+  /** Worth retrying later: throttling, transient (1, 2) or server errors. Everything else is permanent. */
+  get retryable() {
+    return this.rateLimited || this.status >= 500 || this.code === 1 || this.code === 2;
+  }
 }
 
 interface Opts {

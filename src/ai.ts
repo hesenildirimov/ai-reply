@@ -1,7 +1,44 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { aiConfig, estimateCost } from './aiconfig.js';
 import { config } from './config.js';
+import { q } from './db.js';
 
-const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, maxRetries: 2, timeout: 60_000 });
+// Short timeout + one SDK retry; BullMQ retries the whole job on top (idempotent, see pipeline.deliver).
+const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, maxRetries: 1, timeout: 30_000 });
+
+export interface AiCtx {
+  workspaceId: string;
+  conversationId?: string | null;
+  purpose: 'reply' | 'summary' | 'style' | 'test';
+  /** Defaults to the "smart" route from config/ai-models.json. */
+  model?: string;
+}
+type Outcome = 'reply' | 'handoff' | 'refusal' | 'timeout' | 'error';
+
+/** One Claude call with its usage written to the ai_usage ledger (tokens, cache, estimated cost, latency). */
+async function callModel(ctx: AiCtx, params: Omit<Anthropic.Beta.MessageCreateParamsNonStreaming, 'model'>, outcomeOf: (r: Anthropic.Beta.BetaMessage) => Outcome) {
+  const model = ctx.model ?? aiConfig.routing.smart;
+  const started = Date.now();
+  const log = (outcome: Outcome, u?: Anthropic.Beta.BetaUsage) =>
+    q(
+      `INSERT INTO ai_usage (workspace_id, conversation_id, purpose, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, est_cost_usd, latency_ms, outcome)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [ctx.workspaceId, ctx.conversationId ?? null, ctx.purpose, model, u?.input_tokens ?? 0, u?.output_tokens ?? 0, u?.cache_read_input_tokens ?? 0,
+        u?.cache_creation_input_tokens ?? 0, u ? estimateCost(model, u) : 0, Date.now() - started, outcome],
+    ).catch((e) => console.error('ai_usage insert failed:', (e as Error).message));
+  try {
+    const res = await client.beta.messages.create({ ...params, model });
+    await log(outcomeOf(res), res.usage);
+    return res;
+  } catch (e) {
+    await log(e instanceof Anthropic.APIConnectionTimeoutError ? 'timeout' : 'error');
+    throw e;
+  }
+}
+
+/** Transient Claude failures worth retrying (timeouts, connection, 429, 5xx/overloaded). */
+export const aiRetryable = (e: unknown) =>
+  e instanceof Anthropic.APIConnectionError || e instanceof Anthropic.RateLimitError || e instanceof Anthropic.InternalServerError || (e instanceof Anthropic.APIError && (e.status ?? 0) >= 500);
 
 export interface AssistantProfile {
   business_name: string;
@@ -94,13 +131,15 @@ const textOf = (res: Anthropic.Beta.BetaMessage) =>
     .join('\n')
     .trim();
 
-export async function generateReply(p: AssistantProfile, history: Turn[], firstReply: boolean): Promise<AiResult> {
+const toolOutcome = (r: Anthropic.Beta.BetaMessage): Outcome =>
+  r.stop_reason === 'refusal' ? 'refusal' : r.content.some((b) => b.type === 'tool_use') ? 'handoff' : 'reply';
+
+export async function generateReply(p: AssistantProfile, history: Turn[], firstReply: boolean, ctx: AiCtx): Promise<AiResult> {
   const messages = toMessages(history);
   if (!messages.length) return { kind: 'handoff', reason: 'boş söhbət', holdingReply: '' };
 
-  const res = await client.beta.messages.create({
-    model: config.AI_MODEL,
-    max_tokens: 8000,
+  const res = await callModel(ctx, {
+    max_tokens: aiConfig.limits.max_output_tokens,
     output_config: { effort: config.AI_EFFORT },
     // Server-side fallback when a safety classifier declines (routes by refusal category).
     betas: ['server-side-fallback-2026-07-01'],
@@ -109,7 +148,7 @@ export async function generateReply(p: AssistantProfile, history: Turn[], firstR
     tools: [HANDOFF_TOOL],
     tool_choice: { type: 'auto' },
     messages,
-  });
+  }, toolOutcome);
 
   if (res.stop_reason === 'refusal') return { kind: 'handoff', reason: 'AI cavab verməkdən imtina etdi', holdingReply: '' };
   for (const b of res.content) {
@@ -127,9 +166,8 @@ export async function generateReply(p: AssistantProfile, history: Turn[], firstR
  * Builds a writing-style guide from the business's own past messages (samples are data, never instructions).
  * One call; output is short so it costs little in every later (cached) system prompt.
  */
-export async function learnStyleGuide(samples: string[]): Promise<string> {
-  const res = await client.beta.messages.create({
-    model: config.AI_MODEL,
+export async function learnStyleGuide(samples: string[], ctx: AiCtx): Promise<string> {
+  const res = await callModel(ctx, {
     max_tokens: 4000,
     output_config: { effort: 'low' },
     betas: ['server-side-fallback-2026-07-01'],
@@ -142,6 +180,6 @@ export async function learnStyleGuide(samples: string[]): Promise<string> {
       'emoji (which, how often), message length, punctuation and capitalization, recurring phrases. ' +
       'Do not include prices, product facts, names of customers or any personal data. Output only the guide.',
     messages: [{ role: 'user', content: `<samples>\n${samples.join('\n---\n')}\n</samples>` }],
-  });
+  }, () => 'reply');
   return textOf(res).slice(0, 1500);
 }

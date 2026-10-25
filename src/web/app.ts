@@ -171,7 +171,7 @@ export function appRoutes(app: FastifyInstance) {
           <div class="thread" id="thread">${msgs.map((m) => html`<div class="msg ${m.sender}"><div class="bubble">${m.body}</div>
             <small>${m.sender === 'ai' ? html`${icon('bot', 'i xs')} AI · ` : m.sender === 'human' ? 'Siz · ' : ''}${fmt(m.created_at)}</small></div>`)}</div>
           ${open
-            ? html`<form class="composer" method="post" action="/app/inbox/${c.id}/reply">${csrfField(req.csrfToken)}
+            ? html`<form class="composer" method="post" action="/app/inbox/${c.id}/reply">${csrfField(req.csrfToken)}<input type="hidden" name="nonce" value="${randomToken(16)}">
                 <textarea name="text" rows="2" maxlength="${c.type === 'whatsapp' ? 4096 : 1000}" required placeholder="Cavab yazın… (göndərəndə AI bu söhbətdə 12 saat dayanır)"></textarea>
                 <button class="btn" aria-label="Göndər">${icon('send')}</button></form>`
             : html`<div class="composer closed">${icon('lock')}<span>24 saatlıq cavab müddəti bitib (Meta qaydası). Müştəri yenidən yazanda cavab verə biləcəksiniz.</span></div>`}
@@ -199,7 +199,8 @@ export function appRoutes(app: FastifyInstance) {
       const text = z.string().trim().min(1).max(4096).safeParse((req.body as any)?.text).data;
       if (!id || !text) return reply.redirect(`/app/inbox?m=invalid`);
       try {
-        const res = await sendManualReply(req.user!.workspaceId, id, text);
+        const nonce = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/).safeParse((req.body as any)?.nonce).data ?? randomToken(16);
+        const res = await sendManualReply(req.user!.workspaceId, id, text, nonce);
         if (res === 'not_found') return reply.code(404).send('Not found');
         if (res === 'sent') await q('UPDATE conversations SET needs_human = false WHERE id = $1', [id]);
         return reply.redirect(`/app/inbox/${id}?m=${res === 'sent' ? 'sent' : 'window_closed'}`);
@@ -301,7 +302,7 @@ export function appRoutes(app: FastifyInstance) {
       const quota = await reserveReply(req.user!.workspaceId);
       if (quota !== 'ok') return reply.redirect(`/app/test?m=${quota}`);
       const a = await one('SELECT * FROM assistants WHERE workspace_id = $1', [req.user!.workspaceId]);
-      const res = await generateReply(a, [{ role: 'user', text: msg }], a.ai_disclosure);
+      const res = await generateReply(a, [{ role: 'user', text: msg }], a.ai_disclosure, { workspaceId: req.user!.workspaceId, purpose: 'test' });
       const answer =
         res.kind === 'reply'
           ? html`<div class="msg ai"><div class="bubble">${res.text}</div><small>${icon('bot', 'i xs')} AI</small></div>`
@@ -358,10 +359,10 @@ export function appRoutes(app: FastifyInstance) {
         await subscribeInstagram(ig.token);
         await claimExternalAccount('instagram', ig.igId, req.user!.workspaceId);
         await q(
-          `INSERT INTO channels (workspace_id, type, external_id, display_name, access_token_enc, token_expires_at) VALUES ($1, 'instagram', $2, $3, $4, $5)
+          `INSERT INTO channels (workspace_id, type, external_id, display_name, access_token_enc, token_expires_at, scopes, token_refreshed_at) VALUES ($1, 'instagram', $2, $3, $4, $5, $6, now())
            ON CONFLICT (type, external_id) DO UPDATE SET display_name = EXCLUDED.display_name, access_token_enc = EXCLUDED.access_token_enc,
-             token_expires_at = EXCLUDED.token_expires_at, status = 'active'`,
-          [req.user!.workspaceId, ig.igId, `@${ig.username}`, encrypt(ig.token), ig.expiresAt],
+             token_expires_at = EXCLUDED.token_expires_at, scopes = EXCLUDED.scopes, token_refreshed_at = now(), status = 'active', status_reason = ''`,
+          [req.user!.workspaceId, ig.igId, `@${ig.username}`, encrypt(ig.token), ig.expiresAt, ig.scopes],
         );
         await queue.add('learn_style', { kind: 'learn_style', workspaceId: req.user!.workspaceId }, { delay: 5000 });
         return reply.redirect('/app/channels?m=ig_connected');
@@ -382,7 +383,7 @@ export function appRoutes(app: FastifyInstance) {
         await q(
           `INSERT INTO channels (workspace_id, type, external_id, waba_id, display_name, access_token_enc, extra_enc) VALUES ($1, 'whatsapp', $2, $3, $4, $5, $6)
            ON CONFLICT (type, external_id) DO UPDATE SET waba_id = EXCLUDED.waba_id, display_name = EXCLUDED.display_name,
-             access_token_enc = EXCLUDED.access_token_enc, extra_enc = coalesce(EXCLUDED.extra_enc, channels.extra_enc), status = 'active'`,
+             access_token_enc = EXCLUDED.access_token_enc, extra_enc = coalesce(EXCLUDED.extra_enc, channels.extra_enc), status = 'active', status_reason = '', scopes = '{whatsapp_business_messaging,whatsapp_business_management}'`,
           [req.user!.workspaceId, p.data.phone_number_id, p.data.waba_id, wa.displayName, encrypt(wa.token), wa.pin ? encrypt(JSON.stringify({ pin: wa.pin })) : null],
         );
         return reply.send({ ok: true });

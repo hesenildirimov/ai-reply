@@ -28,7 +28,7 @@ const SID = config.isProd ? '__Host-sid' : 'sid';
 const PRE = config.isProd ? '__Host-pcsrf' : 'pcsrf';
 const SESSION_DAYS = 7;
 const cookieOpts = { httpOnly: true, secure: config.isProd, sameSite: 'lax' as const, path: '/' };
-const NO_SESSION = /^\/(public|webhooks|meta|healthz|sw\.js)(\/|$)/;
+const NO_SESSION = /^\/(public|webhooks|meta|healthz|readyz|sw\.js)(\/|$)/;
 
 export async function createSession(reply: FastifyReply, userId: string): Promise<void> {
   const token = randomToken();

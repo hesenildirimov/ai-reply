@@ -22,5 +22,7 @@ export interface ChannelRow {
   display_name: string;
   access_token_enc: string;
   token_expires_at: Date | null;
-  status: 'active' | 'error';
+  status: 'active' | 'reauth_required';
+  status_reason?: string;
+  scopes?: string[];
 }

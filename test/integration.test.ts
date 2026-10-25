@@ -31,7 +31,7 @@ describe.skipIf(!enabled)('security (integration)', () => {
     db = await import('../src/db.js');
     const { encrypt } = await import('../src/crypto.js');
     await db.pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
-    for (const f of readdirSync('migrations').sort()) await db.pool.query(readFileSync(`migrations/${f}`, 'utf8'));
+    for (const f of readdirSync('migrations').filter((x) => x.endsWith('.sql')).sort()) await db.pool.query(readFileSync(`migrations/${f}`, 'utf8'));
     const pw = await hash('correct-horse-battery');
     for (const name of ['a', 'b']) {
       const u = await db.one(`INSERT INTO users (email, password_hash, email_verified_at) VALUES ($1, $2, now()) RETURNING id`, [`${name}@test.az`, pw]);

@@ -40,3 +40,19 @@ export async function notifyWaiting(workspaceId: string, conversationId: string,
   }
   for (const r of await Promise.allSettled(jobs)) if (r.status === 'rejected') console.error('notify failed:', (r.reason as Error).message);
 }
+
+/** System alert to the business (Telegram, browser push, email) — e.g. a channel needs to be reconnected. */
+export async function notifyChannelProblem(ch: { workspace_id: string; type: string; display_name: string }): Promise<void> {
+  const where = ch.type === 'whatsapp' ? 'WhatsApp' : 'Instagram';
+  const text = `⚠️ ${where} (${ch.display_name}) bağlantısı yenilənməlidir. Bu vaxta qədər mesajlara avtomatik cavab getmir.\n\nYenidən bağlayın: ${config.APP_URL}/app/channels`;
+  const targets = await q<{ id: string; kind: string; chat_id: string; data_enc: string | null }>(`SELECT id, kind, chat_id, data_enc FROM notify_targets WHERE workspace_id = $1`, [ch.workspace_id]);
+  const jobs: Promise<unknown>[] = targets.map(async (t) => {
+    if (t.kind === 'telegram' && telegramEnabled()) return tgSend(t.chat_id, text);
+    if (t.kind === 'webpush' && config.pushEnabled && t.data_enc) return sendPush(JSON.parse(decrypt(t.data_enc)), { title: `${where} bağlantısı yenilənməlidir`, body: ch.display_name, url: '/app/channels' });
+  });
+  if (config.mailEnabled) {
+    const owners = await q<{ email: string }>(`SELECT u.email FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1 AND m.role IN ('owner', 'admin') AND u.email_verified_at IS NOT NULL`, [ch.workspace_id]);
+    for (const o of owners) jobs.push(sendMail(o.email, `${where} bağlantısı yenilənməlidir`, text));
+  }
+  for (const r of await Promise.allSettled(jobs)) if (r.status === 'rejected') console.error('alert failed:', (r.reason as Error).message);
+}
