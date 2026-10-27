@@ -1,26 +1,27 @@
 export { deliver, WINDOW_MS } from './conversation.js';
-import { emit } from './webhooks.js';
-import { SendError } from './channels/index.js';
-import { checkReply } from './guard.js';
+
 import { aiRetryable, generateReply } from './ai.js';
 import { aiConfig } from './aiconfig.js';
+import { runMessageAutomations } from './automations/engine.js';
 import { reserveReply } from './billing.js';
-import { buildContext } from './context.js';
-import { aiBudgetExceeded, automationBlocked, limitAlert, LIMIT_LABELS } from './plans.js';
-import { deliver, failedBody, handoff, inWindow, loadConv, } from './conversation.js';
+import { SendError } from './channels/index.js';
 import { instagramUsername } from './channels/instagram.js';
 import type { ChannelRow, InboundEvent } from './channels/types.js';
 import { config } from './config.js';
+import { type ContactRow, upsertContact } from './contacts.js';
+import { buildContext } from './context.js';
+import { deliver, failedBody, handoff, inWindow, loadConv } from './conversation.js';
 import { decrypt, sha256 } from './crypto.js';
 import { one, q } from './db.js';
-import { notifyWaiting } from './notify.js';
-import { runMessageAutomations } from './automations/engine.js';
-import { upsertContact, type ContactRow } from './contacts.js';
 import { audit, recordEvent } from './events.js';
-import { openBody, openRows, sealBody } from './messages.js';
-import { publish } from './realtime.js';
+import { checkReply } from './guard.js';
 import { withLock } from './locks.js';
+import { openBody, openRows, sealBody } from './messages.js';
+import { notifyWaiting } from './notify.js';
+import { aiBudgetExceeded, automationBlocked, LIMIT_LABELS, limitAlert } from './plans.js';
 import { inboundQueue, queue, redis } from './queue.js';
+import { publish } from './realtime.js';
+import { emit } from './webhooks.js';
 
 const HUMAN_PAUSE = "interval '12 hours'";
 const HUMAN_KEYWORDS = /(?<!\p{L})(operator|human|agent|insan|canl[ıi]|menecer|оператор|менеджер|человек)(?!\p{L})/iu;
@@ -39,7 +40,11 @@ export async function ingest(ev: InboundEvent): Promise<void> {
 
   if (ev.type === 'echo') {
     // No fixed delay: processEcho identifies our own sends by state, not by timing.
-    await inboundQueue.add('ig_echo', { kind: 'ig_echo', channelId: ch.id, userId: ev.userId, mid: ev.mid, text: ev.text }, { jobId: `echo-${ch.id}-${sha256(ev.mid).toString('hex').slice(0, 32)}` });
+    await inboundQueue.add(
+      'ig_echo',
+      { kind: 'ig_echo', channelId: ch.id, userId: ev.userId, mid: ev.mid, text: ev.text },
+      { jobId: `echo-${ch.id}-${sha256(ev.mid).toString('hex').slice(0, 32)}` },
+    );
     return;
   }
 
@@ -59,7 +64,16 @@ export async function ingest(ev: InboundEvent): Promise<void> {
   const msg = await one<{ id: string }>(
     `INSERT INTO messages (workspace_id, conversation_id, direction, sender, external_id, body, enc, search_tokens, status, kind, media, payload)
      VALUES ($1, $2, 'in', 'customer', $3, $4, true, $5, 'received', $6, $7, $8) ON CONFLICT DO NOTHING RETURNING id`,
-    [ch.workspace_id, conv!.id, ev.mid, sealed.body, sealed.search_tokens, ev.kind ?? 'text', ev.media ? JSON.stringify(ev.media) : null, ev.payload?.slice(0, 1000) ?? null],
+    [
+      ch.workspace_id,
+      conv!.id,
+      ev.mid,
+      sealed.body,
+      sealed.search_tokens,
+      ev.kind ?? 'text',
+      ev.media ? JSON.stringify(ev.media) : null,
+      ev.payload?.slice(0, 1000) ?? null,
+    ],
   );
   if (!msg) {
     await q(`UPDATE conversations SET unread_count = greatest(unread_count - 1, 0) WHERE id = $1`, [conv!.id]); // duplicate delivery
@@ -69,14 +83,21 @@ export async function ingest(ev: InboundEvent): Promise<void> {
   await q(`UPDATE automation_runs SET replied_at = now() WHERE contact_id = $1 AND sent_at > now() - interval '24 hours' AND replied_at IS NULL`, [contact.id]);
   await publish(ch.workspace_id, { type: 'message', conversationId: conv!.id });
   await emit(ch.workspace_id, 'message.received', {
-    message_id: msg.id, conversation_id: conv!.id, contact_id: contact.id, channel: ch.type, kind: ev.kind ?? 'text', text: body.slice(0, 2000),
+    message_id: msg.id,
+    conversation_id: conv!.id,
+    contact_id: contact.id,
+    channel: ch.type,
+    kind: ev.kind ?? 'text',
+    text: body.slice(0, 2000),
     contact: { username: contact.username, name: contact.display_name },
   });
 
   // Instagram webhooks carry no name: look the username up once, off the reply path (inbox display only).
-  if (ch.type === 'instagram' && !conv!.display_name) await inboundQueue.add('ig_profile', { kind: 'ig_profile', conversationId: conv!.id }, { attempts: 2, jobId: `profile-${conv!.id}` }).catch(() => {});
+  if (ch.type === 'instagram' && !conv!.display_name)
+    await inboundQueue.add('ig_profile', { kind: 'ig_profile', conversationId: conv!.id }, { attempts: 2, jobId: `profile-${conv!.id}` }).catch(() => {});
   // Read receipt + typing indicator: cosmetic, its own job (one try), so a slow Graph call never delays anything.
-  if (ch.type === 'whatsapp') await inboundQueue.add('wa_read', { kind: 'wa_read', channelId: ch.id, mid: ev.mid }, { attempts: 1, jobId: `read-${msg.id}` }).catch(() => {});
+  if (ch.type === 'whatsapp')
+    await inboundQueue.add('wa_read', { kind: 'wa_read', channelId: ch.id, mid: ev.mid }, { attempts: 1, jobId: `read-${msg.id}` }).catch(() => {});
   // Debounce: customers often send several short messages; only the latest job replies.
   await queue.add('reply', { kind: 'reply', conversationId: conv!.id, messageId: msg.id }, { delay: config.AI_DEBOUNCE_MS, jobId: `reply-${msg.id}` });
 }
@@ -118,7 +139,10 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
   if (c.needs_human || c.ai_paused || c.assignee_user_id) return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj');
 
   const contact = await one<ContactRow>(`SELECT * FROM contacts WHERE id = $1`, [c.contact_id]);
-  const latestRow = await one<{ id: string; kind: string; payload: string | null; body: string; enc: boolean }>(`SELECT id, kind, payload, body, enc FROM messages WHERE id = $1`, [messageId]);
+  const latestRow = await one<{ id: string; kind: string; payload: string | null; body: string; enc: boolean }>(
+    `SELECT id, kind, payload, body, enc FROM messages WHERE id = $1`,
+    [messageId],
+  );
   const latest = latestRow && { ...latestRow, body: openBody(latestRow) };
   if (contact && latest) {
     // Opt-out / opt-in keywords (WhatsApp & Instagram policy: honour STOP).
@@ -134,11 +158,18 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
       return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, `yeni mesaj (tarif limiti: ${LIMIT_LABELS[blocked]})`);
     }
     // Rule-based flows first: they cost no AI tokens.
-    const since = openRows(await q<{ body: string; enc: boolean }>(
-      `SELECT body, enc FROM messages WHERE conversation_id = $1 AND direction = 'in' AND created_at > coalesce((SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'out'), '-infinity') ORDER BY created_at`,
-      [c.id],
-    ));
-    const auto = await runMessageAutomations(c, contact, { id: latest.id, kind: latest.kind, payload: latest.payload, text: since.map((m) => m.body).join(' ') || latest.body });
+    const since = openRows(
+      await q<{ body: string; enc: boolean }>(
+        `SELECT body, enc FROM messages WHERE conversation_id = $1 AND direction = 'in' AND created_at > coalesce((SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'out'), '-infinity') ORDER BY created_at`,
+        [c.id],
+      ),
+    );
+    const auto = await runMessageAutomations(c, contact, {
+      id: latest.id,
+      kind: latest.kind,
+      payload: latest.payload,
+      text: since.map((m) => m.body).join(' ') || latest.body,
+    });
     if (auto !== 'none' && auto !== 'ai') return;
   }
   if (!a?.enabled) return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj');
@@ -146,7 +177,10 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
   const lastText = latest?.body ?? '';
   if (HUMAN_KEYWORDS.test(lastText)) return handoff(c, a.handoff_message, 'müştəri insanla danışmaq istəyir', messageId);
 
-  const hourly = await one<{ n: number }>(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND sender = 'ai' AND created_at > now() - interval '1 hour'`, [c.id]);
+  const hourly = await one<{ n: number }>(
+    `SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND sender = 'ai' AND created_at > now() - interval '1 hour'`,
+    [c.id],
+  );
   if (hourly!.n >= CONV_HOURLY_CAP) return handoff(c, '', 'çox sayda mesaj (spam ola bilər)', messageId);
 
   // Cost guardrails: workspace AI budget (plan) and a per-minute burst limit.
@@ -171,11 +205,21 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
   // Token-efficient context: budgeted recent turns + rolling summary + only the relevant knowledge items.
   const ctx = await buildContext(c.id, c.workspace_id);
   if (ctx.unsummarized >= aiConfig.limits.summary_after_messages) {
-    await queue.add('summarize', { kind: 'summarize', conversationId: c.id, workspaceId: c.workspace_id }, { jobId: `sum-${c.id}-${Math.floor(Date.now() / 600_000)}` });
+    await queue.add(
+      'summarize',
+      { kind: 'summarize', conversationId: c.id, workspaceId: c.workspace_id },
+      { jobId: `sum-${c.id}-${Math.floor(Date.now() / 600_000)}` },
+    );
   }
   let result: Awaited<ReturnType<typeof generateReply>>;
   try {
-    result = await generateReply(a, ctx.history, a.ai_disclosure && c.ai_sent === 0, { workspaceId: c.workspace_id, conversationId: c.id, purpose: 'reply', route: ctx.route }, ctx.extra);
+    result = await generateReply(
+      a,
+      ctx.history,
+      a.ai_disclosure && c.ai_sent === 0,
+      { workspaceId: c.workspace_id, conversationId: c.id, purpose: 'reply', route: ctx.route },
+      ctx.extra,
+    );
   } catch (e) {
     await recordEvent(c.workspace_id, c.channel.id, aiRetryable(e) ? 'ai_timeout' : 'ai_error', (e as Error).name);
     if (aiRetryable(e) && !finalAttempt) throw e; // BullMQ retries with backoff
@@ -194,13 +238,19 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
   const verdict = checkReply(result.text, facts);
   if (!verdict.ok) {
     await audit(c.workspace_id, null, 'ai.reply_blocked', 'conversation', c.id, { reason: verdict.reason, detail: verdict.detail.slice(0, 80) });
-    return handoff(fresh, a.handoff_message, verdict.reason === 'unverified_price' ? 'AI bazada olmayan qiymət yazdı (göndərilmədi)' : 'AI tanınmayan link yazdı (göndərilmədi)', messageId);
+    return handoff(
+      fresh,
+      a.handoff_message,
+      verdict.reason === 'unverified_price' ? 'AI bazada olmayan qiymət yazdı (göndərilmədi)' : 'AI tanınmayan link yazdı (göndərilmədi)',
+      messageId,
+    );
   }
   try {
     await deliver(fresh, result.text, 'ai', key);
   } catch (e) {
     // Monthly automated-message allowance used up by concurrent replies: staff takes over, nothing was sent.
-    if (e instanceof SendError && e.reason === 'plan_limit') return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj (aylıq avtomatik mesaj limiti)');
+    if (e instanceof SendError && e.reason === 'plan_limit')
+      return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj (aylıq avtomatik mesaj limiti)');
     throw e;
   }
 }
@@ -226,7 +276,10 @@ const sameText = (a: string, b: string) => a.replace(/\s+/g, ' ').trim() === b.r
  * Only then is it a human message: stored and the AI paused for this conversation.
  */
 export async function processEcho(channelId: string, userId: string, mid: string, text: string, final = true): Promise<'done' | 'wait'> {
-  const conv = await one<{ id: string; workspace_id: string }>('SELECT id, workspace_id FROM conversations WHERE channel_id = $1 AND external_user_id = $2', [channelId, userId]);
+  const conv = await one<{ id: string; workspace_id: string }>('SELECT id, workspace_id FROM conversations WHERE channel_id = $1 AND external_user_id = $2', [
+    channelId,
+    userId,
+  ]);
   if (!conv) return 'done';
   const unmatched = await q<{ id: string; body: string; enc: boolean; status: string }>(
     `SELECT id, body, enc, status FROM messages WHERE conversation_id = $1 AND direction = 'out' AND external_id IS NULL AND status IN ('pending', 'unknown')
@@ -235,7 +288,10 @@ export async function processEcho(channelId: string, userId: string, mid: string
   );
   const mine = unmatched.find((m) => sameText(openBody(m), text));
   if (mine) {
-    await q(`UPDATE messages SET external_id = $2, status = CASE WHEN status = 'unknown' THEN 'sent' ELSE status END, error = CASE WHEN status = 'unknown' THEN NULL ELSE error END WHERE id = $1 AND external_id IS NULL`, [mine.id, mid]);
+    await q(
+      `UPDATE messages SET external_id = $2, status = CASE WHEN status = 'unknown' THEN 'sent' ELSE status END, error = CASE WHEN status = 'unknown' THEN NULL ELSE error END WHERE id = $1 AND external_id IS NULL`,
+      [mine.id, mid],
+    );
     return 'done';
   }
   if (await one(`SELECT 1 FROM messages WHERE conversation_id = $1 AND external_id = $2`, [conv.id, mid])) return 'done';

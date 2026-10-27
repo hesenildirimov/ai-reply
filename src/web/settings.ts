@@ -1,5 +1,5 @@
 import { hash, verify } from '@node-rs/argon2';
-import type { FastifyInstance, } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import QRCode from 'qrcode';
 import { z } from 'zod';
 import { subscriptionOf } from '../billing.js';
@@ -17,9 +17,9 @@ import { newTotpSecret, otpauthUrl, verifyTotp } from '../totp.js';
 import { subscriptionSchema } from '../webpush.js';
 import { can, destroySession, requireOwner, requirePerm, requireUser } from './auth.js';
 import { csrfField, html, pageHead, raw, type Safe } from './html.js';
-import { icon, type IconName } from './icons.js';
+import { type IconName, icon } from './icons.js';
 import { ARGON, MESSAGES, passwordSchema, view } from './public.js';
-import { chip, day, postForm, } from './ui.js';
+import { chip, day, postForm } from './ui.js';
 
 Object.assign(MESSAGES, {
   bad_password: { type: 'error', text: 'Şifrə yanlışdır.' },
@@ -37,7 +37,9 @@ const notifyRow = (csrf: string, ic: IconName, title: string, sub: string, enabl
 /** Every conversation with its messages, decrypted (the owner's own data export). */
 async function exportConversations(workspaceId: string) {
   const convs = await q(`SELECT id, display_name, external_user_id FROM conversations WHERE workspace_id = $1 ORDER BY id`, [workspaceId]);
-  const msgs = openRows(await q(`SELECT conversation_id, sender, body, enc, created_at FROM messages WHERE workspace_id = $1 ORDER BY created_at`, [workspaceId]));
+  const msgs = openRows(
+    await q(`SELECT conversation_id, sender, body, enc, created_at FROM messages WHERE workspace_id = $1 ORDER BY created_at`, [workspaceId]),
+  );
   const byConv = new Map<string, { sender: string; body: string; at: Date }[]>();
   for (const m of msgs) {
     const list = byConv.get(m.conversation_id) ?? [];
@@ -46,7 +48,6 @@ async function exportConversations(workspaceId: string) {
   }
   return convs.map((c) => ({ ...c, messages: byConv.get(c.id) ?? [] }));
 }
-
 
 /** Account settings: plan and limits, alert channels, two-factor login, password, data export, account deletion. */
 export function settingsRoutes(app: FastifyInstance) {
@@ -60,11 +61,7 @@ export function settingsRoutes(app: FastifyInstance) {
       const count = (k: string) => targets.filter((t) => t.kind === k).length;
       let planCard: Safe | '' = '';
       if (can(req.user, 'billing.view')) {
-        const [sub, limits, usage] = await Promise.all([
-          subscriptionOf(w0),
-          limitsOf(w0),
-          Promise.all(LIMIT_KEYS.map((k) => usageOf(w0, k))),
-        ]);
+        const [sub, limits, usage] = await Promise.all([subscriptionOf(w0), limitsOf(w0), Promise.all(LIMIT_KEYS.map((k) => usageOf(w0, k)))]);
         const fmtN = (k: string, n: number) => (k.startsWith('ai_budget') ? `$${n.toFixed(2)}` : String(Math.round(n)));
         planCard = html`<section class="card span"><div class="card-head"><h2>${icon('chart')}Tarif və limitlər</h2>${chip('ok', sub?.planName ?? 'Fərdi')}</div>
           <p class="muted">${sub?.priceNote ?? ''}${sub?.paidUntil ? html` · ödənilib: <b>${day(sub.paidUntil)}</b>` : ''}. Limitlər serverdə yoxlanılır: dolanda avtomatik cavablar dayanır, siz isə əl ilə yazmağa davam edə bilirsiniz.</p>
@@ -76,7 +73,11 @@ export function settingsRoutes(app: FastifyInstance) {
               ${lim && k !== 'history_days' ? html`<div class="meter ${pc >= 100 ? 'danger' : pc >= 80 ? 'warn' : ''}"><i style="width:${pc}%"></i></div>` : ''}</td></tr>`;
           })}</tbody></table></div></section>`;
       }
-      return view(req, reply, 'Ayarlar', html`${pageHead('Ayarlar', html`Hesab: <b>${req.user!.email}</b>`)}
+      return view(
+        req,
+        reply,
+        'Ayarlar',
+        html`${pageHead('Ayarlar', html`Hesab: <b>${req.user!.email}</b>`)}
         <div class="form-grid">${planCard}
           <section class="card span"><div class="card-head"><h2>${icon('zap')}Bildirişlər</h2></div>
             <p class="muted">Müştəri sizin cavabınızı gözləyəndə (AI bilmədiyi sual, şikayət, sifariş təsdiqi) xəbər tutun. Bir neçə yolu birlikdə qoşa bilərsiniz.</p>
@@ -84,9 +85,11 @@ export function settingsRoutes(app: FastifyInstance) {
               ${notifyRow(req.csrfToken, 'whatsapp', 'WhatsApp', 'Şəxsi WhatsApp-ınıza mesaj', config.waAlertsEnabled, count('whatsapp'), '/app/notifications/whatsapp', 'WhatsApp-ı qoş')}
               ${notifyRow(req.csrfToken, 'send', 'Telegram', 'Telegram botundan mesaj', telegramEnabled(), count('telegram'), '/app/notifications/telegram', 'Telegram-ı qoş')}
               <div class="notify-row"><span class="nt-ic">${icon('globe')}</span><div><b>Chrome bildirişi</b><small>Kompüter və ya telefon brauzerində</small></div>
-                ${config.pushEnabled
-                  ? html`${count('webpush') ? chip('ok', `${count('webpush')} cihaz`) : ''}<button type="button" class="btn sm" id="push-enable" data-key="${config.VAPID_PUBLIC_KEY}" data-csrf="${req.csrfToken}">Bu cihazda aç</button>`
-                  : html`<span class="chip neutral">qurulmayıb</span>`}</div>
+                ${
+                  config.pushEnabled
+                    ? html`${count('webpush') ? chip('ok', `${count('webpush')} cihaz`) : ''}<button type="button" class="btn sm" id="push-enable" data-key="${config.VAPID_PUBLIC_KEY}" data-csrf="${req.csrfToken}">Bu cihazda aç</button>`
+                    : html`<span class="chip neutral">qurulmayıb</span>`
+                }</div>
             </div>
             <p class="hint" id="push-status"></p>
             ${targets.length ? postForm('/app/notifications/telegram/remove', req.csrfToken, html`Bildiriş kanallarımı ayır`, 'btn sm danger-ghost', { confirm: 'Bütün bildiriş kanalları ayrılsın?' }) : ''}
@@ -94,9 +97,13 @@ export function settingsRoutes(app: FastifyInstance) {
           <section class="card span"><div class="card-head"><h2>${icon('shield')}İki faktorlu giriş</h2>
               ${req.user!.mfa ? chip('ok', 'Aktiv') : chip('neutral', 'Söndürülüb')}</div>
             <p class="muted">Şifrədən əlavə telefonunuzdakı Google Authenticator (və ya Authy) kodu tələb olunur. ${req.user!.isAdmin ? 'Admin üçün məcburidir.' : 'Tövsiyə olunur.'}</p>
-            ${req.user!.mfa
-              ? req.user!.isAdmin ? '' : html`<form method="post" action="/app/2fa/disable" class="inline-form">${csrfField(req.csrfToken)}<input name="code" inputmode="numeric" maxlength="6" placeholder="6 rəqəmli kod" required><button class="btn sm danger-ghost">Söndür</button></form>`
-              : html`<a class="btn" href="/app/2fa">${icon('shield')}Qur</a>`}</section>
+            ${
+              req.user!.mfa
+                ? req.user!.isAdmin
+                  ? ''
+                  : html`<form method="post" action="/app/2fa/disable" class="inline-form">${csrfField(req.csrfToken)}<input name="code" inputmode="numeric" maxlength="6" placeholder="6 rəqəmli kod" required><button class="btn sm danger-ghost">Söndür</button></form>`
+                : html`<a class="btn" href="/app/2fa">${icon('shield')}Qur</a>`
+            }</section>
           <section class="card"><div class="card-head"><h2>${icon('lock')}Şifrəni dəyiş</h2></div>
             <form method="post" action="/app/settings/password">${csrfField(req.csrfToken)}
               <label>Hazırkı şifrə<input name="current" type="password" required autocomplete="current-password"></label>
@@ -104,10 +111,16 @@ export function settingsRoutes(app: FastifyInstance) {
               <button class="btn">Dəyiş</button></form></section>
           <section class="card"><div class="card-head"><h2>${icon('download')}Məlumatlarım</h2></div>
             <p class="muted">Bütün ayarlarınızı və yazışmalarınızı JSON faylı kimi yükləyin.</p>${can(req.user, 'data.export') ? html`<a class="btn secondary" href="/app/settings/export">${icon('download')}Yüklə</a>` : html`<span class="muted">Yalnız hesab sahibi.</span>`}
-            ${req.user!.role === 'owner' ? html`<div class="danger-zone"><h3>Hesabı sil</h3><p class="muted">Bütün kanallar, söhbətlər və hesab həmişəlik silinəcək.</p>
+            ${
+              req.user!.role === 'owner'
+                ? html`<div class="danger-zone"><h3>Hesabı sil</h3><p class="muted">Bütün kanallar, söhbətlər və hesab həmişəlik silinəcək.</p>
               <form method="post" action="/app/settings/delete" data-confirm="Hesab və bütün məlumatlar həmişəlik silinsin?">${csrfField(req.csrfToken)}
-                <label>Təsdiq üçün şifrə<input name="password" type="password" required autocomplete="current-password"></label><button class="btn danger">${icon('trash')}Hesabı sil</button></form></div>` : ''}
-          </section></div>`, config.pushEnabled ? html`<script src="/public/push.js" defer></script>` : undefined);
+                <label>Təsdiq üçün şifrə<input name="password" type="password" required autocomplete="current-password"></label><button class="btn danger">${icon('trash')}Hesabı sil</button></form></div>`
+                : ''
+            }
+          </section></div>`,
+        config.pushEnabled ? html`<script src="/public/push.js" defer></script>` : undefined,
+      );
     });
 
     // ---------- Two-factor login ----------
@@ -116,7 +129,11 @@ export function settingsRoutes(app: FastifyInstance) {
       const secret = newTotpSecret();
       await redis.set(`mfa-setup:${req.user!.id}`, encrypt(secret), 'EX', 600);
       const qr = await QRCode.toString(otpauthUrl(req.user!.email, secret), { type: 'svg', margin: 1, width: 200 });
-      return view(req, reply, 'İki faktorlu giriş', html`${pageHead('İki faktorlu girişi qurun', 'Telefonunuzda Google Authenticator, Authy və ya 1Password açın.')}
+      return view(
+        req,
+        reply,
+        'İki faktorlu giriş',
+        html`${pageHead('İki faktorlu girişi qurun', 'Telefonunuzda Google Authenticator, Authy və ya 1Password açın.')}
         <section class="card mfa">
           <ol class="mfa-steps"><li>Tətbiqdə <b>+</b> basın və bu QR kodu skan edin:</li></ol>
           <div class="qr">${raw(qr)}</div>
@@ -124,7 +141,8 @@ export function settingsRoutes(app: FastifyInstance) {
           <ol class="mfa-steps" start="2"><li>Tətbiqin göstərdiyi 6 rəqəmli kodu yazın:</li></ol>
           <form method="post" action="/app/2fa" class="inline-form">${csrfField(req.csrfToken)}
             <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required placeholder="123456"><button class="btn">Təsdiqlə və aktiv et</button></form>
-        </section>`);
+        </section>`,
+      );
     });
 
     r.post('/app/2fa', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
@@ -156,7 +174,10 @@ export function settingsRoutes(app: FastifyInstance) {
     // WhatsApp: the owner sends a one-time code to the platform number (proves ownership, opens the chat).
     r.post('/app/notifications/whatsapp', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
       if (!config.waAlertsEnabled) return reply.redirect('/app/settings');
-      const code = randomToken(6).replace(/[^A-Za-z0-9]/g, 'X').toUpperCase().slice(0, 8);
+      const code = randomToken(6)
+        .replace(/[^A-Za-z0-9]/g, 'X')
+        .toUpperCase()
+        .slice(0, 8);
       await redis.set(`walink:${code}`, JSON.stringify({ workspaceId: req.user!.workspaceId, userId: req.user!.id }), 'EX', 900);
       return reply.redirect(`https://wa.me/${config.PLATFORM_WA_NUMBER}?text=${encodeURIComponent(`AIREPLY ${code}`)}`);
     });
@@ -203,12 +224,20 @@ export function settingsRoutes(app: FastifyInstance) {
       const data = {
         exported_at: new Date().toISOString(),
         user: { email: req.user!.email },
-        workspace: await subscriptionOf(w).then((s) => s && { name: s.name, monthly_reply_limit: s.replyLimit, paid_until: s.paidUntil, created_at: s.createdAt }),
-        assistant: await one('SELECT business_name, knowledge, style_preset, style_guide, handoff_message, enabled, ai_disclosure FROM assistants WHERE workspace_id = $1', [w]),
+        workspace: await subscriptionOf(w).then(
+          (s) => s && { name: s.name, monthly_reply_limit: s.replyLimit, paid_until: s.paidUntil, created_at: s.createdAt },
+        ),
+        assistant: await one(
+          'SELECT business_name, knowledge, style_preset, style_guide, handoff_message, enabled, ai_disclosure FROM assistants WHERE workspace_id = $1',
+          [w],
+        ),
         channels: await q('SELECT type, external_id, display_name, status, created_at FROM channels WHERE workspace_id = $1', [w]),
         conversations: await exportConversations(w),
       };
-      return reply.header('Content-Disposition', 'attachment; filename="ai-reply-export.json"').type('application/json').send(JSON.stringify(data, null, 2));
+      return reply
+        .header('Content-Disposition', 'attachment; filename="ai-reply-export.json"')
+        .type('application/json')
+        .send(JSON.stringify(data, null, 2));
     });
 
     r.post('/app/settings/delete', { preHandler: requireOwner, config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {

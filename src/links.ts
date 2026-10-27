@@ -17,6 +17,9 @@ export async function trackLinks(text: string, workspaceId: string, automationId
 
 export async function resolveClick(code: string): Promise<string | null> {
   if (!/^[A-Za-z0-9_-]{6,16}$/.test(code)) return null;
-  const row = await one<{ url: string }>(`UPDATE links SET clicks = clicks + 1, first_click_at = coalesce(first_click_at, now()) WHERE code = $1 RETURNING url`, [code]);
+  const row = await one<{ url: string }>(
+    `UPDATE links SET clicks = clicks + 1, first_click_at = coalesce(first_click_at, now()) WHERE code = $1 RETURNING url`,
+    [code],
+  );
   return row?.url ?? null;
 }

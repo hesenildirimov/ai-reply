@@ -11,7 +11,7 @@
  * queue depth, DB connections, and correctness: every customer answered exactly once per turn, no conversation
  * wrongly paused by Instagram echoes (the fake sends one per DM, ~30% of them before the send API has answered).
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -34,20 +34,43 @@ const { values: a } = parseArgs({
     label: { type: 'string', default: '' },
   },
 });
-const N = Number(a.businesses), C = Number(a.customers), T = Number(a.turns), WINDOW = Number(a.window) * 1000;
-const AI_MS = Number(a['ai-ms']), META_MS = Number(a['meta-ms']), DEBOUNCE = Number(a.debounce);
-const DB = process.env.LOADTEST_DATABASE_URL, REDIS = process.env.LOADTEST_REDIS_URL;
+const N = Number(a.businesses),
+  C = Number(a.customers),
+  T = Number(a.turns),
+  WINDOW = Number(a.window) * 1000;
+const AI_MS = Number(a['ai-ms']),
+  META_MS = Number(a['meta-ms']),
+  DEBOUNCE = Number(a.debounce);
+const DB = process.env.LOADTEST_DATABASE_URL,
+  REDIS = process.env.LOADTEST_REDIS_URL;
 if (!DB || !REDIS) throw new Error('Set LOADTEST_DATABASE_URL and LOADTEST_REDIS_URL (disposable services: schema is dropped)');
 
-const WEB_PORT = 3999, FAKE_PORT = 4012, SECRET = 'loadtest-meta-secret';
+const WEB_PORT = 3999,
+  FAKE_PORT = 4012,
+  SECRET = 'loadtest-meta-secret';
 const FAKE = `http://127.0.0.1:${FAKE_PORT}`;
 const env: Record<string, string> = {
   ...(process.env as Record<string, string>),
-  NODE_ENV: 'development', LOG_LEVEL: 'warn', PORT: String(WEB_PORT), APP_URL: `http://127.0.0.1:${WEB_PORT}`,
-  DATABASE_URL: DB, REDIS_URL: REDIS, ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
-  META_APP_SECRET: SECRET, IG_APP_SECRET: SECRET, META_GRAPH_BASE: FAKE, IG_GRAPH_BASE: FAKE, IG_API_BASE: FAKE,
-  ANTHROPIC_BASE_URL: FAKE, ANTHROPIC_API_KEY: 'load', ANTHROPIC_AUTH_TOKEN: '', AI_DEBOUNCE_MS: String(DEBOUNCE),
-  AI_WORKSPACE_RPM: '600', WORKER_CONCURRENCY: a.concurrency!, INBOUND_CONCURRENCY: a.inbound!, DB_POOL_MAX: a.pool!,
+  NODE_ENV: 'development',
+  LOG_LEVEL: 'warn',
+  PORT: String(WEB_PORT),
+  APP_URL: `http://127.0.0.1:${WEB_PORT}`,
+  DATABASE_URL: DB,
+  REDIS_URL: REDIS,
+  ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
+  META_APP_SECRET: SECRET,
+  IG_APP_SECRET: SECRET,
+  META_GRAPH_BASE: FAKE,
+  IG_GRAPH_BASE: FAKE,
+  IG_API_BASE: FAKE,
+  ANTHROPIC_BASE_URL: FAKE,
+  ANTHROPIC_API_KEY: 'load',
+  ANTHROPIC_AUTH_TOKEN: '',
+  AI_DEBOUNCE_MS: String(DEBOUNCE),
+  AI_WORKSPACE_RPM: '600',
+  WORKER_CONCURRENCY: a.concurrency!,
+  INBOUND_CONCURRENCY: a.inbound!,
+  DB_POOL_MAX: a.pool!,
 };
 Object.assign(process.env, env);
 
@@ -63,7 +86,16 @@ let midSeq = 0;
 const postWebhook = (path: string, body: string) =>
   fetch(`http://127.0.0.1:${WEB_PORT}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-hub-signature-256': sign(body) }, body });
 const igEcho = (igId: string, to: string, mid: string, text: string) =>
-  JSON.stringify({ object: 'instagram', entry: [{ id: igId, time: Date.now(), messaging: [{ sender: { id: igId }, recipient: { id: to }, timestamp: Date.now(), message: { mid, text, is_echo: true } }] }] });
+  JSON.stringify({
+    object: 'instagram',
+    entry: [
+      {
+        id: igId,
+        time: Date.now(),
+        messaging: [{ sender: { id: igId }, recipient: { id: to }, timestamp: Date.now(), message: { mid, text, is_echo: true } }],
+      },
+    ],
+  });
 
 const fake = createServer((req, res) => {
   let raw = '';
@@ -71,10 +103,27 @@ const fake = createServer((req, res) => {
   req.on('end', async () => {
     const path = new URL(req.url!, 'http://x').pathname;
     let body: any = {};
-    try { body = JSON.parse(raw); } catch {}
-    const json = (data: unknown, ms: number) => setTimeout(() => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); }, ms);
+    try {
+      body = JSON.parse(raw);
+    } catch {}
+    const json = (data: unknown, ms: number) =>
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(data));
+      }, ms);
     if (path === '/v1/messages') {
-      return json({ id: 'msg', type: 'message', role: 'assistant', model: 'claude-sonnet-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Salam! Bəli, var, 45 AZN.' }], usage: { input_tokens: 1500, output_tokens: 30, cache_read_input_tokens: 1200, cache_creation_input_tokens: 0 } }, jitter(AI_MS));
+      return json(
+        {
+          id: 'msg',
+          type: 'message',
+          role: 'assistant',
+          model: 'claude-sonnet-5-5',
+          stop_reason: 'end_turn',
+          content: [{ type: 'text', text: 'Salam! Bəli, var, 45 AZN.' }],
+          usage: { input_tokens: 1500, output_tokens: 30, cache_read_input_tokens: 1200, cache_creation_input_tokens: 0 },
+        },
+        jitter(AI_MS),
+      );
     }
     const m = /\/([^/]+)\/messages$/.exec(path);
     if (m && req.method === 'POST') {
@@ -108,7 +157,10 @@ const inboundQueue = new Queue('inbound', { connection: redis });
 const closeQueues = () => Promise.allSettled([queue.close(), inboundQueue.close()]);
 
 await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
-for (const f of readdirSync('migrations').filter((x) => x.endsWith('.sql')).sort()) await pool.query(readFileSync(`migrations/${f}`, 'utf8'));
+for (const f of readdirSync('migrations')
+  .filter((x) => x.endsWith('.sql'))
+  .sort())
+  await pool.query(readFileSync(`migrations/${f}`, 'utf8'));
 await redis.flushdb();
 
 const token = encrypt('fake-token');
@@ -116,7 +168,9 @@ const ws = await q<{ id: string; i: number }>(
   `INSERT INTO workspaces (name, monthly_reply_limit) SELECT 'Biznes ' || i, 1000000 FROM generate_series(1, $1) i RETURNING id, (regexp_replace(name, '\\D', '', 'g'))::int AS i`,
   [N],
 );
-await q(`INSERT INTO assistants (workspace_id, enabled, business_name, knowledge) SELECT id, true, name, 'Don: 45 AZN. Çanta: 30 AZN. Çatdırılma 3 AZN.' FROM workspaces`);
+await q(
+  `INSERT INTO assistants (workspace_id, enabled, business_name, knowledge) SELECT id, true, name, 'Don: 45 AZN. Çanta: 30 AZN. Çatdırılma 3 AZN.' FROM workspaces`,
+);
 // Half Instagram, half WhatsApp.
 await q(
   `INSERT INTO channels (workspace_id, type, external_id, display_name, access_token_enc, scopes)
@@ -131,7 +185,10 @@ const start = (file: string, tag: string) => {
   // LOADTEST_PROFILE=<dir>: V8 CPU profile of each worker process (open in Chrome DevTools).
   const prof = process.env.LOADTEST_PROFILE && tag.startsWith('worker') ? ['--cpu-prof', `--cpu-prof-dir=${process.env.LOADTEST_PROFILE}`] : [];
   const p = spawn(process.execPath, [...prof, '--import', 'tsx', file], { env, stdio: ['ignore', 'ignore', 'pipe'] });
-  p.stderr!.on('data', (d) => { const s = String(d); if (!/ExperimentalWarning|DeprecationWarning/.test(s)) errors.push(`[${tag}] ${s.trim().slice(0, 300)}`); });
+  p.stderr!.on('data', (d) => {
+    const s = String(d);
+    if (!/ExperimentalWarning|DeprecationWarning/.test(s)) errors.push(`[${tag}] ${s.trim().slice(0, 300)}`);
+  });
   procs.push(p);
 };
 const errors: string[] = [];
@@ -139,18 +196,45 @@ await new Promise<void>((r) => fake.listen(FAKE_PORT, '127.0.0.1', r));
 start('src/server.ts', 'web');
 for (let i = 0; i < Number(a.workers); i++) start('src/worker.ts', `worker${i}`);
 for (let i = 0; i < 100; i++) {
-  if (await fetch(`http://127.0.0.1:${WEB_PORT}/readyz`).then((r) => r.ok, () => false)) break;
+  if (
+    await fetch(`http://127.0.0.1:${WEB_PORT}/readyz`).then(
+      (r) => r.ok,
+      () => false,
+    )
+  )
+    break;
   await sleep(200);
 }
 await sleep(1500); // workers connect
 
 // ---------- Traffic ----------
-const acks: number[] = [], ackErrors: Record<string, number> = {};
+const acks: number[] = [],
+  ackErrors: Record<string, number> = {};
 const sentAt = new Map<string, number[]>(); // recipient -> webhook accepted times
 const igMsg = (igId: string, from: string, mid: string, text: string) =>
-  JSON.stringify({ object: 'instagram', entry: [{ id: igId, time: Date.now(), messaging: [{ sender: { id: from }, recipient: { id: igId }, timestamp: Date.now(), message: { mid, text } }] }] });
+  JSON.stringify({
+    object: 'instagram',
+    entry: [{ id: igId, time: Date.now(), messaging: [{ sender: { id: from }, recipient: { id: igId }, timestamp: Date.now(), message: { mid, text } }] }],
+  });
 const waMsg = (pn: string, from: string, mid: string, text: string) =>
-  JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: 'WABA', changes: [{ field: 'messages', value: { metadata: { phone_number_id: pn }, contacts: [{ wa_id: from, profile: { name: 'Müştəri' } }], messages: [{ from, id: mid, type: 'text', text: { body: text } }] } }] }] });
+  JSON.stringify({
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        id: 'WABA',
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              metadata: { phone_number_id: pn },
+              contacts: [{ wa_id: from, profile: { name: 'Müştəri' } }],
+              messages: [{ from, id: mid, type: 'text', text: { body: text } }],
+            },
+          },
+        ],
+      },
+    ],
+  });
 
 async function customer(b: { i: number }, c: number) {
   const ig = b.i % 2 === 0;
@@ -180,15 +264,19 @@ const sampler = (async () => {
       inboundQueue.getJobCounts('waiting', 'active', 'prioritized'),
       q(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database()`),
     ]);
-    samples.push({ t: Date.now() - t0, waiting: (m.waiting ?? 0) + (m.prioritized ?? 0), active: m.active ?? 0, delayed: m.delayed ?? 0, inbound: (i.waiting ?? 0) + (i.active ?? 0) + (i.prioritized ?? 0), db: conns[0]!.n });
+    samples.push({
+      t: Date.now() - t0,
+      waiting: (m.waiting ?? 0) + (m.prioritized ?? 0),
+      active: m.active ?? 0,
+      delayed: m.delayed ?? 0,
+      inbound: (i.waiting ?? 0) + (i.active ?? 0) + (i.prioritized ?? 0),
+      db: conns[0]!.n,
+    });
     await sleep(1000);
   }
 })();
 
-await Promise.race([
-  Promise.all(ws.flatMap((b) => Array.from({ length: C }, (_, c) => customer(b, c)))),
-  sleep(Number(a.timeout) * 1000),
-]);
+await Promise.race([Promise.all(ws.flatMap((b) => Array.from({ length: C }, (_, c) => customer(b, c)))), sleep(Number(a.timeout) * 1000)]);
 await sleep(3000); // late echoes
 running = false;
 await sampler;
@@ -196,7 +284,8 @@ const elapsed = (Date.now() - t0) / 1000;
 
 // ---------- Results ----------
 const replyLat: number[] = [];
-let answered = 0, duplicates = 0;
+let answered = 0,
+  duplicates = 0;
 for (const [user, sends] of sentAt) {
   const got = replies.get(user) ?? [];
   answered += Math.min(got.length, sends.length);
@@ -214,7 +303,18 @@ const failed = (await queue.getJobCounts('failed')).failed! + (await inboundQueu
 const expected = N * C * T;
 const result = {
   label: a.label || `${N} biz × ${C} cust × ${T} turns`,
-  config: { businesses: N, customers: N * C, messages: expected, workers: Number(a.workers), concurrency: Number(a.concurrency), inbound: Number(a.inbound), pool: Number(a.pool), aiMs: AI_MS, metaMs: META_MS, debounceMs: DEBOUNCE },
+  config: {
+    businesses: N,
+    customers: N * C,
+    messages: expected,
+    workers: Number(a.workers),
+    concurrency: Number(a.concurrency),
+    inbound: Number(a.inbound),
+    pool: Number(a.pool),
+    aiMs: AI_MS,
+    metaMs: META_MS,
+    debounceMs: DEBOUNCE,
+  },
   elapsedS: Math.round(elapsed),
   webhookAckMs: stats(acks),
   webhookErrors: ackErrors,
@@ -222,8 +322,14 @@ const result = {
   answered: `${answered}/${expected}`,
   duplicates,
   throughputRepliesPerS: Math.round((answered / elapsed) * 10) / 10,
-  peak: { aiQueueWaiting: Math.max(0, ...samples.map((s) => s.waiting)), aiActive: Math.max(0, ...samples.map((s) => s.active)), inboundBacklog: Math.max(0, ...samples.map((s) => s.inbound)), dbConnections: Math.max(0, ...samples.map((s) => s.db)) },
-  db, failedJobs: failed,
+  peak: {
+    aiQueueWaiting: Math.max(0, ...samples.map((s) => s.waiting)),
+    aiActive: Math.max(0, ...samples.map((s) => s.active)),
+    inboundBacklog: Math.max(0, ...samples.map((s) => s.inbound)),
+    dbConnections: Math.max(0, ...samples.map((s) => s.db)),
+  },
+  db,
+  failedJobs: failed,
   processErrors: errors.length,
 };
 console.log(JSON.stringify(result, null, 2));

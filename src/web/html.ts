@@ -39,7 +39,9 @@ const NAV: [string, string, string, Permission?][] = [
 export function page(title: string, body: Safe, o: PageOpts): string {
   const path = o.path ?? '';
   const active = (href: string) => (href === '/app' ? path === '/app' : path === href || path.startsWith(`${href}/`));
-  const flash = o.flash ? html`<p class="flash ${o.flash.type}" role="status">${icon(o.flash.type === 'ok' ? 'check' : 'alert')}<span>${o.flash.text}</span></p>` : '';
+  const flash = o.flash
+    ? html`<p class="flash ${o.flash.type}" role="status">${icon(o.flash.type === 'ok' ? 'check' : 'alert')}<span>${o.flash.text}</span></p>`
+    : '';
   const footer = html`<footer><a href="/privacy">Privacy Policy</a><a href="/terms">Terms</a><a href="/data-deletion">Data deletion</a></footer>`;
   const shell = o.user
     ? html`<div class="shell">

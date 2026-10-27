@@ -24,7 +24,12 @@ export const convRow = (c: any, activeId?: string, f?: Filters) => {
   <span class="conv-tags">${c.unread_count > 0 ? html`<span class="count">${c.unread_count}</span>` : ''}${c.needs_human ? chip('warn', 'Operator gözləyir') : ''}${c.status === 'closed' ? chip('neutral', 'Bağlı') : ''}${c.assignee_email ? chip('info', c.assignee_email.split('@')[0]) : ''}</span></span></a>`;
 };
 
-const KIND_LABEL: Record<string, string> = { story_reply: 'Story-yə cavab', story_mention: 'Story-də qeyd etdi', private_reply: 'Şərhə şəxsi cavab', quick_reply: 'Düymə seçdi' };
+const KIND_LABEL: Record<string, string> = {
+  story_reply: 'Story-yə cavab',
+  story_mention: 'Story-də qeyd etdi',
+  private_reply: 'Şərhə şəxsi cavab',
+  quick_reply: 'Düymə seçdi',
+};
 const STATUS_ICON: Record<string, Safe> = {
   pending: html`<span title="Göndərilir">…</span>`,
   failed: html`<span class="st-bad" title="Göndərilmədi">${icon('alert', 'i xs')} göndərilmədi</span>`,
@@ -36,7 +41,8 @@ function mediaHtml(m: any, msgId: string): Safe {
   return html`${items.map((x: any, i: number) => {
     const src = x.url ? x.url : x.id ? `/app/media/${msgId}/${i}` : '';
     if (!src) return html`<span class="media-ph">📎 ${x.type}</span>`;
-    if (['image', 'story', 'story_mention', 'sticker'].includes(x.type)) return html`<a href="${src}" target="_blank" rel="noopener noreferrer"><img class="msg-img" src="${src}" alt="${x.type}" loading="lazy" referrerpolicy="no-referrer"></a>`;
+    if (['image', 'story', 'story_mention', 'sticker'].includes(x.type))
+      return html`<a href="${src}" target="_blank" rel="noopener noreferrer"><img class="msg-img" src="${src}" alt="${x.type}" loading="lazy" referrerpolicy="no-referrer"></a>`;
     if (x.type === 'video' || x.type === 'reel') return html`<video class="msg-img" src="${src}" controls preload="none"></video>`;
     if (x.type === 'audio') return html`<audio src="${src}" controls preload="none"></audio>`;
     return html`<a href="${src}" target="_blank" rel="noopener noreferrer">📎 ${x.type}</a>`;
@@ -62,7 +68,8 @@ export function profileHtml(req: FastifyRequest, c: any, data: ProfileData | nul
   const w = can(req.user, 'contacts.write');
   const name = c.contact_name || c.display_name || c.external_user_id;
   const fields = Object.entries((c.fields ?? {}) as Record<string, string>);
-  const ajax = (action: string, inner: Safe, cls = 'inline-form') => html`<form method="post" action="${action}" class="${cls}" data-ajax>${csrfField(req.csrfToken)}${inner}</form>`;
+  const ajax = (action: string, inner: Safe, cls = 'inline-form') =>
+    html`<form method="post" action="${action}" class="${cls}" data-ajax>${csrfField(req.csrfToken)}${inner}</form>`;
   return html`<div class="profile-head">${avatar(name, c.type)}<div><b>${name}</b>${c.username ? html`<small>@${c.username}</small>` : ''}<small>${typeLabel(c.type)} · ${c.channel_name}</small></div></div>
     <dl class="kv"><dt>İlk əlaqə</dt><dd>${fmt(c.first_seen_at)}</dd><dt>Son aktivlik</dt><dd>${fmt(c.last_seen_at)}</dd><dt>Mesajlar</dt><dd>${stats.n}</dd>
       <dt>Status</dt><dd>${c.blocked ? chip('danger', 'Bloklanıb') : c.opted_out ? chip('warn', 'Avtomatik mesajları dayandırıb') : chip('ok', 'Aktiv')}</dd></dl>
@@ -74,9 +81,13 @@ export function profileHtml(req: FastifyRequest, c: any, data: ProfileData | nul
     ${w ? ajax(`/app/contacts/${c.contact_id}/fields`, html`<input name="key" pattern="[a-z][a-z0-9_]*" maxlength="40" placeholder="açar (məs: olcu)" required><input name="value" maxlength="500" placeholder="dəyər" required><button class="btn sm secondary">Yaz</button>`, 'field-form') : ''}
     <h3>Avtomatlaşdırmalar</h3>
     ${runs.length ? html`<ul class="runs">${runs.map((r) => html`<li><a href="/app/automations/${r.id}">${r.name}</a> ${chip(r.status === 'sent' ? 'ok' : r.status === 'failed' ? 'danger' : 'neutral', r.status)} <small class="muted">${when(r.matched_at)}</small></li>`)}</ul>` : html`<p class="muted">İşləməyib</p>`}
-    ${w ? html`<h3>İdarəetmə</h3><div class="actions">
+    ${
+      w
+        ? html`<h3>İdarəetmə</h3><div class="actions">
       ${ajax(`/app/contacts/${c.contact_id}/flags`, html`<input type="hidden" name="opted_out" value="${c.opted_out ? '0' : '1'}"><button class="btn sm secondary">${c.opted_out ? 'Avtomatik mesajlara icazə ver' : 'Avtomatik mesajları dayandır'}</button>`, 'inline')}
-      ${ajax(`/app/contacts/${c.contact_id}/flags`, html`<input type="hidden" name="blocked" value="${c.blocked ? '0' : '1'}"><button class="btn sm ${c.blocked ? 'secondary' : 'danger-ghost'}">${c.blocked ? 'Blokdan çıxar' : 'Blokla'}</button>`, 'inline')}</div>` : ''}`;
+      ${ajax(`/app/contacts/${c.contact_id}/flags`, html`<input type="hidden" name="blocked" value="${c.blocked ? '0' : '1'}"><button class="btn sm ${c.blocked ? 'secondary' : 'danger-ghost'}">${c.blocked ? 'Blokdan çıxar' : 'Blokla'}</button>`, 'inline')}</div>`
+        : ''
+    }`;
 }
 
 /** Conversation pane: header actions, bot status banner, thread, composer. */
@@ -84,40 +95,54 @@ export function paneHtml(req: FastifyRequest, c: any, { members, saved }: PaneDa
   const open = inWindow(c);
   const manage = can(req.user, 'inbox.manage');
   const name = c.contact_name || c.display_name || c.external_user_id;
-  const ajax = (action: string, inner: Safe) => html`<form method="post" action="${action}" class="inline" data-ajax>${csrfField(req.csrfToken)}${inner}</form>`;
-  const banner = c.channel_status !== 'active'
-    ? html`<div class="banner warn">${icon('alert')}<span>Kanal yenidən bağlanmalıdır. <a href="/app/channels">Kanallar</a></span></div>`
-    : c.assignee_user_id
-      ? html`<div class="banner info">${icon('headset')}<span><b>${members.find((m) => m.id === c.assignee_user_id)?.email ?? 'Operator'}</b> bu söhbəti idarə edir. Bot cavab vermir.</span></div>`
-      : c.needs_human
-        ? html`<div class="banner warn">${icon('headset')}<span><b>Müştəri operator gözləyir.</b> Bot dayanıb.</span>${manage ? ajax(`/app/inbox/${c.id}/ai`, html`<input type="hidden" name="action" value="resume"><button class="btn sm secondary">${icon('play')}Botu bərpa et</button>`) : ''}</div>`
-        : c.paused
-          ? html`<div class="banner neutral">${icon('pause')}<span>Bot ${fmt(c.ai_paused_until)} tarixinə qədər dayandırılıb.</span>${manage ? ajax(`/app/inbox/${c.id}/ai`, html`<input type="hidden" name="action" value="resume"><button class="btn sm secondary">${icon('play')}Bərpa et</button>`) : ''}</div>`
-          : html`<div class="banner ok">${icon('bot')}<span>Bot və AI bu söhbətə avtomatik cavab verir.</span>${manage ? ajax(`/app/inbox/${c.id}/ai`, html`<input type="hidden" name="action" value="pause"><button class="btn sm secondary">${icon('pause')}Dayandır</button>`) : ''}</div>`;
+  const ajax = (action: string, inner: Safe) =>
+    html`<form method="post" action="${action}" class="inline" data-ajax>${csrfField(req.csrfToken)}${inner}</form>`;
+  const banner =
+    c.channel_status !== 'active'
+      ? html`<div class="banner warn">${icon('alert')}<span>Kanal yenidən bağlanmalıdır. <a href="/app/channels">Kanallar</a></span></div>`
+      : c.assignee_user_id
+        ? html`<div class="banner info">${icon('headset')}<span><b>${members.find((m) => m.id === c.assignee_user_id)?.email ?? 'Operator'}</b> bu söhbəti idarə edir. Bot cavab vermir.</span></div>`
+        : c.needs_human
+          ? html`<div class="banner warn">${icon('headset')}<span><b>Müştəri operator gözləyir.</b> Bot dayanıb.</span>${manage ? ajax(`/app/inbox/${c.id}/ai`, html`<input type="hidden" name="action" value="resume"><button class="btn sm secondary">${icon('play')}Botu bərpa et</button>`) : ''}</div>`
+          : c.paused
+            ? html`<div class="banner neutral">${icon('pause')}<span>Bot ${fmt(c.ai_paused_until)} tarixinə qədər dayandırılıb.</span>${manage ? ajax(`/app/inbox/${c.id}/ai`, html`<input type="hidden" name="action" value="resume"><button class="btn sm secondary">${icon('play')}Bərpa et</button>`) : ''}</div>`
+            : html`<div class="banner ok">${icon('bot')}<span>Bot və AI bu söhbətə avtomatik cavab verir.</span>${manage ? ajax(`/app/inbox/${c.id}/ai`, html`<input type="hidden" name="action" value="pause"><button class="btn sm secondary">${icon('pause')}Dayandır</button>`) : ''}</div>`;
   return html`<div class="thread-head"><a class="icon-btn back" href="/app/inbox" aria-label="Geri">${icon('back')}</a>${avatar(name, c.type)}
       <div><b>${name}</b><small>${typeLabel(c.type)} · ${c.status === 'closed' ? 'Bağlı' : 'Açıq'}</small></div>
-      ${manage ? html`<form method="post" action="/app/inbox/${c.id}/assign" class="inline assign" data-ajax>${csrfField(req.csrfToken)}
+      ${
+        manage
+          ? html`<form method="post" action="/app/inbox/${c.id}/assign" class="inline assign" data-ajax>${csrfField(req.csrfToken)}
           <select name="user_id" aria-label="Təyin et" data-autosubmit>${[html`<option value="">Təyin olunmayıb</option>`, ...members.map((m) => html`<option value="${m.id}" ${m.id === c.assignee_user_id ? raw('selected') : ''}>${m.email}</option>`)]}</select></form>
         ${c.assignee_user_id !== req.user!.id ? ajax(`/app/inbox/${c.id}/assign`, html`<input type="hidden" name="user_id" value="me"><button class="btn sm">${icon('headset')}Ələ al</button>`) : ''}
-        ${ajax(`/app/inbox/${c.id}/status`, html`<input type="hidden" name="status" value="${c.status === 'closed' ? 'open' : 'closed'}"><button class="btn sm secondary">${c.status === 'closed' ? 'Yenidən aç' : html`${icon('check')}Bağla`}</button>`)}` : ''}
+        ${ajax(`/app/inbox/${c.id}/status`, html`<input type="hidden" name="status" value="${c.status === 'closed' ? 'open' : 'closed'}"><button class="btn sm secondary">${c.status === 'closed' ? 'Yenidən aç' : html`${icon('check')}Bağla`}</button>`)}`
+          : ''
+      }
       <button type="button" class="icon-btn" data-toggle-profile aria-label="Profil">${icon('users')}</button>
       ${manage ? postForm(`/app/inbox/${c.id}/delete`, req.csrfToken, icon('trash'), 'icon-btn', { confirm: 'Söhbət həmişəlik silinsin?' }) : ''}</div>
     ${banner}
     <div class="thread" id="thread" data-part="/app/inbox/${c.id}/part/thread">${thread}</div>
-    ${can(req.user, 'inbox.reply')
-      ? html`<div class="composer-wrap">
+    ${
+      can(req.user, 'inbox.reply')
+        ? html`<div class="composer-wrap">
         <div class="composer-tabs" role="tablist"><button type="button" class="on" data-tab="reply">Cavab</button>${manage ? html`<button type="button" data-tab="note">Daxili qeyd</button>` : ''}
           ${saved.length ? html`<select class="saved" aria-label="Hazır cavab" data-saved><option value="">Hazır cavablar…</option>${saved.map((s) => html`<option value="${s.body}">${s.title}</option>`)}</select>` : ''}
           <a class="more" href="/app/saved-replies">İdarə et</a></div>
-        ${open
-          ? html`<form class="composer" method="post" action="/app/inbox/${c.id}/reply" data-ajax data-tab-panel="reply" data-reset>${csrfField(req.csrfToken)}<input type="hidden" name="nonce" value="${randomToken(16)}">
+        ${
+          open
+            ? html`<form class="composer" method="post" action="/app/inbox/${c.id}/reply" data-ajax data-tab-panel="reply" data-reset>${csrfField(req.csrfToken)}<input type="hidden" name="nonce" value="${randomToken(16)}">
               <textarea name="text" rows="2" maxlength="${c.type === 'whatsapp' ? 4096 : 1000}" required placeholder="Cavab yazın… (Enter göndərir, Shift+Enter yeni sətir)"></textarea>
               <button class="btn" aria-label="Göndər">${icon('send')}</button></form>`
-          : html`<div class="composer closed" data-tab-panel="reply">${icon('lock')}<span>24 saatlıq cavab müddəti bitib (Meta qaydası). Müştəri yenidən yazanda cavab verə biləcəksiniz.</span></div>`}
-        ${manage ? html`<form class="composer note-form" method="post" action="/app/inbox/${c.id}/note" data-ajax data-tab-panel="note" data-reset hidden>${csrfField(req.csrfToken)}
-            <textarea name="body" rows="2" maxlength="2000" required placeholder="Yalnız komandanız görür"></textarea><button class="btn secondary">Qeyd et</button></form>` : ''}
+            : html`<div class="composer closed" data-tab-panel="reply">${icon('lock')}<span>24 saatlıq cavab müddəti bitib (Meta qaydası). Müştəri yenidən yazanda cavab verə biləcəksiniz.</span></div>`
+        }
+        ${
+          manage
+            ? html`<form class="composer note-form" method="post" action="/app/inbox/${c.id}/note" data-ajax data-tab-panel="note" data-reset hidden>${csrfField(req.csrfToken)}
+            <textarea name="body" rows="2" maxlength="2000" required placeholder="Yalnız komandanız görür"></textarea><button class="btn secondary">Qeyd et</button></form>`
+            : ''
+        }
       </div>`
-      : html`<p class="hint pad">Sizin rolunuz yalnız oxumağa icazə verir.</p>`}`;
+        : html`<p class="hint pad">Sizin rolunuz yalnız oxumağa icazə verir.</p>`
+    }`;
 }
 
 export interface InboxPageData {
@@ -134,7 +159,8 @@ export function inboxBody({ f, list, counts: n, choices, active }: InboxPageData
   const c = active?.c;
   const { rows, next } = list;
   const { tags, automations: autos } = choices;
-  const tab = (key: Filters['f'], label: string, count?: number) => html`<a href="/app/inbox${qs(f, { f: key })}" class="${f.f === key ? 'on' : ''}">${label}${count ? html` <span class="count ${key === 'waiting' ? 'warn' : ''}">${count}</span>` : ''}</a>`;
+  const tab = (key: Filters['f'], label: string, count?: number) =>
+    html`<a href="/app/inbox${qs(f, { f: key })}" class="${f.f === key ? 'on' : ''}">${label}${count ? html` <span class="count ${key === 'waiting' ? 'warn' : ''}">${count}</span>` : ''}</a>`;
   return html`
     <div class="inbox3 ${c ? 'has-active' : ''}" data-conv-id="${c?.id ?? ''}" data-list="/app/inbox/part/list">
       <aside class="ib-list">
@@ -155,12 +181,21 @@ export const listHtml = (rows: any[], next: string, f: Filters, activeId?: strin
   html`${rows.length ? rows.map((r) => convRow(r, activeId, f)) : empty('inbox', f.q ? 'Axtarışa uyğun söhbət tapılmadı.' : 'Bu bölmədə söhbət yoxdur.')}
   ${next ? html`<a class="btn sm secondary load-more" href="/app/inbox${qs(f, { before: next })}" data-more="/app/inbox/part/list${qs(f, { before: next })}">Daha çox</a>` : ''}`;
 
-
 /** Saved replies management page. */
 export const savedRepliesHtml = (req: FastifyRequest, rows: any[], canEdit: boolean) =>
   html`<p><a href="/app/inbox" class="more">${icon('back', 'i xs')} Söhbətlər</a></p>${pageHead('Hazır cavablar', 'Operatorların tez-tez yazdığı mətnlər. Söhbətdə bir kliklə əlavə olunur.')}
-    ${canEdit ? html`<section class="card"><form method="post" action="/app/saved-replies" class="grid">${csrfField(req.csrfToken)}
+    ${
+      canEdit
+        ? html`<section class="card"><form method="post" action="/app/saved-replies" class="grid">${csrfField(req.csrfToken)}
       <label>Başlıq<input name="title" maxlength="60" required placeholder="Çatdırılma"></label>
-      <label class="span2">Mətn<input name="body" maxlength="1000" required placeholder="Bakı daxili çatdırılma 1 gündür, 3 AZN."></label><button class="btn">${icon('plus')}Əlavə et</button></form></section>` : ''}
-    <section class="card flush">${rows.length ? html`<div class="table-wrap"><table><thead><tr><th>Başlıq</th><th>Mətn</th><th></th></tr></thead><tbody>${rows.map((s) => html`<tr><td class="strong">${s.title}</td><td>${s.body}</td>
-      <td>${canEdit ? postForm(`/app/saved-replies/${s.id}/delete`, req.csrfToken, icon('trash'), 'icon-btn') : ''}</td></tr>`)}</tbody></table></div>` : empty('book', 'Hələ hazır cavab yoxdur.')}</section>`;
+      <label class="span2">Mətn<input name="body" maxlength="1000" required placeholder="Bakı daxili çatdırılma 1 gündür, 3 AZN."></label><button class="btn">${icon('plus')}Əlavə et</button></form></section>`
+        : ''
+    }
+    <section class="card flush">${
+      rows.length
+        ? html`<div class="table-wrap"><table><thead><tr><th>Başlıq</th><th>Mətn</th><th></th></tr></thead><tbody>${rows.map(
+            (s) => html`<tr><td class="strong">${s.title}</td><td>${s.body}</td>
+      <td>${canEdit ? postForm(`/app/saved-replies/${s.id}/delete`, req.csrfToken, icon('trash'), 'icon-btn') : ''}</td></tr>`,
+          )}</tbody></table></div>`
+        : empty('book', 'Hələ hazır cavab yoxdur.')
+    }</section>`;

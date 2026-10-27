@@ -25,8 +25,7 @@ export function parseCsv(text: string, maxRows = 5000): string[][] {
       if (ch === '"' && src[i + 1] === '"') {
         cell += '"';
         i++;
-      }
-      else if (ch === '"') quoted = false;
+      } else if (ch === '"') quoted = false;
       else cell += ch;
     } else if (ch === '"' && cell === '') quoted = true;
     else if (ch === ',') push();

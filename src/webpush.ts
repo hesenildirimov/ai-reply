@@ -8,10 +8,13 @@ if (config.pushEnabled) webpush.setVapidDetails(config.VAPID_SUBJECT, config.VAP
 const PUSH_HOSTS = [/^fcm\.googleapis\.com$/, /^updates\.push\.services\.mozilla\.com$/, /^[a-z0-9-]+\.notify\.windows\.com$/, /^web\.push\.apple\.com$/];
 
 export const subscriptionSchema = z.object({
-  endpoint: z.url().max(1000).refine((u) => {
-    const url = URL.parse(u);
-    return url?.protocol === 'https:' && !url.port && PUSH_HOSTS.some((h) => h.test(url.hostname));
-  }, 'unsupported push service'),
+  endpoint: z
+    .url()
+    .max(1000)
+    .refine((u) => {
+      const url = URL.parse(u);
+      return url?.protocol === 'https:' && !url.port && PUSH_HOSTS.some((h) => h.test(url.hostname));
+    }, 'unsupported push service'),
   keys: z.object({ p256dh: z.string().regex(/^[A-Za-z0-9_-]{40,200}$/), auth: z.string().regex(/^[A-Za-z0-9_-]{10,50}$/) }),
 });
 export type PushSubscription = z.infer<typeof subscriptionSchema>;

@@ -22,5 +22,6 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
+      - run: npm run check      # Biome: formatting, lint, import order
       - run: npm run typecheck
       - run: npm test

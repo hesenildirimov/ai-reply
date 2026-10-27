@@ -3,7 +3,7 @@ import { Redis } from 'ioredis';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { drainOutbox } from './inbound.js';
-import { runJob, type Data } from './jobs.js';
+import { type Data, runJob } from './jobs.js';
 import { assertEncryptionKey } from './keycheck.js';
 import { closeQueues, INBOUND_QUEUE, QUEUE, queue, redis } from './queue.js';
 

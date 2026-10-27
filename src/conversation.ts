@@ -1,11 +1,11 @@
-import { emit } from './webhooks.js';
-import { limitAlert, reserveAutomated } from './plans.js';
-import { SendError, sendText, textLimit, type SendOpts } from './channels/index.js';
+import { SendError, type SendOpts, sendText, textLimit } from './channels/index.js';
 import type { ChannelRow } from './channels/types.js';
 import { one, q } from './db.js';
 import { openBody, sealBody } from './messages.js';
 import { notifyWaiting } from './notify.js';
+import { limitAlert, reserveAutomated } from './plans.js';
 import { publish } from './realtime.js';
+import { emit } from './webhooks.js';
 
 /** Meta only allows free-form replies within 24h of the customer's last message. */
 export const WINDOW_MS = 24 * 3600 * 1000;
@@ -47,7 +47,14 @@ export const inWindow = (c: Pick<ConvCtx, 'last_inbound_at'>) => !!c.last_inboun
  * - key failed earlier with a definite Meta error -> the stored text is re-sent (no new AI call);
  * - Meta error -> row 'failed' (+ SendError, retryable or not); network error -> row 'unknown', never resent automatically.
  */
-export async function deliver(c: Pick<ConvCtx, 'id' | 'workspace_id' | 'external_user_id' | 'channel'>, text: string, sender: 'ai' | 'human' | 'bot', key: string, opts: SendOpts = {}, kind: 'text' | 'private_reply' = 'text'): Promise<'sent' | 'duplicate'> {
+export async function deliver(
+  c: Pick<ConvCtx, 'id' | 'workspace_id' | 'external_user_id' | 'channel'>,
+  text: string,
+  sender: 'ai' | 'human' | 'bot',
+  key: string,
+  opts: SendOpts = {},
+  kind: 'text' | 'private_reply' = 'text',
+): Promise<'sent' | 'duplicate'> {
   const body = text.slice(0, textLimit(c.channel));
   if (sender !== 'human' && !(await reserveAutomated(c.workspace_id, key))) {
     await limitAlert(c.workspace_id, 'bot_messages_month');
@@ -71,11 +78,10 @@ export async function deliver(c: Pick<ConvCtx, 'id' | 'workspace_id' | 'external
   } catch (e) {
     const se = e instanceof SendError ? e : new SendError('network', false, false);
     // An echo that already carried this message's id (processEcho) proves it was delivered despite the error.
-    await q(`UPDATE messages SET status = CASE WHEN external_id IS NOT NULL THEN 'sent' ELSE $2 END, error = CASE WHEN external_id IS NOT NULL THEN NULL ELSE $3 END WHERE id = $1`, [
-      claimed.id,
-      se.definite ? 'failed' : 'unknown',
-      se.reason,
-    ]);
+    await q(
+      `UPDATE messages SET status = CASE WHEN external_id IS NOT NULL THEN 'sent' ELSE $2 END, error = CASE WHEN external_id IS NOT NULL THEN NULL ELSE $3 END WHERE id = $1`,
+      [claimed.id, se.definite ? 'failed' : 'unknown', se.reason],
+    );
     throw se;
   }
   // The send API's id is authoritative (an echo may have attached one first, see processEcho); never steal another row's id.
@@ -92,7 +98,10 @@ export async function deliver(c: Pick<ConvCtx, 'id' | 'workspace_id' | 'external
 
 /** Body of an earlier attempt that failed definitively, so a retry re-sends it instead of paying for a new AI call. */
 export async function failedBody(workspaceId: string, key: string): Promise<{ body: string; status: string } | null> {
-  const row = await one<{ body: string; enc: boolean; status: string }>(`SELECT body, enc, status FROM messages WHERE workspace_id = $1 AND idempotency_key = $2`, [workspaceId, key]);
+  const row = await one<{ body: string; enc: boolean; status: string }>(
+    `SELECT body, enc, status FROM messages WHERE workspace_id = $1 AND idempotency_key = $2`,
+    [workspaceId, key],
+  );
   return row ? { body: openBody(row), status: row.status } : null;
 }
 
@@ -100,9 +109,12 @@ export async function handoff(c: ConvCtx, holdingReply: string, reason: string, 
   const flipped = await one(`UPDATE conversations SET needs_human = true WHERE id = $1 AND needs_human = false RETURNING id`, [c.id]);
   if (!flipped) return;
   // Analytics: counts handed-over conversations (no message text stored).
-  await q(`INSERT INTO audit_log (workspace_id, action, target_type, target_id, meta) VALUES ($1, 'conversation.handoff', 'conversation', $2, $3)`, [c.workspace_id, c.id, JSON.stringify({ reason: reason.slice(0, 80) })]);
+  await q(`INSERT INTO audit_log (workspace_id, action, target_type, target_id, meta) VALUES ($1, 'conversation.handoff', 'conversation', $2, $3)`, [
+    c.workspace_id,
+    c.id,
+    JSON.stringify({ reason: reason.slice(0, 80) }),
+  ]);
   await emit(c.workspace_id, 'conversation.handoff', { conversation_id: c.id, contact_id: c.contact_id, channel: c.channel.type, reason: reason.slice(0, 80) });
   if (holdingReply.trim()) await deliver(c, holdingReply, 'ai', `hold:${messageId}`).catch((e) => console.error('holding reply failed:', (e as Error).message));
   await notifyWaiting(c.workspace_id, c.id, c.display_name || c.external_user_id, c.channel.type, reason);
 }
-

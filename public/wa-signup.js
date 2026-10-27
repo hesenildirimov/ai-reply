@@ -19,7 +19,9 @@
         else if (data.event === 'CANCEL') status.textContent = 'Bağlantı ləğv edildi.';
         finish();
       }
-    } catch { /* non-JSON messages from the SDK */ }
+    } catch {
+      /* non-JSON messages from the SDK */
+    }
   });
 
   async function finish() {
@@ -36,17 +38,23 @@
   }
 
   btn.addEventListener('click', () => {
-    if (!window.FB) { status.textContent = 'Facebook SDK yüklənmədi. Reklam bloklayıcını söndürün.'; return; }
-    FB.login((response) => {
-      if (response.authResponse?.code) {
-        code = response.authResponse.code;
-        finish();
-      } else status.textContent = 'Bağlantı ləğv edildi.';
-    }, {
-      config_id: btn.dataset.configId,
-      response_type: 'code',
-      override_default_response_type: true,
-      extras: { setup: {}, featureType: '', sessionInfoVersion: '3' },
-    });
+    if (!window.FB) {
+      status.textContent = 'Facebook SDK yüklənmədi. Reklam bloklayıcını söndürün.';
+      return;
+    }
+    FB.login(
+      (response) => {
+        if (response.authResponse?.code) {
+          code = response.authResponse.code;
+          finish();
+        } else status.textContent = 'Bağlantı ləğv edildi.';
+      },
+      {
+        config_id: btn.dataset.configId,
+        response_type: 'code',
+        override_default_response_type: true,
+        extras: { setup: {}, featureType: '', sessionInfoVersion: '3' },
+      },
+    );
   });
 })();

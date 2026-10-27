@@ -4,11 +4,10 @@ import { parseInstagramWebhook } from '../channels/instagram.js';
 import type { ChannelRow } from '../channels/types.js';
 import { parseWhatsAppWebhook } from '../channels/whatsapp.js';
 import { config } from '../config.js';
-import { parseSignedRequest, randomToken, safeEqual, verifyMetaSignature } from '../crypto.js';
+import { parseSignedRequest, randomToken, safeEqual, sha256, verifyMetaSignature } from '../crypto.js';
 import { one, q } from '../db.js';
-import { accept, eventJob, keyedJob, type IntakeJob } from '../inbound.js';
+import { accept, eventJob, type IntakeJob, keyedJob } from '../inbound.js';
 import { redis } from '../queue.js';
-import { sha256 } from '../crypto.js';
 import { telegramEnabled, tgSend } from '../telegram.js';
 
 // Meta delivers in bursts from a few IPs: the cap stops floods of unsigned junk (audit F-14) without throttling Meta
@@ -19,7 +18,12 @@ function verifyChallenge(req: FastifyRequest, reply: FastifyReply) {
   const qs = req.query as Record<string, string | undefined>;
   const token = qs['hub.verify_token'] ?? '';
   const challenge = qs['hub.challenge'] ?? '';
-  if (qs['hub.mode'] === 'subscribe' && config.META_WEBHOOK_VERIFY_TOKEN && safeEqual(token, config.META_WEBHOOK_VERIFY_TOKEN) && /^[\w-]{1,200}$/.test(challenge)) {
+  if (
+    qs['hub.mode'] === 'subscribe' &&
+    config.META_WEBHOOK_VERIFY_TOKEN &&
+    safeEqual(token, config.META_WEBHOOK_VERIFY_TOKEN) &&
+    /^[\w-]{1,200}$/.test(challenge)
+  ) {
     return reply.type('text/plain').send(challenge);
   }
   return reply.code(403).send();
@@ -67,7 +71,8 @@ export function metaRoutes(app: FastifyInstance) {
   });
 
   app.post('/webhooks/instagram', { config: META }, async (req, reply) => {
-    if (!verifyMetaSignature(req.rawBody, req.headers['x-hub-signature-256'] as string, [config.IG_APP_SECRET, config.META_APP_SECRET])) return reply.code(401).send();
+    if (!verifyMetaSignature(req.rawBody, req.headers['x-hub-signature-256'] as string, [config.IG_APP_SECRET, config.META_APP_SECRET]))
+      return reply.code(401).send();
     await intake(req, parseInstagramWebhook(req.body).map(eventJob));
     return reply.send('EVENT_RECEIVED');
   });
@@ -89,7 +94,12 @@ export function metaRoutes(app: FastifyInstance) {
         await tgSend(chat, 'Link etibarsızdır və ya vaxtı keçib. Paneldə Ayarlar → Bildirişlər bölməsindən yenidən cəhd edin.');
       } else {
         const label = [msg.from?.first_name, msg.from?.username && `@${msg.from.username}`].filter(Boolean).join(' ').slice(0, 100);
-        await q(`INSERT INTO notify_targets (workspace_id, user_id, kind, chat_id, label) VALUES ($1, $2, 'telegram', $3, $4) ON CONFLICT DO NOTHING`, [link.workspaceId, link.userId, chat, label]);
+        await q(`INSERT INTO notify_targets (workspace_id, user_id, kind, chat_id, label) VALUES ($1, $2, 'telegram', $3, $4) ON CONFLICT DO NOTHING`, [
+          link.workspaceId,
+          link.userId,
+          chat,
+          label,
+        ]);
         const ws = await one('SELECT name FROM workspaces WHERE id = $1', [link.workspaceId]);
         await tgSend(chat, `✅ Bildirişlər qoşuldu: ${ws?.name ?? ''}. Müştəri cavabınızı gözləyəndə burada xəbər verəcəyəm. Dayandırmaq üçün /stop yazın.`);
       }

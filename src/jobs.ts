@@ -1,7 +1,7 @@
-import { DelayedError, UnrecoverableError, type Job } from 'bullmq';
+import { DelayedError, type Job, UnrecoverableError } from 'bullmq';
 import { processComment, resumeRun } from './automations/engine.js';
-import { removeChannel, SendError } from './channels/index.js';
 import { GraphError } from './channels/graph.js';
+import { removeChannel, SendError } from './channels/index.js';
 import { refreshInstagramToken } from './channels/instagram.js';
 import type { ChannelRow } from './channels/types.js';
 import { markWhatsAppRead } from './channels/whatsapp.js';
@@ -15,7 +15,7 @@ import { withLock } from './locks.js';
 import { resealIfStale, sealBody, sealText } from './messages.js';
 import { linkWhatsAppAlerts, notifyChannelProblem } from './notify.js';
 import { ingest, lookupInstagramName, processEcho, processReply } from './pipeline.js';
-import { queue, type JobData } from './queue.js';
+import { type JobData, queue } from './queue.js';
 import { learnStyle } from './style.js';
 import { deliverWebhook } from './webhooks.js';
 
@@ -31,7 +31,11 @@ async function refreshTokens() {
     await withLock(`refresh:${ch.id}`, 60_000, async () => {
       try {
         const r = await refreshInstagramToken(decryptWithInfo(ch.access_token_enc).plain);
-        await q('UPDATE channels SET access_token_enc = $2, token_expires_at = $3, token_refreshed_at = now() WHERE id = $1', [ch.id, encrypt(r.token), r.expiresAt]);
+        await q('UPDATE channels SET access_token_enc = $2, token_expires_at = $3, token_refreshed_at = now() WHERE id = $1', [
+          ch.id,
+          encrypt(r.token),
+          r.expiresAt,
+        ]);
       } catch (e) {
         const invalid = e instanceof GraphError && e.tokenInvalid;
         const expired = new Date(ch.token_expires_at) < new Date();
@@ -65,7 +69,9 @@ export async function sealLegacyMessages(budgetMs = 60_000): Promise<number> {
     total += rows.length;
     if (rows.length < BATCH) break;
   }
-  for (const c of await q<{ id: string; summary: string }>(`SELECT id, summary FROM conversations WHERE summary <> '' AND summary NOT LIKE 'v1:%' LIMIT 5000`)) {
+  for (const c of await q<{ id: string; summary: string }>(
+    `SELECT id, summary FROM conversations WHERE summary <> '' AND summary NOT LIKE 'v1:%' LIMIT 5000`,
+  )) {
     await q(`UPDATE conversations SET summary = $2 WHERE id = $1 AND summary = $3`, [c.id, sealText(c.summary), c.summary]);
   }
   return total;
@@ -102,7 +108,13 @@ async function rotateMessages(budgetMs = 120_000): Promise<boolean> {
 /** During a key rotation (ENCRYPTION_KEY_PREVIOUS set) re-encrypts every secret and message with the current key. */
 export async function reencryptSecrets() {
   if (!process.env.ENCRYPTION_KEY_PREVIOUS) return;
-  const cols: [string, string][] = [['channels', 'access_token_enc'], ['channels', 'extra_enc'], ['users', 'totp_secret_enc'], ['notify_targets', 'data_enc'], ['webhooks', 'secret_enc']];
+  const cols: [string, string][] = [
+    ['channels', 'access_token_enc'],
+    ['channels', 'extra_enc'],
+    ['users', 'totp_secret_enc'],
+    ['notify_targets', 'data_enc'],
+    ['webhooks', 'secret_enc'],
+  ];
   for (const [table, col] of cols) {
     for (const row of await q(`SELECT id, ${col} AS v FROM ${table} WHERE ${col} IS NOT NULL`)) {
       const { plain, stale } = decryptWithInfo(row.v);
@@ -128,7 +140,10 @@ export async function maintenance() {
   await q('DELETE FROM oauth_states WHERE expires_at < now()');
   // Data minimization: drop old messages and empty conversations.
   await q(`DELETE FROM messages WHERE created_at < now() - make_interval(days => $1)`, [config.RETENTION_DAYS]);
-  await q(`DELETE FROM conversations c WHERE last_message_at < now() - make_interval(days => $1) AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)`, [config.RETENTION_DAYS]);
+  await q(
+    `DELETE FROM conversations c WHERE last_message_at < now() - make_interval(days => $1) AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)`,
+    [config.RETENTION_DAYS],
+  );
   await q(`DELETE FROM channel_events WHERE created_at < now() - interval '180 days'`);
   await q(`DELETE FROM webhook_deliveries WHERE created_at < now() - interval '14 days'`);
   // A send that crashed mid-flight stays 'pending'; after 15 min mark it 'unknown' (shown to staff, never auto-resent).

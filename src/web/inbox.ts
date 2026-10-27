@@ -23,7 +23,8 @@ Object.assign(MESSAGES, {
 });
 
 const wantsJson = (req: FastifyRequest) => String(req.headers.accept ?? '').includes('application/json');
-const done = (req: FastifyRequest, reply: FastifyReply, id: string, m = 'saved') => (wantsJson(req) ? reply.send({ ok: true }) : reply.redirect(`/app/inbox/${id}?m=${m}`));
+const done = (req: FastifyRequest, reply: FastifyReply, id: string, m = 'saved') =>
+  wantsJson(req) ? reply.send({ ok: true }) : reply.redirect(`/app/inbox/${id}?m=${m}`);
 const fail = (req: FastifyRequest, reply: FastifyReply, id: string, m: string, code = 400) =>
   wantsJson(req) ? reply.code(code).send({ ok: false, error: MESSAGES[m]?.text ?? 'Xəta' }) : reply.redirect(`/app/inbox/${id}?m=${m}`);
 const fragment = (reply: FastifyReply, s: Safe) => reply.type('text/html; charset=utf-8').send(s.value);
@@ -97,7 +98,12 @@ export function inboxRoutes(app: FastifyInstance) {
     r.get('/app/events', { config: { rateLimit: false } }, (req, reply) => {
       reply.hijack();
       const res = reply.raw;
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
       res.write('retry: 5000\n\n');
       const off = subscribe(req.user!.workspaceId, (ev) => res.write(`data: ${JSON.stringify(ev)}\n\n`));
       const ping = setInterval(() => res.write(': ping\n\n'), 25_000);
@@ -109,10 +115,19 @@ export function inboxRoutes(app: FastifyInstance) {
 
     r.post('/app/inbox/:id/reply', { ...perm('inbox.reply'), config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
       const id = idParam(req);
-      const text = z.string().trim().min(1).max(4096).safeParse((req.body as any)?.text).data;
+      const text = z
+        .string()
+        .trim()
+        .min(1)
+        .max(4096)
+        .safeParse((req.body as any)?.text).data;
       if (!id || !text) return fail(req, reply, id ?? '', 'invalid');
       try {
-        const nonce = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/).safeParse((req.body as any)?.nonce).data ?? randomToken(16);
+        const nonce =
+          z
+            .string()
+            .regex(/^[A-Za-z0-9_-]{16,64}$/)
+            .safeParse((req.body as any)?.nonce).data ?? randomToken(16);
         const res = await sendManualReply(req.user!.workspaceId, id, text, nonce);
         if (res === 'not_found') return reply.code(404).send('Not found');
         if (res !== 'sent') return fail(req, reply, id, 'window_closed');
@@ -126,7 +141,12 @@ export function inboxRoutes(app: FastifyInstance) {
 
     r.post('/app/inbox/:id/note', perm('inbox.manage'), async (req, reply) => {
       const c = await owned(req);
-      const body = z.string().trim().min(1).max(2000).safeParse((req.body as any)?.body).data;
+      const body = z
+        .string()
+        .trim()
+        .min(1)
+        .max(2000)
+        .safeParse((req.body as any)?.body).data;
       if (!c || !body) return fail(req, reply, c?.id ?? '', 'invalid');
       await data.addNote(c.workspace_id, c.id, req.user!.id, body);
       await publish(c.workspace_id, { type: 'conversation', conversationId: c.id });

@@ -52,14 +52,21 @@ export async function accept(jobs: IntakeJob[]): Promise<'queued' | 'outbox' | '
     }
   }
   const values = jobs.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2})`).join(', ');
-  await q(`INSERT INTO inbound_outbox (job_id, data) VALUES ${values} ON CONFLICT (job_id) DO NOTHING`, jobs.flatMap((j) => [j.jobId, JSON.stringify(j.data)]));
+  await q(
+    `INSERT INTO inbound_outbox (job_id, data) VALUES ${values} ON CONFLICT (job_id) DO NOTHING`,
+    jobs.flatMap((j) => [j.jobId, JSON.stringify(j.data)]),
+  );
   return 'outbox';
 }
 
 /** Moves outbox rows into the queue (worker, every few seconds). Safe with several workers (SKIP LOCKED). */
 export async function drainOutbox(limit = 500): Promise<number> {
   return tx(async (c) => {
-    const rows = (await c.query<{ id: string; job_id: string; data: JobData }>(`SELECT id, job_id, data FROM inbound_outbox ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`, [limit])).rows;
+    const rows = (
+      await c.query<{ id: string; job_id: string; data: JobData }>(`SELECT id, job_id, data FROM inbound_outbox ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`, [
+        limit,
+      ])
+    ).rows;
     if (!rows.length) return 0;
     await withTimeout(enqueue(rows.map((r) => ({ jobId: r.job_id, data: r.data }))), 5000);
     await c.query(`DELETE FROM inbound_outbox WHERE id = ANY($1::bigint[])`, [rows.map((r) => r.id)]);

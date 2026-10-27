@@ -14,7 +14,9 @@ describe.skipIf(!enabled)('P2 inbox (integration)', () => {
     const { parseInstagramWebhook } = await import('../src/channels/instagram.js');
     const mid = `ib.${++n}`;
     for (const ev of parseInstagramWebhook(igMessage(ig, from, mid, text))) await pipeline.ingest(ev);
-    return db.one(`SELECT m.id, m.conversation_id, c.contact_id FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE m.external_id = $1`, [mid]);
+    return db.one(`SELECT m.id, m.conversation_id, c.contact_id FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE m.external_id = $1`, [
+      mid,
+    ]);
   }
 
   beforeAll(async () => {
@@ -41,12 +43,18 @@ describe.skipIf(!enabled)('P2 inbox (integration)', () => {
   it('workspace A cannot read or change workspace B conversations and contacts', async () => {
     const b = await inbound('IGB', 'UB1', 'B-nin gizli mesajı');
     const s = await loginAs(app, A.email);
-    for (const url of [`/app/inbox/${b.conversation_id}`, `/app/inbox/${b.conversation_id}/part/thread`, `/app/inbox/${b.conversation_id}/part/profile`, `/app/media/${b.id}/0`]) {
+    for (const url of [
+      `/app/inbox/${b.conversation_id}`,
+      `/app/inbox/${b.conversation_id}/part/thread`,
+      `/app/inbox/${b.conversation_id}/part/profile`,
+      `/app/media/${b.id}/0`,
+    ]) {
       expect((await app.inject({ url, headers: s.headers })).statusCode).toBe(404);
     }
     const list = await app.inject({ url: '/app/inbox?f=all&q=gizli', headers: s.headers });
     expect(list.body).not.toContain('B-nin');
-    const post = (url: string, payload: Record<string, string>) => app.inject({ method: 'POST', url, headers: { ...s.headers, accept: 'application/json' }, payload: { _csrf: s.csrf, ...payload } });
+    const post = (url: string, payload: Record<string, string>) =>
+      app.inject({ method: 'POST', url, headers: { ...s.headers, accept: 'application/json' }, payload: { _csrf: s.csrf, ...payload } });
     expect((await post(`/app/contacts/${b.contact_id}/tags`, { add: 'hack' })).statusCode).toBe(404);
     expect((await post(`/app/contacts/${b.contact_id}/flags`, { blocked: '1' })).statusCode).toBe(404);
     await post(`/app/inbox/${b.conversation_id}/assign`, { user_id: 'me' });
@@ -60,7 +68,12 @@ describe.skipIf(!enabled)('P2 inbox (integration)', () => {
     const a = await inbound('IGA', 'UA1', 'Salam');
     const s = await loginAs(app, A.email);
     const post = (path: string, payload: Record<string, string>) =>
-      app.inject({ method: 'POST', url: `/app/inbox/${a.conversation_id}/${path}`, headers: { ...s.headers, accept: 'application/json' }, payload: { _csrf: s.csrf, ...payload } });
+      app.inject({
+        method: 'POST',
+        url: `/app/inbox/${a.conversation_id}/${path}`,
+        headers: { ...s.headers, accept: 'application/json' },
+        payload: { _csrf: s.csrf, ...payload },
+      });
     expect((await post('assign', { user_id: 'me' })).json()).toEqual({ ok: true });
     await pipeline.processReply(a.conversation_id, a.id);
     expect(fake.sends()).toHaveLength(0);
@@ -80,13 +93,24 @@ describe.skipIf(!enabled)('P2 inbox (integration)', () => {
 
   it('read-only analysts cannot reply or change conversations', async () => {
     const { hash } = await import('@node-rs/argon2');
-    const u = await db.one(`INSERT INTO users (email, password_hash, email_verified_at) VALUES ('analyst@test.az', $1, now()) RETURNING id`, [await hash('correct-horse-battery')]);
+    const u = await db.one(`INSERT INTO users (email, password_hash, email_verified_at) VALUES ('analyst@test.az', $1, now()) RETURNING id`, [
+      await hash('correct-horse-battery'),
+    ]);
     await db.q(`INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, 'analyst')`, [A.workspaceId, u.id]);
     const a = await inbound('IGA', 'UA2', 'Salam');
     const s = await loginAs(app, 'analyst@test.az');
     expect((await app.inject({ url: `/app/inbox/${a.conversation_id}`, headers: s.headers })).statusCode).toBe(403); // analysts: analytics only, no conversation content (audit F-03)
-    for (const [path, payload] of [['reply', { text: 'hi' }], ['status', { status: 'closed' }], ['assign', { user_id: 'me' }]] as const) {
-      const res = await app.inject({ method: 'POST', url: `/app/inbox/${a.conversation_id}/${path}`, headers: s.headers, payload: { _csrf: s.csrf, ...payload } });
+    for (const [path, payload] of [
+      ['reply', { text: 'hi' }],
+      ['status', { status: 'closed' }],
+      ['assign', { user_id: 'me' }],
+    ] as const) {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/app/inbox/${a.conversation_id}/${path}`,
+        headers: s.headers,
+        payload: { _csrf: s.csrf, ...payload },
+      });
       expect(res.statusCode).toBe(403);
     }
     expect(fake.sends()).toHaveLength(0);

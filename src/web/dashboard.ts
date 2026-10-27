@@ -1,15 +1,14 @@
-
-import type { FastifyInstance, } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { subscriptionOf } from '../billing.js';
 import type { ChannelRow } from '../channels/types.js';
-import { one, q, } from '../db.js';
-import { can, requireUser } from './auth.js';
-import { csrfField, html, pageHead, } from './html.js';
-import { channelIcon, icon, } from './icons.js';
-import { convRow } from './inbox-views.js';
 import { urgentConversations } from '../data/inbox.js';
+import { one, q } from '../db.js';
+import { can, requireUser } from './auth.js';
+import { csrfField, html, pageHead } from './html.js';
+import { channelIcon, icon } from './icons.js';
+import { convRow } from './inbox-views.js';
 import { MESSAGES, view } from './public.js';
-import { chip, day, stat, } from './ui.js';
+import { chip, day, stat } from './ui.js';
 
 Object.assign(MESSAGES, {
   expired: { type: 'error', text: 'Abunəliyin müddəti bitib, AI cavablar dayandırılıb. Administratorla əlaqə saxlayın.' },
@@ -56,9 +55,16 @@ export function dashboardRoutes(app: FastifyInstance) {
       ];
       const doneN = steps.filter((x) => x[0]).length;
       const allDone = ob.dismissed || doneN === steps.length || !can(req.user, 'assistant.write');
-      return view(req, reply, 'Panel', html`${sub.expired ? html`<p class="flash error">${icon('alert')}<span>${MESSAGES.expired!.text}</span></p>` : ''}
-        ${pageHead(sub.name, html`AI köməkçi: ${a.enabled ? chip('ok', 'Aktiv') : chip('neutral', 'Deaktiv')}${sub.paidUntil ? html` · Abunəlik: <b>${day(sub.paidUntil)}</b> tarixinə qədər` : ''}`,
-          html`<a class="btn" href="/app/inbox">${icon('chat')}Söhbətlərə keç</a>`)}
+      return view(
+        req,
+        reply,
+        'Panel',
+        html`${sub.expired ? html`<p class="flash error">${icon('alert')}<span>${MESSAGES.expired!.text}</span></p>` : ''}
+        ${pageHead(
+          sub.name,
+          html`AI köməkçi: ${a.enabled ? chip('ok', 'Aktiv') : chip('neutral', 'Deaktiv')}${sub.paidUntil ? html` · Abunəlik: <b>${day(sub.paidUntil)}</b> tarixinə qədər` : ''}`,
+          html`<a class="btn" href="/app/inbox">${icon('chat')}Söhbətlərə keç</a>`,
+        )}
         <div class="stats">
           ${stat('inbox', 'Bu gün gələn mesajlar', counts.today)}
           ${stat('bot', 'Bu ay AI cavabları', html`${sub.repliesUsed}<small> / ${sub.replyLimit}</small>`, html`<span class="bar"><span style="width:${pct}%"></span></span>`)}
@@ -68,14 +74,23 @@ export function dashboardRoutes(app: FastifyInstance) {
         <div class="cols">
           <section class="card">
             <div class="card-head"><h2>Son söhbətlər</h2><a href="/app/inbox" class="more">Hamısı ${icon('arrow', 'i xs')}</a></div>
-            ${recent.length ? html`<div class="conv-list">${recent.map((c) => convRow(c))}</div>`
-              : html`<div class="empty">${icon('chat', 'i lg')}<p>Hələ mesaj yoxdur. Kanal bağlayandan sonra müştəri mesajları burada görünəcək.</p></div>`}
+            ${
+              recent.length
+                ? html`<div class="conv-list">${recent.map((c) => convRow(c))}</div>`
+                : html`<div class="empty">${icon('chat', 'i lg')}<p>Hələ mesaj yoxdur. Kanal bağlayandan sonra müştəri mesajları burada görünəcək.</p></div>`
+            }
           </section>
           <div class="stack">
-            ${allDone ? '' : html`<section class="card"><div class="card-head"><h2>Başlanğıc · ${doneN}/${steps.length}</h2>
+            ${
+              allDone
+                ? ''
+                : html`<section class="card"><div class="card-head"><h2>Başlanğıc · ${doneN}/${steps.length}</h2>
               <form method="post" action="/app/onboarding/dismiss" class="inline">${csrfField(req.csrfToken)}<button class="btn sm ghost">Gizlət</button></form></div>
-              <div class="meter"><i style="width:${Math.round((doneN / steps.length) * 100)}%"></i></div><ol class="steps">${steps.map(([done, t, s, href]) =>
-              html`<li class="${done ? 'done' : ''}"><a href="${href}">${icon(done ? 'check' : 'circle')}<span><b>${t}</b><small>${s}</small></span></a></li>`)}</ol></section>`}
+              <div class="meter"><i style="width:${Math.round((doneN / steps.length) * 100)}%"></i></div><ol class="steps">${steps.map(
+                ([done, t, s, href]) =>
+                  html`<li class="${done ? 'done' : ''}"><a href="${href}">${icon(done ? 'check' : 'circle')}<span><b>${t}</b><small>${s}</small></span></a></li>`,
+              )}</ol></section>`
+            }
             <section class="card how"><h2>Mesajlar necə idarə olunur?</h2>
               <ol>
                 <li>${icon('bot')}<span><b>AI avtomatik cavab verir</b><small>Instagram və WhatsApp-a gələn hər mesaja, sizin yazdığınız məlumatlar əsasında.</small></span></li>
@@ -83,7 +98,8 @@ export function dashboardRoutes(app: FastifyInstance) {
                 <li>${icon('chat')}<span><b>Siz "Söhbətlər"dən cavab verirsiniz</b><small>Bütün yazışmalar orada görünür. Əl ilə yazdıqda AI həmin söhbətdə dayanır.</small></span></li>
               </ol></section>
           </div>
-        </div>`);
+        </div>`,
+      );
     });
 
     r.post('/app/onboarding/dismiss', async (req, reply) => {

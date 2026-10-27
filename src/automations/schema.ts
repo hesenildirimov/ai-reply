@@ -14,7 +14,11 @@ export const quickReplySchema = z.object({
 
 export const stepSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('message'), text, quick_replies: z.array(quickReplySchema).max(13).default([]), track_links: z.boolean().default(false) }),
-  z.object({ type: z.literal('tag'), add: z.array(z.string().trim().min(1).max(40)).max(10).default([]), remove: z.array(z.string().trim().min(1).max(40)).max(10).default([]) }),
+  z.object({
+    type: z.literal('tag'),
+    add: z.array(z.string().trim().min(1).max(40)).max(10).default([]),
+    remove: z.array(z.string().trim().min(1).max(40)).max(10).default([]),
+  }),
   z.object({ type: z.literal('field'), key: z.string().regex(/^[a-z][a-z0-9_]{0,39}$/), value: z.string().max(500) }),
   z.object({
     type: z.literal('condition'),
@@ -38,9 +42,19 @@ export const configSchema = z.object({
     })
     .default({ mode: 'any', keywords: [], exclude: [] }),
   /** Comment trigger: which posts/reels. */
-  media: z.object({ scope: z.enum(['all', 'selected']).default('all'), ids: z.array(z.string().regex(/^\d{1,30}$/)).max(50).default([]) }).default({ scope: 'all', ids: [] }),
+  media: z
+    .object({
+      scope: z.enum(['all', 'selected']).default('all'),
+      ids: z
+        .array(z.string().regex(/^\d{1,30}$/))
+        .max(50)
+        .default([]),
+    })
+    .default({ scope: 'all', ids: [] }),
   /** Comment trigger: optional public reply under the comment (one is picked at random). */
-  public_reply: z.object({ enabled: z.boolean().default(false), texts: z.array(z.string().trim().min(1).max(300)).max(5).default([]) }).default({ enabled: false, texts: [] }),
+  public_reply: z
+    .object({ enabled: z.boolean().default(false), texts: z.array(z.string().trim().min(1).max(300)).max(5).default([]) })
+    .default({ enabled: false, texts: [] }),
   steps: z.array(stepSchema).max(20).default([]),
 });
 export type AutomationConfig = z.infer<typeof configSchema>;
@@ -56,11 +70,14 @@ export function validateForTrigger(trigger: Trigger, c: AutomationConfig): strin
   const errors: string[] = [];
   const messages = c.steps.filter((s) => s.type === 'message');
   if (!messages.length && !c.steps.some((s) => s.type === 'ai' || s.type === 'handoff')) errors.push('Ən azı bir mesaj, AI və ya operator addımı əlavə edin.');
-  if ((trigger === 'comment' || trigger === 'dm_keyword') && c.match.mode !== 'anything' && !c.match.keywords.length) errors.push('Açar söz əlavə edin və ya "istənilən mətn" seçin.');
+  if ((trigger === 'comment' || trigger === 'dm_keyword') && c.match.mode !== 'anything' && !c.match.keywords.length)
+    errors.push('Açar söz əlavə edin və ya "istənilən mətn" seçin.');
   if (trigger === 'comment') {
     // Meta: one private reply per comment; further messages only after the person answers.
-    if (messages.length > 1) errors.push('Şərhə yalnız 1 şəxsi mesaj göndərmək olar (Meta qaydası). Növbəti mesajları "Quick reply" düymələri ilə davam etdirin.');
-    if (c.steps.some((s) => s.type === 'delay' || s.type === 'ai')) errors.push('Şərh avtomatlaşdırmasında gecikmə və AI addımı istifadə edilə bilməz: istifadəçi hələ cavab yazmayıb.');
+    if (messages.length > 1)
+      errors.push('Şərhə yalnız 1 şəxsi mesaj göndərmək olar (Meta qaydası). Növbəti mesajları "Quick reply" düymələri ilə davam etdirin.');
+    if (c.steps.some((s) => s.type === 'delay' || s.type === 'ai'))
+      errors.push('Şərh avtomatlaşdırmasında gecikmə və AI addımı istifadə edilə bilməz: istifadəçi hələ cavab yazmayıb.');
     if (c.media.scope === 'selected' && !c.media.ids.length) errors.push('Ən azı bir post seçin.');
     if (c.public_reply.enabled && !c.public_reply.texts.length) errors.push('İctimai cavab mətni yazın.');
   }

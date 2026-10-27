@@ -38,10 +38,17 @@ export function integrationRoutes(app: FastifyInstance) {
       const w0 = req.user!.workspaceId;
       const [hooks, deliveries] = await Promise.all([
         q(`SELECT * FROM webhooks WHERE workspace_id = $1 ORDER BY created_at`, [w0]),
-        q(`SELECT d.event, d.status, d.attempts, d.response_code, d.error, d.created_at, w.name, w.url FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id
-           WHERE d.workspace_id = $1 ORDER BY d.created_at DESC LIMIT 20`, [w0]),
+        q(
+          `SELECT d.event, d.status, d.attempts, d.response_code, d.error, d.created_at, w.name, w.url FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id
+           WHERE d.workspace_id = $1 ORDER BY d.created_at DESC LIMIT 20`,
+          [w0],
+        ),
       ]);
-      return view(req, reply, 'İnteqrasiyalar', html`${pageHead('İnteqrasiyalar', 'Hadisələri öz sisteminizə, Google Sheets-ə və ya CRM-ə göndərin (webhook).')}
+      return view(
+        req,
+        reply,
+        'İnteqrasiyalar',
+        html`${pageHead('İnteqrasiyalar', 'Hadisələri öz sisteminizə, Google Sheets-ə və ya CRM-ə göndərin (webhook).')}
         <section class="card"><h2>${icon('plus')}Yeni webhook</h2>
           <form method="post" action="/app/integrations" class="stack">${csrfField(req.csrfToken)}
             <div class="two"><label>Ad<input name="name" maxlength="80" placeholder="Google Sheets, CRM..."></label>
@@ -51,25 +58,45 @@ export function integrationRoutes(app: FastifyInstance) {
           <p class="hint">Hər sorğu <code>X-AIReply-Signature: sha256=HMAC(secret, timestamp + "." + body)</code> ilə imzalanır; uğursuz sorğular 6 dəfəyə qədər təkrarlanır.
             Google Sheets və CRM nümunələri: <code>docs/INTEGRATIONS.md</code>. Diqqət: <code>message.received</code> müştəri mesajının mətnini göndərir — yalnız etibar etdiyiniz sistemə qoşun.</p>
         </section>
-        <section class="card flush">${hooks.length ? html`<div class="table-wrap"><table><thead><tr><th>Webhook</th><th>Hadisələr</th><th>Vəziyyət</th><th></th></tr></thead><tbody>
-          ${hooks.map((h) => html`<tr><td><b>${h.name || 'Webhook'}</b><small class="muted block">${h.url}</small></td><td>${h.events.map((e: string) => html`<code>${e}</code> `)}</td>
+        <section class="card flush">${
+          hooks.length
+            ? html`<div class="table-wrap"><table><thead><tr><th>Webhook</th><th>Hadisələr</th><th>Vəziyyət</th><th></th></tr></thead><tbody>
+          ${hooks.map(
+            (
+              h,
+            ) => html`<tr><td><b>${h.name || 'Webhook'}</b><small class="muted block">${h.url}</small></td><td>${h.events.map((e: string) => html`<code>${e}</code> `)}</td>
             <td>${h.active ? chip('ok', 'Aktiv') : chip('neutral', 'Söndürülüb')} ${h.consecutive_failures ? chip('warn', `${h.consecutive_failures} xəta`) : ''}<small class="muted block">${h.last_delivery_at ? `son: ${fmt(h.last_delivery_at)}` : ''}</small></td>
             <td class="right"><div class="actions">${postForm(`/app/integrations/${h.id}/test`, req.csrfToken, 'Test', 'btn sm secondary')}
               ${postForm(`/app/integrations/${h.id}/toggle`, req.csrfToken, h.active ? 'Söndür' : 'Aktiv et', 'btn sm secondary')}
               ${postForm(`/app/integrations/${h.id}/rotate`, req.csrfToken, 'Yeni secret', 'btn sm secondary', { confirm: 'Köhnə secret dərhal etibarsız olacaq. Davam?' })}
-              ${postForm(`/app/integrations/${h.id}/delete`, req.csrfToken, icon('trash'), 'btn sm danger-ghost', { confirm: 'Webhook silinsin?' })}</div></td></tr>`)}
-          </tbody></table></div>` : empty('share', 'Hələ webhook yoxdur.')}</section>
-        ${deliveries.length ? html`<section class="card flush"><div class="card-head pad"><h2>Son çatdırılmalar</h2></div><div class="table-wrap"><table><thead><tr><th>Vaxt</th><th>Webhook</th><th>Hadisə</th><th>Nəticə</th></tr></thead><tbody>
-          ${deliveries.map((d) => html`<tr><td class="muted nowrap">${fmt(d.created_at)}</td><td>${d.name || d.url}</td><td><code>${d.event}</code></td>
-            <td>${d.status === 'sent' ? chip('ok', `${d.response_code}`) : d.status === 'failed' ? chip('danger', d.error || 'xəta') : chip('neutral', d.attempts ? `təkrar · ${d.error}` : 'gözləyir')}</td></tr>`)}
-          </tbody></table></div></section>` : ''}`);
+              ${postForm(`/app/integrations/${h.id}/delete`, req.csrfToken, icon('trash'), 'btn sm danger-ghost', { confirm: 'Webhook silinsin?' })}</div></td></tr>`,
+          )}
+          </tbody></table></div>`
+            : empty('share', 'Hələ webhook yoxdur.')
+        }</section>
+        ${
+          deliveries.length
+            ? html`<section class="card flush"><div class="card-head pad"><h2>Son çatdırılmalar</h2></div><div class="table-wrap"><table><thead><tr><th>Vaxt</th><th>Webhook</th><th>Hadisə</th><th>Nəticə</th></tr></thead><tbody>
+          ${deliveries.map(
+            (d) => html`<tr><td class="muted nowrap">${fmt(d.created_at)}</td><td>${d.name || d.url}</td><td><code>${d.event}</code></td>
+            <td>${d.status === 'sent' ? chip('ok', `${d.response_code}`) : d.status === 'failed' ? chip('danger', d.error || 'xəta') : chip('neutral', d.attempts ? `təkrar · ${d.error}` : 'gözləyir')}</td></tr>`,
+          )}
+          </tbody></table></div></section>`
+            : ''
+        }`,
+      );
     });
 
     const secretPage = (req: FastifyRequest, reply: any, name: string, secret: string) =>
-      view(req, reply, 'Webhook secret', html`${pageHead('Webhook secret', name || 'Webhook')}<section class="card link-box"><h2>${icon('lock')}İmza açarı</h2>
+      view(
+        req,
+        reply,
+        'Webhook secret',
+        html`${pageHead('Webhook secret', name || 'Webhook')}<section class="card link-box"><h2>${icon('lock')}İmza açarı</h2>
         <p>Bu açarı qəbul edən tərəfdə imzanı yoxlamaq üçün saxlayın. <b>Bir daha göstərilməyəcək</b> (unutsanız "Yeni secret" yaradın).</p>
         <div class="copy-row"><input readonly value="${secret}" class="copy" id="wh-secret"><button type="button" class="btn secondary" data-copy="wh-secret">Kopyala</button></div></section>
-        <p><a href="/app/integrations" class="more">${icon('back', 'i xs')} İnteqrasiyalar</a></p>`);
+        <p><a href="/app/integrations" class="more">${icon('back', 'i xs')} İnteqrasiyalar</a></p>`,
+      );
 
     r.post('/app/integrations', async (req, reply) => {
       const w0 = req.user!.workspaceId;
@@ -77,9 +104,16 @@ export function integrationRoutes(app: FastifyInstance) {
       if (!p.success) return reply.redirect('/app/integrations?m=invalid');
       const url = validateWebhookUrl(p.data.url);
       if (!url) return reply.redirect('/app/integrations?m=webhook_url');
-      if ((await one<{ n: number }>(`SELECT count(*)::int AS n FROM webhooks WHERE workspace_id = $1`, [w0]))!.n >= MAX_HOOKS) return reply.redirect('/app/integrations?m=webhook_limit');
+      if ((await one<{ n: number }>(`SELECT count(*)::int AS n FROM webhooks WHERE workspace_id = $1`, [w0]))!.n >= MAX_HOOKS)
+        return reply.redirect('/app/integrations?m=webhook_limit');
       const secret = `whsec_${randomToken(24)}`;
-      const h = await one(`INSERT INTO webhooks (workspace_id, name, url, secret_enc, events) VALUES ($1, $2, $3, $4, $5) RETURNING id`, [w0, p.data.name, url, encrypt(secret), p.data.events]);
+      const h = await one(`INSERT INTO webhooks (workspace_id, name, url, secret_enc, events) VALUES ($1, $2, $3, $4, $5) RETURNING id`, [
+        w0,
+        p.data.name,
+        url,
+        encrypt(secret),
+        p.data.events,
+      ]);
       await audit(w0, req.user!.id, 'webhook.create', 'webhook', h!.id, { host: new URL(url).host, events: p.data.events });
       return secretPage(req, reply, p.data.name, secret);
     });
@@ -106,7 +140,11 @@ export function integrationRoutes(app: FastifyInstance) {
       const h = await owned(req);
       if (!h?.active) return reply.redirect('/app/integrations?m=invalid');
       const payload = { event: 'ping', created_at: new Date().toISOString(), data: { message: 'AI Reply test hadisəsi' } };
-      const d = await one(`INSERT INTO webhook_deliveries (webhook_id, workspace_id, event, payload) VALUES ($1, $2, 'ping', $3) RETURNING id`, [h.id, h.workspace_id, sealPayload(payload)]);
+      const d = await one(`INSERT INTO webhook_deliveries (webhook_id, workspace_id, event, payload) VALUES ($1, $2, 'ping', $3) RETURNING id`, [
+        h.id,
+        h.workspace_id,
+        sealPayload(payload),
+      ]);
       await queue.add('webhook', { kind: 'webhook', deliveryId: d!.id }, { jobId: `wh-${d!.id}`, attempts: 1 });
       return reply.redirect('/app/integrations?m=webhook_test');
     });

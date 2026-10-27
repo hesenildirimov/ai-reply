@@ -7,25 +7,25 @@ import staticFiles from '@fastify/static';
 import Fastify from 'fastify';
 import { config } from './config.js';
 import { pool } from './db.js';
-import { closeQueues, redis } from './queue.js';
 import { assertEncryptionKey } from './keycheck.js';
+import { closeQueues, redis } from './queue.js';
 import { registerTelegramWebhook } from './telegram.js';
 import { adminRoutes } from './web/admin.js';
+import { analyticsRoutes } from './web/analytics.js';
 import { assistantRoutes } from './web/assistant.js';
+import { registerAuth } from './web/auth.js';
 import { automationRoutes } from './web/automations.js';
 import { channelRoutes } from './web/channels.js';
-import { dashboardRoutes } from './web/dashboard.js';
-import { settingsRoutes } from './web/settings.js';
-import { analyticsRoutes } from './web/analytics.js';
-import { inboxRoutes } from './web/inbox.js';
-import { knowledgeRoutes } from './web/knowledge.js';
 import { contactRoutes } from './web/contacts.js';
+import { dashboardRoutes } from './web/dashboard.js';
+import { inboxRoutes } from './web/inbox.js';
 import { integrationRoutes } from './web/integrations.js';
-import { teamRoutes } from './web/team.js';
-import { registerAuth } from './web/auth.js';
+import { knowledgeRoutes } from './web/knowledge.js';
 import { legalRoutes } from './web/legal.js';
 import { metaRoutes } from './web/meta.js';
 import { publicRoutes } from './web/public.js';
+import { settingsRoutes } from './web/settings.js';
+import { teamRoutes } from './web/team.js';
 
 export async function buildServer() {
   const app = Fastify({
@@ -35,7 +35,16 @@ export async function buildServer() {
     logger: {
       level: config.LOG_LEVEL ?? (config.isProd ? 'info' : 'debug'),
       redact: {
-        paths: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-csrf-token"]', '*.access_token', '*.token', '*.password', '*.code', '*.secret'],
+        paths: [
+          'req.headers.authorization',
+          'req.headers.cookie',
+          'req.headers["x-csrf-token"]',
+          '*.access_token',
+          '*.token',
+          '*.password',
+          '*.code',
+          '*.secret',
+        ],
         censor: '[redacted]',
       },
       // Query strings can carry OAuth codes / tokens: never log them.
@@ -91,7 +100,10 @@ export async function buildServer() {
     } catch {
       return reply.code(503).send({ ok: false });
     }
-    const redisOk = await redis.ping().then(() => true, () => false);
+    const redisOk = await redis.ping().then(
+      () => true,
+      () => false,
+    );
     return redisOk ? { ok: true } : { ok: true, degraded: true };
   });
 
@@ -118,7 +130,10 @@ export async function buildServer() {
   app.setErrorHandler((err: any, req, reply) => {
     const status = err.statusCode && err.statusCode < 500 ? err.statusCode : 500;
     if (status >= 500) req.log.error({ err }, 'request failed');
-    reply.code(status).type('text/plain; charset=utf-8').send(status === 429 ? 'Too many requests' : status >= 500 ? 'Server error' : 'Bad request');
+    reply
+      .code(status)
+      .type('text/plain; charset=utf-8')
+      .send(status === 429 ? 'Too many requests' : status >= 500 ? 'Server error' : 'Bad request');
   });
 
   return app;

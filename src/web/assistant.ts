@@ -1,17 +1,16 @@
-
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { generateReply } from '../ai.js';
-import { reserveReply, } from '../billing.js';
-import { one, q, } from '../db.js';
+import { reserveReply } from '../billing.js';
+import { one, q } from '../db.js';
 import { audit } from '../events.js';
-import { aiBudgetExceeded, } from '../plans.js';
-import { queue, } from '../queue.js';
+import { aiBudgetExceeded } from '../plans.js';
+import { queue } from '../queue.js';
 import { requirePerm, requireUser } from './auth.js';
 import { csrfField, html, pageHead, raw, type Safe } from './html.js';
-import { icon, } from './icons.js';
+import { icon } from './icons.js';
 import { MESSAGES, view } from './public.js';
-import { fmt, } from './ui.js';
+import { fmt } from './ui.js';
 
 Object.assign(MESSAGES, {
   limit: { type: 'error', text: 'Aylıq AI cavab limitiniz bitib.' },
@@ -27,7 +26,11 @@ export function assistantRoutes(app: FastifyInstance) {
     // ---------- Assistant ----------
     r.get('/app/assistant', { preHandler: requirePerm('assistant.write') }, async (req, reply) => {
       const a = await one('SELECT * FROM assistants WHERE workspace_id = $1', [req.user!.workspaceId]);
-      return view(req, reply, 'AI köməkçi', html`${pageHead('AI köməkçi', 'AI yalnız burada yazdığınız məlumatlara əsasən cavab verir. Bilmədiyi sualı sizə ötürür.')}
+      return view(
+        req,
+        reply,
+        'AI köməkçi',
+        html`${pageHead('AI köməkçi', 'AI yalnız burada yazdığınız məlumatlara əsasən cavab verir. Bilmədiyi sualı sizə ötürür.')}
         <form method="post" action="/app/assistant" class="form-grid">${csrfField(req.csrfToken)}
           <section class="card span">
             <label class="switch-row"><span><b>Avtomatik cavablar</b><small>Söndürsəniz, AI heç bir mesaja cavab vermir.</small></span>
@@ -44,8 +47,12 @@ export function assistantRoutes(app: FastifyInstance) {
             <label>Öyrənilmiş üslub (istəsəniz düzəldin)
               <textarea name="style_guide" rows="6" maxlength="1500" placeholder="Hələ öyrənilməyib. Yuxarıdakı düyməni basın və ya özünüz yazın: məsələn, 'ə' əvəzinə 'e' yazır, 'siz' deyir, hər mesajın sonunda 🙏 qoyur.">${a.style_guide}</textarea></label>
             <label>Ümumi ton
-              <select name="style_preset">${[['auto', 'Avtomatik (müştəriyə uyğunlaşır)'], ['friendly', 'Səmimi, isti'], ['polite', 'Nəzakətli, "siz"'], ['short', 'Çox qısa, tez']].map(
-                ([v, l]) => html`<option value="${v}" ${a.style_preset === v ? raw('selected') : ''}>${l}</option>`)}</select></label>
+              <select name="style_preset">${[
+                ['auto', 'Avtomatik (müştəriyə uyğunlaşır)'],
+                ['friendly', 'Səmimi, isti'],
+                ['polite', 'Nəzakətli, "siz"'],
+                ['short', 'Çox qısa, tez'],
+              ].map(([v, l]) => html`<option value="${v}" ${a.style_preset === v ? raw('selected') : ''}>${l}</option>`)}</select></label>
             <label class="switch-row"><span><b>AI olduğunu bildir</b><small>Söndürülüb: AI özünü təqdim etmir. Müştəri ciddi şəkildə "bot-san?" soruşarsa, yalan danışmır.</small></span>
               <input type="checkbox" class="switch" name="ai_disclosure" value="1" ${a.ai_disclosure ? raw('checked') : ''}></label></section>
           <section class="card span"><div class="card-head"><h2>${icon('headset')}Bilmədiyi suallar</h2></div>
@@ -53,7 +60,8 @@ export function assistantRoutes(app: FastifyInstance) {
             <label>Ehtiyat gözləmə mesajı<input name="handoff_message" value="${a.handoff_message}" maxlength="500"></label>
             <small class="help">Müştəri "operator" və ya "insan" yazanda, ya da limit bitəndə göndərilir. Boş qoysanız, heç nə yazılmır.</small></section>
           <div class="span form-actions"><a class="btn secondary" href="/app/test">${icon('flask')}Test et</a><button class="btn">Yadda saxla</button></div>
-        </form>`);
+        </form>`,
+      );
     });
 
     r.post('/app/assistant', { preHandler: requirePerm('assistant.write') }, async (req, reply) => {
@@ -79,13 +87,25 @@ export function assistantRoutes(app: FastifyInstance) {
     });
 
     // One learning run per workspace at a time; each run is a single small AI call.
-    r.post('/app/assistant/learn', { preHandler: requirePerm('assistant.write'), config: { rateLimit: { max: 3, timeWindow: '1 hour' } } }, async (req, reply) => {
-      await queue.add('learn_style', { kind: 'learn_style', workspaceId: req.user!.workspaceId }, { jobId: `learn-${req.user!.workspaceId}-${Math.floor(Date.now() / 600_000)}` });
-      return reply.redirect('/app/assistant?m=learning');
-    });
+    r.post(
+      '/app/assistant/learn',
+      { preHandler: requirePerm('assistant.write'), config: { rateLimit: { max: 3, timeWindow: '1 hour' } } },
+      async (req, reply) => {
+        await queue.add(
+          'learn_style',
+          { kind: 'learn_style', workspaceId: req.user!.workspaceId },
+          { jobId: `learn-${req.user!.workspaceId}-${Math.floor(Date.now() / 600_000)}` },
+        );
+        return reply.redirect('/app/assistant?m=learning');
+      },
+    );
 
     // ---------- Test chat (single turn, counts toward usage) ----------
-    const testPage = (req: FastifyRequest, msg = '', answer: Safe | '' = '') => html`${pageHead('Test et', 'Müştəri kimi yazın və AI-nin necə cavab verəcəyini görün. Bu mesajlar müştərilərə getmir.')}
+    const testPage = (
+      req: FastifyRequest,
+      msg = '',
+      answer: Safe | '' = '',
+    ) => html`${pageHead('Test et', 'Müştəri kimi yazın və AI-nin necə cavab verəcəyini görün. Bu mesajlar müştərilərə getmir.')}
       <section class="card phone">
         <div class="thread">${msg ? html`<div class="msg customer"><div class="bubble">${msg}</div></div>${answer}` : html`<div class="empty">${icon('flask', 'i lg')}<p>Məsələn: "Çatdırılma neçəyədir?" və ya "Saat neçədə açıqsınız?"</p></div>`}</div>
         <form class="composer" method="post" action="/app/test">${csrfField(req.csrfToken)}
@@ -93,7 +113,12 @@ export function assistantRoutes(app: FastifyInstance) {
       </section>`;
     r.get('/app/test', { preHandler: requirePerm('assistant.write') }, (req, reply) => view(req, reply, 'Test', testPage(req)));
     r.post('/app/test', { preHandler: requirePerm('assistant.write'), config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
-      const msg = z.string().trim().min(1).max(1000).safeParse((req.body as any)?.message).data;
+      const msg = z
+        .string()
+        .trim()
+        .min(1)
+        .max(1000)
+        .safeParse((req.body as any)?.message).data;
       if (!msg) return reply.redirect('/app/test?m=invalid');
       if (await aiBudgetExceeded(req.user!.workspaceId)) return reply.redirect('/app/test?m=ai_budget');
       const quota = await reserveReply(req.user!.workspaceId);

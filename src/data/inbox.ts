@@ -8,8 +8,14 @@ import { limitsOf } from '../plans.js';
 export const filterSchema = z.object({
   f: z.enum(['all', 'unread', 'open', 'closed', 'mine', 'unassigned', 'waiting']).catch('open').default('open'),
   ch: z.enum(['', 'instagram', 'whatsapp']).catch('').default(''),
-  tag: z.union([z.literal(''), z.uuid()]).catch('').default(''),
-  auto: z.union([z.literal(''), z.uuid()]).catch('').default(''),
+  tag: z
+    .union([z.literal(''), z.uuid()])
+    .catch('')
+    .default(''),
+  auto: z
+    .union([z.literal(''), z.uuid()])
+    .catch('')
+    .default(''),
   q: z.string().trim().max(100).catch('').default(''),
   before: z
     .string()
@@ -65,7 +71,9 @@ export async function listConversations(workspaceId: string, userId: string, f: 
     const [t, id] = f.before.split('_');
     where.push(`(c.last_message_at, c.id) < (${p(t)}::timestamptz, ${p(id)}::uuid)`);
   }
-  const rows = openLast(await q(`${CONV_LIST_SQL} ${where.map((w) => `AND ${w}`).join(' ')} ORDER BY c.last_message_at DESC, c.id DESC LIMIT ${PAGE + 1}`, params));
+  const rows = openLast(
+    await q(`${CONV_LIST_SQL} ${where.map((w) => `AND ${w}`).join(' ')} ORDER BY c.last_message_at DESC, c.id DESC LIMIT ${PAGE + 1}`, params),
+  );
   const more = rows.length > PAGE;
   return { rows: rows.slice(0, PAGE), next: more ? `${new Date(rows[PAGE - 1].last_message_at).toISOString()}_${rows[PAGE - 1].id}` : '' };
 }
@@ -110,11 +118,14 @@ export async function threadItems(conversationId: string) {
       `SELECT * FROM (SELECT id, sender, body, enc, created_at, status, kind, media, payload, error FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 150) t ORDER BY created_at`,
       [conversationId],
     ).then(openRows),
-    q(`SELECT n.body, n.created_at, u.email FROM conversation_notes n LEFT JOIN users u ON u.id = n.user_id WHERE n.conversation_id = $1 ORDER BY n.created_at DESC LIMIT 50`, [
-      conversationId,
-    ]),
+    q(
+      `SELECT n.body, n.created_at, u.email FROM conversation_notes n LEFT JOIN users u ON u.id = n.user_id WHERE n.conversation_id = $1 ORDER BY n.created_at DESC LIMIT 50`,
+      [conversationId],
+    ),
   ]);
-  return [...msgs.map((m) => ({ t: new Date(m.created_at).getTime(), m })), ...notes.map((n) => ({ t: new Date(n.created_at).getTime(), n }))].sort((a, b) => a.t - b.t);
+  return [...msgs.map((m) => ({ t: new Date(m.created_at).getTime(), m })), ...notes.map((n) => ({ t: new Date(n.created_at).getTime(), n }))].sort(
+    (a, b) => a.t - b.t,
+  );
 }
 export type ThreadItem = Awaited<ReturnType<typeof threadItems>>[number];
 
@@ -123,9 +134,10 @@ export async function profileData(c: { id: string; contact_id: string; workspace
   const [tags, allTags, runs, stats] = await Promise.all([
     q(`SELECT t.id, t.name FROM contact_tags x JOIN tags t ON t.id = x.tag_id WHERE x.contact_id = $1 ORDER BY t.name`, [c.contact_id]),
     q(`SELECT name FROM tags WHERE workspace_id = $1 ORDER BY name LIMIT 100`, [c.workspace_id]),
-    q(`SELECT a.name, a.id, r.status, r.matched_at FROM automation_runs r JOIN automations a ON a.id = r.automation_id WHERE r.contact_id = $1 ORDER BY r.matched_at DESC LIMIT 8`, [
-      c.contact_id,
-    ]),
+    q(
+      `SELECT a.name, a.id, r.status, r.matched_at FROM automation_runs r JOIN automations a ON a.id = r.automation_id WHERE r.contact_id = $1 ORDER BY r.matched_at DESC LIMIT 8`,
+      [c.contact_id],
+    ),
     one(`SELECT count(*)::int AS n, min(created_at) AS first FROM messages WHERE conversation_id = $1`, [c.id]),
   ]);
   return { tags, allTags, runs, stats: stats! };
@@ -144,7 +156,9 @@ export type PaneData = Awaited<ReturnType<typeof paneData>>;
 
 /** Analysts only read analytics: everyone else can be assigned. */
 const assignableMembers = (workspaceId: string) =>
-  q(`SELECT u.id, u.email FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1 AND m.role <> 'analyst' ORDER BY u.email`, [workspaceId]);
+  q(`SELECT u.id, u.email FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1 AND m.role <> 'analyst' ORDER BY u.email`, [
+    workspaceId,
+  ]);
 
 export const isAssignable = async (workspaceId: string, userId: string) =>
   !!(await one(`SELECT 1 FROM memberships WHERE workspace_id = $1 AND user_id = $2 AND role <> 'analyst'`, [workspaceId, userId]));
@@ -152,7 +166,10 @@ export const isAssignable = async (workspaceId: string, userId: string) =>
 // ---------- Changes (callers have checked the conversation / contact belongs to the workspace) ----------
 
 export const ownedConversation = (workspaceId: string, id: string) =>
-  one<{ id: string; workspace_id: string; contact_id: string | null }>(`SELECT id, workspace_id, contact_id FROM conversations WHERE id = $1 AND workspace_id = $2`, [id, workspaceId]);
+  one<{ id: string; workspace_id: string; contact_id: string | null }>(
+    `SELECT id, workspace_id, contact_id FROM conversations WHERE id = $1 AND workspace_id = $2`,
+    [id, workspaceId],
+  );
 export const ownedContact = (workspaceId: string, id: string) =>
   one<{ id: string; workspace_id: string }>(`SELECT id, workspace_id FROM contacts WHERE id = $1 AND workspace_id = $2`, [id, workspaceId]);
 
@@ -173,7 +190,9 @@ export const assign = (conversationId: string, userId: string | null) =>
 /** Resume = bot answers again (also after a handoff); pause = 30 days of silence. */
 export const setBot = (conversationId: string, resume: boolean) =>
   q(
-    resume ? 'UPDATE conversations SET needs_human = false, ai_paused_until = NULL WHERE id = $1' : `UPDATE conversations SET ai_paused_until = now() + interval '30 days' WHERE id = $1`,
+    resume
+      ? 'UPDATE conversations SET needs_human = false, ai_paused_until = NULL WHERE id = $1'
+      : `UPDATE conversations SET ai_paused_until = now() + interval '30 days' WHERE id = $1`,
     [conversationId],
   );
 
@@ -181,17 +200,18 @@ export const deleteConversation = (conversationId: string) => q('DELETE FROM con
 
 /** The contact's most recent conversation (to refresh it after a contact edit). */
 export const latestConversationOf = (contactId: string) =>
-  one<{ id: string; workspace_id: string }>(`SELECT id, workspace_id FROM conversations WHERE contact_id = $1 ORDER BY last_message_at DESC LIMIT 1`, [contactId]);
+  one<{ id: string; workspace_id: string }>(`SELECT id, workspace_id FROM conversations WHERE contact_id = $1 ORDER BY last_message_at DESC LIMIT 1`, [
+    contactId,
+  ]);
 
 export const deleteContactField = (contactId: string, key: string) => q(`UPDATE contacts SET fields = fields - $2 WHERE id = $1`, [contactId, key]);
 
 /** At most 50 custom fields per contact (an existing key can always be overwritten). */
 export const setContactField = (contactId: string, key: string, value: string) =>
-  q(`UPDATE contacts SET fields = fields || jsonb_build_object($2::text, $3::text) WHERE id = $1 AND (fields ? $2 OR (SELECT count(*) FROM jsonb_object_keys(fields)) < 50)`, [
-    contactId,
-    key,
-    value,
-  ]);
+  q(
+    `UPDATE contacts SET fields = fields || jsonb_build_object($2::text, $3::text) WHERE id = $1 AND (fields ? $2 OR (SELECT count(*) FROM jsonb_object_keys(fields)) < 50)`,
+    [contactId, key, value],
+  );
 
 export const setContactFlag = (contactId: string, flag: 'opted_out' | 'blocked', value: boolean) =>
   q(flag === 'opted_out' ? `UPDATE contacts SET opted_out = $2 WHERE id = $1` : `UPDATE contacts SET blocked = $2 WHERE id = $1`, [contactId, value]);

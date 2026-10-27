@@ -23,7 +23,11 @@
     go.disabled = true;
     out.textContent = 'Yüklənir…';
     try {
-      const res = await fetch('/app/contacts/import', { method: 'POST', headers: { 'content-type': 'text/csv', 'x-csrf-token': go.dataset.csrf, accept: 'application/json' }, body: await f.text() });
+      const res = await fetch('/app/contacts/import', {
+        method: 'POST',
+        headers: { 'content-type': 'text/csv', 'x-csrf-token': go.dataset.csrf, accept: 'application/json' },
+        body: await f.text(),
+      });
       const j = await res.json().catch(() => ({}));
       out.textContent = j.ok ? `${j.rows} sətir: ${j.updated} kontakt yeniləndi, ${j.not_found} tapılmadı.` : `Xəta: ${j.error || res.status}`;
     } catch {

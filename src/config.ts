@@ -23,7 +23,10 @@ const schema = z.object({
   // Meta app (WhatsApp Cloud API + Embedded Signup)
   META_APP_ID: optional,
   META_APP_SECRET: optional,
-  META_GRAPH_VERSION: z.string().regex(/^v\d+\.\d+$/).default('v24.0'),
+  META_GRAPH_VERSION: z
+    .string()
+    .regex(/^v\d+\.\d+$/)
+    .default('v24.0'),
   META_WEBHOOK_VERIFY_TOKEN: optional,
   WA_EMBEDDED_SIGNUP_CONFIG_ID: optional,
   // Instagram API with Instagram Login (separate app id/secret shown in the Instagram product settings)
@@ -37,13 +40,21 @@ const schema = z.object({
   // Telegram alerts: create a bot with @BotFather
   TELEGRAM_BOT_TOKEN: optional,
   TELEGRAM_BOT_USERNAME: optional,
-  TELEGRAM_WEBHOOK_SECRET: z.string().regex(/^[A-Za-z0-9_-]{16,256}$/).optional().catch(undefined),
+  TELEGRAM_WEBHOOK_SECRET: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{16,256}$/)
+    .optional()
+    .catch(undefined),
   TELEGRAM_API_BASE: z.url().default('https://api.telegram.org'),
 
   // WhatsApp alerts from the platform's own WhatsApp Business number (approved utility template)
   PLATFORM_WA_PHONE_NUMBER_ID: optional,
   PLATFORM_WA_TOKEN: optional,
-  PLATFORM_WA_NUMBER: z.string().regex(/^\d{8,15}$/).optional().catch(undefined), // digits only, e.g. 994501234567
+  PLATFORM_WA_NUMBER: z
+    .string()
+    .regex(/^\d{8,15}$/)
+    .optional()
+    .catch(undefined), // digits only, e.g. 994501234567
   PLATFORM_WA_TEMPLATE: optional,
   PLATFORM_WA_TEMPLATE_LANG: z.string().default('az'),
   // Browser (Chrome) push: npx web-push generate-vapid-keys

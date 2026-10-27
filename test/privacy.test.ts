@@ -21,7 +21,10 @@ describe.skipIf(!enabled)('message encryption at rest (integration)', () => {
     return { conversationId: row.conversation_id as string, messageId: row.id as string };
   }
   /** Conversation ids the inbox list shows for a search. */
-  const search = async (term: string) => [...(await app.inject({ url: `/app/inbox?f=all&q=${encodeURIComponent(term)}`, headers: owner.headers })).body.matchAll(/data-conv="([0-9a-f-]{36})"/g)].map((m) => m[1]);
+  const search = async (term: string) =>
+    [
+      ...(await app.inject({ url: `/app/inbox?f=all&q=${encodeURIComponent(term)}`, headers: owner.headers })).body.matchAll(/data-conv="([0-9a-f-]{36})"/g),
+    ].map((m) => m[1]);
 
   beforeAll(async () => {
     await startFake();
@@ -29,7 +32,10 @@ describe.skipIf(!enabled)('message encryption at rest (integration)', () => {
     pipeline = await import('../src/pipeline.js');
     await resetDb();
     ws = await seedWorkspace('priv', 'IGP');
-    await db.q(`INSERT INTO webhooks (workspace_id, url, secret_enc, events) VALUES ($1, 'https://hooks.example.com/x', $2, '{message.received}')`, [ws.workspaceId, (await import('../src/crypto.js')).encrypt('s')]);
+    await db.q(`INSERT INTO webhooks (workspace_id, url, secret_enc, events) VALUES ($1, 'https://hooks.example.com/x', $2, '{message.received}')`, [
+      ws.workspaceId,
+      (await import('../src/crypto.js')).encrypt('s'),
+    ]);
     app = await (await import('../src/server.js')).buildServer();
     owner = await loginAs(app, ws.email);
   });
@@ -73,7 +79,10 @@ describe.skipIf(!enabled)('message encryption at rest (integration)', () => {
 
   it('rows stored before encryption keep working and are sealed by maintenance', async () => {
     const { conversationId } = await inbound('yeni');
-    const legacy = await db.one(`INSERT INTO messages (workspace_id, conversation_id, direction, sender, body, status) VALUES ($1, $2, 'in', 'customer', 'köhnə mesaj Sumqayıt', 'received') RETURNING id`, [ws.workspaceId, conversationId]);
+    const legacy = await db.one(
+      `INSERT INTO messages (workspace_id, conversation_id, direction, sender, body, status) VALUES ($1, $2, 'in', 'customer', 'köhnə mesaj Sumqayıt', 'received') RETURNING id`,
+      [ws.workspaceId, conversationId],
+    );
     await db.q(`UPDATE conversations SET summary = 'köhnə xülasə' WHERE id = $1`, [conversationId]);
     expect((await app.inject({ url: `/app/inbox/${conversationId}`, headers: owner.headers })).body).toContain('köhnə mesaj Sumqayıt');
     const { sealLegacyMessages } = await import('../src/jobs.js');

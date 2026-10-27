@@ -1,18 +1,18 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { createSubscription, daysLeft, extendSubscription, listSubscriptions, updateSubscription } from '../billing.js';
 import { removeChannel } from '../channels/index.js';
 import type { ChannelRow } from '../channels/types.js';
-import { createSubscription, daysLeft, extendSubscription, listSubscriptions, updateSubscription } from '../billing.js';
 import { config } from '../config.js';
 import { one, q, tx } from '../db.js';
-import { sendMail } from '../mailer.js';
-import { requireAdmin } from './auth.js';
 import { audit } from '../events.js';
+import { sendMail } from '../mailer.js';
 import { LIMIT_KEYS, LIMIT_LABELS, limitsOf, usageOf } from '../plans.js';
+import { requireAdmin } from './auth.js';
 import { csrfField, html, pageHead, raw } from './html.js';
 import { channelIcon, icon } from './icons.js';
-import { day, idParam, stat } from './ui.js';
 import { emailSchema, MESSAGES, passwordLink, view } from './public.js';
+import { day, idParam, stat } from './ui.js';
 
 Object.assign(MESSAGES, {
   customer_exists: { type: 'error', text: 'Bu e-poçt ilə istifadəçi artıq var.' },
@@ -42,12 +42,35 @@ export function adminRoutes(app: FastifyInstance) {
       const rows = await listSubscriptions();
       const n = (f: (w: any) => boolean) => rows.filter(f).length;
       const plans = await q(`SELECT id, name, price_note FROM plans ORDER BY created_at`);
-      return view(req, reply, 'Admin', html`${pageHead('Müştərilər', 'Hesabları yaradın, ödənişləri qeyd edin. Ödəniş tarixi keçəndə AI avtomatik dayanır.')}
+      return view(
+        req,
+        reply,
+        'Admin',
+        html`${pageHead('Müştərilər', 'Hesabları yaradın, ödənişləri qeyd edin. Ödəniş tarixi keçəndə AI avtomatik dayanır.')}
         <div class="stats">
           ${stat('users', 'Cəmi müştəri', rows.length)}
-          ${stat('check', 'Aktiv', n((w) => !w.expired))}
-          ${stat('clock', '5 gün içində bitir', n((w) => { const d = daysLeft(w.paid_until); return d !== null && d >= 0 && d <= 5; }), '', 'warn')}
-          ${stat('alert', 'Ödənişi bitib', n((w) => w.expired), '', 'danger')}
+          ${stat(
+            'check',
+            'Aktiv',
+            n((w) => !w.expired),
+          )}
+          ${stat(
+            'clock',
+            '5 gün içində bitir',
+            n((w) => {
+              const d = daysLeft(w.paid_until);
+              return d !== null && d >= 0 && d <= 5;
+            }),
+            '',
+            'warn',
+          )}
+          ${stat(
+            'alert',
+            'Ödənişi bitib',
+            n((w) => w.expired),
+            '',
+            'danger',
+          )}
         </div>
         <section class="card"><div class="card-head"><h2>${icon('plus')}Yeni müştəri</h2></div>
         <form method="post" action="/admin/customers" class="grid">${csrfField(req.csrfToken)}
@@ -60,16 +83,32 @@ export function adminRoutes(app: FastifyInstance) {
           <button class="btn">${icon('plus')}Müştəri yarat</button></form></section>
         <section class="card flush"><div class="table-wrap"><table>
           <thead><tr><th>Biznes</th><th>Giriş</th><th>Ödənilib</th><th>Bu ay AI</th><th>Kanallar</th></tr></thead><tbody>
-          ${rows.map((w) => html`<tr><td><a class="strong" href="/admin/w/${w.id}">${w.name}</a>${w.note ? html`<small class="muted block">${w.note}</small>` : ''}</td>
+          ${rows.map(
+            (w) => html`<tr><td><a class="strong" href="/admin/w/${w.id}">${w.name}</a>${w.note ? html`<small class="muted block">${w.note}</small>` : ''}</td>
             <td>${w.emails}${w.activated ? '' : html` <span class="chip neutral">link gözləyir</span>`}</td>
             <td>${payChip(w.paid_until)}</td>
-            <td class="num">${w.used ?? 0} / ${w.monthly_reply_limit}</td><td>${w.channels ? String(w.channels).split(', ').map((t) => html`${channelIcon(t)} `) : '—'}</td></tr>`)}
-        </tbody></table></div></section>`);
+            <td class="num">${w.used ?? 0} / ${w.monthly_reply_limit}</td><td>${
+              w.channels
+                ? String(w.channels)
+                    .split(', ')
+                    .map((t) => html`${channelIcon(t)} `)
+                : '—'
+            }</td></tr>`,
+          )}
+        </tbody></table></div></section>`,
+      );
     });
 
     r.post('/admin/customers', async (req, reply) => {
       const p = z
-        .object({ name: z.string().trim().min(1).max(120), email: emailSchema, limit: z.coerce.number().int().min(0).max(1_000_000), paid_until: date, note: z.string().trim().max(500), plan_id: z.uuid().optional() })
+        .object({
+          name: z.string().trim().min(1).max(120),
+          email: emailSchema,
+          limit: z.coerce.number().int().min(0).max(1_000_000),
+          paid_until: date,
+          note: z.string().trim().max(500),
+          plan_id: z.uuid().optional(),
+        })
         .safeParse(req.body);
       if (!p.success) return reply.redirect('/admin?m=invalid');
       const d = p.data;
@@ -77,15 +116,31 @@ export function adminRoutes(app: FastifyInstance) {
       const userId = await tx(async (c) => {
         // Unusable password until the customer sets one from the link.
         const u = (await c.query(`INSERT INTO users (email, password_hash) VALUES ($1, '!') RETURNING id`, [d.email])).rows[0];
-        const workspaceId = await createSubscription(c, { name: d.name, replyLimit: d.limit, paidUntil: d.paid_until || null, note: d.note, planId: d.plan_id });
+        const workspaceId = await createSubscription(c, {
+          name: d.name,
+          replyLimit: d.limit,
+          paidUntil: d.paid_until || null,
+          note: d.note,
+          planId: d.plan_id,
+        });
         await c.query(`INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, 'owner')`, [workspaceId, u.id]);
         await c.query('INSERT INTO assistants (workspace_id, business_name) VALUES ($1, $2)', [workspaceId, d.name]);
         return u.id as string;
       });
       const link = await passwordLink(userId, '72 hours');
       req.log.info({ event: 'admin_customer_created', admin: req.user!.id, user: userId }, 'audit');
-      if (config.mailEnabled) await sendMail(d.email, 'AI Reply hesabınız', `Salam! ${d.name} üçün AI Reply hesabınız yaradıldı.\nŞifrənizi təyin edin (72 saat etibarlıdır):\n${link}`).catch(() => {});
-      return view(req, reply, 'Müştəri yaradıldı', html`${pageHead(`${d.name} yaradıldı`, 'İndi şifrə linkini müştəriyə göndərin.')}${linkBox(link, d.email)}<p><a href="/admin" class="more">${icon('back', 'i xs')} Müştərilər</a></p>`);
+      if (config.mailEnabled)
+        await sendMail(
+          d.email,
+          'AI Reply hesabınız',
+          `Salam! ${d.name} üçün AI Reply hesabınız yaradıldı.\nŞifrənizi təyin edin (72 saat etibarlıdır):\n${link}`,
+        ).catch(() => {});
+      return view(
+        req,
+        reply,
+        'Müştəri yaradıldı',
+        html`${pageHead(`${d.name} yaradıldı`, 'İndi şifrə linkini müştəriyə göndərin.')}${linkBox(link, d.email)}<p><a href="/admin" class="more">${icon('back', 'i xs')} Müştərilər</a></p>`,
+      );
     });
 
     const load = async (req: FastifyRequest) => {
@@ -96,17 +151,26 @@ export function adminRoutes(app: FastifyInstance) {
     r.get('/admin/w/:id', async (req, reply) => {
       const w = await load(req);
       if (!w) return reply.code(404).send('Not found');
-      const users = await q(`SELECT u.email, u.email_verified_at, m.role FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1`, [w.id]);
+      const users = await q(`SELECT u.email, u.email_verified_at, m.role FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1`, [
+        w.id,
+      ]);
       const [plans, limits, usage, alerts] = await Promise.all([
         q(`SELECT id, name, price_note FROM plans ORDER BY created_at`),
         limitsOf(w.id),
         Promise.all(LIMIT_KEYS.map((k) => usageOf(w.id, k))),
-        q(`SELECT meta, created_at FROM audit_log WHERE workspace_id = $1 AND action IN ('plan.limit_reached', 'ai.budget_exceeded') ORDER BY id DESC LIMIT 5`, [w.id]),
+        q(
+          `SELECT meta, created_at FROM audit_log WHERE workspace_id = $1 AND action IN ('plan.limit_reached', 'ai.budget_exceeded') ORDER BY id DESC LIMIT 5`,
+          [w.id],
+        ),
       ]);
       const ov = (w.limit_overrides ?? {}) as Record<string, number | null>;
       const f = (action: string, label: string, cls = '', confirm = '') =>
         html`<form method="post" action="/admin/w/${w.id}/${action}" class="inline" ${confirm ? html`data-confirm="${confirm}"` : ''}>${csrfField(req.csrfToken)}<button class="${cls}">${label}</button></form>`;
-      return view(req, reply, w.name, html`<p><a href="/admin" class="more">${icon('back', 'i xs')} Müştərilər</a></p>${pageHead(w.name, html`Ödəniş: ${payChip(w.paid_until)}`)}<section class="card">
+      return view(
+        req,
+        reply,
+        w.name,
+        html`<p><a href="/admin" class="more">${icon('back', 'i xs')} Müştərilər</a></p>${pageHead(w.name, html`Ödəniş: ${payChip(w.paid_until)}`)}<section class="card">
         <p>İstifadəçi: ${users.map((u) => html`<b>${u.email}</b> ${u.email_verified_at ? '' : html`<span class="tag">link gözləyir</span>`} `)}</p>
         <form method="post" action="/admin/w/${w.id}/update">${csrfField(req.csrfToken)}
           <label>Biznesin adı<input name="name" value="${w.name}" required maxlength="120"></label>
@@ -118,20 +182,33 @@ export function adminRoutes(app: FastifyInstance) {
           <form method="post" action="/admin/w/${w.id}/plan">${csrfField(req.csrfToken)}
             <label>Tarif<select name="plan_id">${plans.map((p) => html`<option value="${p.id}" ${p.id === w.plan_id ? raw('selected') : ''}>${p.name} · ${p.price_note}</option>`)}</select></label>
             <div class="table-wrap"><table><thead><tr><th>Limit</th><th>İstifadə</th><th>Effektiv</th><th>Fərdi dəyər</th></tr></thead><tbody>
-            ${LIMIT_KEYS.map((k, i) => html`<tr><td>${LIMIT_LABELS[k]}</td><td class="num">${k === 'history_days' ? '—' : Math.round(usage[i]! * 100) / 100}</td><td class="num">${limits[k] ?? '∞'}</td>
-              <td><input name="ov_${k}" value="${k in ov ? (ov[k] === null ? 'limitsiz' : String(ov[k])) : ''}" placeholder="tarifdən" maxlength="12" aria-label="${LIMIT_LABELS[k]}"></td></tr>`)}
+            ${LIMIT_KEYS.map(
+              (
+                k,
+                i,
+              ) => html`<tr><td>${LIMIT_LABELS[k]}</td><td class="num">${k === 'history_days' ? '—' : Math.round(usage[i]! * 100) / 100}</td><td class="num">${limits[k] ?? '∞'}</td>
+              <td><input name="ov_${k}" value="${k in ov ? (ov[k] === null ? 'limitsiz' : String(ov[k])) : ''}" placeholder="tarifdən" maxlength="12" aria-label="${LIMIT_LABELS[k]}"></td></tr>`,
+            )}
             </tbody></table></div>
             <p class="hint">Boş = tarifin dəyəri, "limitsiz" = məhdudiyyət yoxdur, rəqəm = bu müştəri üçün xüsusi limit.</p>
             <button class="btn">Yadda saxla</button></form>
           ${alerts.length ? html`<h3 class="mt">Son limit xəbərdarlıqları</h3><ul class="list-plain">${alerts.map((a) => html`<li class="muted">${new Date(a.created_at).toISOString().slice(0, 16).replace('T', ' ')} · ${a.meta.limit}${a.meta.used !== undefined ? ` · ${a.meta.used}/${a.meta.max}` : ''}</li>`)}</ul>` : ''}
         </section>
         <section class="card"><div class="actions">${f('extend', '+30 gün ödəniş', 'btn')}${f('link', 'Yeni şifrə linki', 'btn secondary')}${f('delete', 'Müştərini sil', 'btn danger-ghost', 'Müştəri, kanalları və bütün söhbətləri həmişəlik silinsin?')}</div>
-        <p class="hint">Ödəniş tarixi keçəndə AI avtomatik dayanır, müştəri panelə girib əl ilə cavab verə bilir.</p></section>`);
+        <p class="hint">Ödəniş tarixi keçəndə AI avtomatik dayanır, müştəri panelə girib əl ilə cavab verə bilir.</p></section>`,
+      );
     });
 
     r.post('/admin/w/:id/update', async (req, reply) => {
       const w = await load(req);
-      const p = z.object({ name: z.string().trim().min(1).max(120), limit: z.coerce.number().int().min(0).max(1_000_000), paid_until: date, note: z.string().trim().max(500) }).safeParse(req.body);
+      const p = z
+        .object({
+          name: z.string().trim().min(1).max(120),
+          limit: z.coerce.number().int().min(0).max(1_000_000),
+          paid_until: date,
+          note: z.string().trim().max(500),
+        })
+        .safeParse(req.body);
       if (!w || !p.success) return reply.redirect('/admin?m=invalid');
       await updateSubscription(w.id, { name: p.data.name, replyLimit: p.data.limit, paidUntil: p.data.paid_until || null, note: p.data.note });
       req.log.info({ event: 'admin_customer_updated', admin: req.user!.id, workspace: w.id, paid_until: p.data.paid_until, limit: p.data.limit }, 'audit');
@@ -145,7 +222,9 @@ export function adminRoutes(app: FastifyInstance) {
       if (!w || !planId || !(await one('SELECT 1 FROM plans WHERE id = $1', [planId]))) return reply.redirect('/admin?m=invalid');
       const overrides: Record<string, number | null> = {};
       for (const k of LIMIT_KEYS) {
-        const v = String(b[`ov_${k}`] ?? '').trim().toLowerCase();
+        const v = String(b[`ov_${k}`] ?? '')
+          .trim()
+          .toLowerCase();
         if (v === '') continue;
         if (v === 'limitsiz') overrides[k] = null;
         else {
@@ -169,10 +248,17 @@ export function adminRoutes(app: FastifyInstance) {
 
     r.post('/admin/w/:id/link', async (req, reply) => {
       const w = await load(req);
-      const u = w && (await one(`SELECT u.id, u.email FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1 AND m.role = 'owner' LIMIT 1`, [w.id]));
+      const u =
+        w &&
+        (await one(`SELECT u.id, u.email FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1 AND m.role = 'owner' LIMIT 1`, [w.id]));
       if (!u) return reply.code(404).send('Not found');
       req.log.info({ event: 'admin_password_link', admin: req.user!.id, user: u.id }, 'audit');
-      return view(req, reply, 'Şifrə linki', html`${pageHead('Yeni şifrə linki', w.name)}${linkBox(await passwordLink(u.id, '72 hours'), u.email)}<p><a href="/admin/w/${w.id}" class="more">${icon('back', 'i xs')} ${w.name}</a></p>`);
+      return view(
+        req,
+        reply,
+        'Şifrə linki',
+        html`${pageHead('Yeni şifrə linki', w.name)}${linkBox(await passwordLink(u.id, '72 hours'), u.email)}<p><a href="/admin/w/${w.id}" class="more">${icon('back', 'i xs')} ${w.name}</a></p>`,
+      );
     });
 
     r.post('/admin/w/:id/delete', async (req, reply) => {

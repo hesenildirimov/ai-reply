@@ -1,17 +1,18 @@
-import type { ChannelRow, InboundEvent } from '../channels/types.js';
 import { replyToComment } from '../channels/instagram.js';
-import { automationBlocked, limitAlert } from '../plans.js';
-import { emit } from '../webhooks.js';
-import { addTags, ensureConversation, hasTag, removeTags, setField, upsertContact, type ContactRow } from '../contacts.js';
-import { deliver, handoff, inWindow, loadConv, type ConvCtx } from '../conversation.js';
+import type { ChannelRow, InboundEvent } from '../channels/types.js';
+import { addTags, type ContactRow, ensureConversation, hasTag, removeTags, setField, upsertContact } from '../contacts.js';
+import { type ConvCtx, deliver, handoff, inWindow, loadConv } from '../conversation.js';
 import { decrypt } from '../crypto.js';
 import { one, q } from '../db.js';
-import { queue } from '../queue.js';
 import { trackLinks } from '../links.js';
+import { automationBlocked, limitAlert } from '../plans.js';
+import { queue } from '../queue.js';
+import { emit } from '../webhooks.js';
 import { capability } from './capabilities.js';
-import { configSchema, type AutomationConfig, type Trigger } from './schema.js';
+import { type AutomationConfig, configSchema, type Trigger } from './schema.js';
 
 export { normalize } from '../text.js';
+
 import { normalize } from '../text.js';
 
 const containsPhrase = (hay: string, kw: string) => ` ${hay} `.includes(` ${kw} `);
@@ -78,7 +79,15 @@ async function finish(runId: string, status: 'sent' | 'failed' | 'skipped', reas
      RETURNING workspace_id, automation_id, contact_id, conversation_id, status, reason`,
     [runId, status, reason.slice(0, 200)],
   );
-  if (r) await emit(r.workspace_id, 'automation.run_finished', { run_id: runId, automation_id: r.automation_id, contact_id: r.contact_id, conversation_id: r.conversation_id, status: r.status, reason: r.reason });
+  if (r)
+    await emit(r.workspace_id, 'automation.run_finished', {
+      run_id: runId,
+      automation_id: r.automation_id,
+      contact_id: r.contact_id,
+      conversation_id: r.conversation_id,
+      status: r.status,
+      reason: r.reason,
+    });
 }
 
 export type StepOutcome = 'done' | 'ai' | 'handoff' | 'delayed' | 'failed';
@@ -87,7 +96,14 @@ export type StepOutcome = 'done' | 'ai' | 'handoff' | 'delayed' | 'failed';
  * Executes steps from `start`. Sends are idempotent per (run, step) so a retried job never repeats a message.
  * commentId: the run started from a comment -> its single message step is sent as a Meta private reply.
  */
-export async function executeSteps(run: RunRow, cfg: AutomationConfig, start: number, conv: ConvCtx, contact: ContactRow, commentId?: string): Promise<StepOutcome> {
+export async function executeSteps(
+  run: RunRow,
+  cfg: AutomationConfig,
+  start: number,
+  conv: ConvCtx,
+  contact: ContactRow,
+  commentId?: string,
+): Promise<StepOutcome> {
   let sent = !!run.sent_at;
   for (let i = start; i < cfg.steps.length; i++) {
     const step = cfg.steps[i]!;
@@ -125,9 +141,11 @@ export async function executeSteps(run: RunRow, cfg: AutomationConfig, start: nu
         break;
       case 'condition': {
         const ok =
-          step.check === 'has_tag' ? await hasTag(contact.id, step.tag)
-          : step.check === 'not_tag' ? !(await hasTag(contact.id, step.tag))
-          : String((await one(`SELECT fields->>$2 AS v FROM contacts WHERE id = $1`, [contact.id, step.key]))?.v ?? '') === step.value;
+          step.check === 'has_tag'
+            ? await hasTag(contact.id, step.tag)
+            : step.check === 'not_tag'
+              ? !(await hasTag(contact.id, step.tag))
+              : String((await one(`SELECT fields->>$2 AS v FROM contacts WHERE id = $1`, [contact.id, step.key]))?.v ?? '') === step.value;
         await logStep(run.id, { i, type: 'condition', result: ok });
         if (!ok) {
           await finish(run.id, sent ? 'sent' : 'skipped', 'condition_not_met');
@@ -136,7 +154,11 @@ export async function executeSteps(run: RunRow, cfg: AutomationConfig, start: nu
         break;
       }
       case 'delay':
-        await queue.add('automation_step', { kind: 'automation_step', runId: run.id, step: i + 1 }, { delay: step.minutes * 60_000, jobId: `step-${run.id}-${i + 1}` });
+        await queue.add(
+          'automation_step',
+          { kind: 'automation_step', runId: run.id, step: i + 1 },
+          { delay: step.minutes * 60_000, jobId: `step-${run.id}-${i + 1}` },
+        );
         await logStep(run.id, { i, type: 'delay', minutes: step.minutes });
         return 'delayed';
       case 'handoff':
@@ -175,18 +197,26 @@ export async function resumeRun(runId: string, step: number): Promise<void> {
  * DM-side triggers for the newest inbound message: quick-reply payload > story mention > story reply > keyword.
  * Returns 'none' when nothing matched (the AI may answer), 'ai' when a flow hands over to the AI.
  */
-export async function runMessageAutomations(conv: ConvCtx, contact: ContactRow, msg: { id: string; kind: string; payload: string | null; text: string }): Promise<StepOutcome | 'none'> {
+export async function runMessageAutomations(
+  conv: ConvCtx,
+  contact: ContactRow,
+  msg: { id: string; kind: string; payload: string | null; text: string },
+): Promise<StepOutcome | 'none'> {
   let candidates: AutomationRow[] = [];
   const gotoId = msg.payload?.startsWith('qr:') ? msg.payload.slice(3) : null;
   if (gotoId && gotoId !== 'none') {
-    const a = await one<AutomationRow>(`SELECT * FROM automations WHERE id = $1 AND workspace_id = $2 AND trigger = 'quick_reply' AND status = 'active'`, [gotoId, conv.workspace_id]);
+    const a = await one<AutomationRow>(`SELECT * FROM automations WHERE id = $1 AND workspace_id = $2 AND trigger = 'quick_reply' AND status = 'active'`, [
+      gotoId,
+      conv.workspace_id,
+    ]);
     candidates = a ? [a] : [];
   } else if (msg.kind === 'story_mention') {
     candidates = await activeAutomations(conv.workspace_id, conv.channel.id, 'story_mention');
   } else if (msg.kind === 'story_reply') {
     candidates = (await activeAutomations(conv.workspace_id, conv.channel.id, 'story_reply')).filter((a) => matches(a.config.match, msg.text));
   }
-  if (!candidates.length && msg.text) candidates = (await activeAutomations(conv.workspace_id, conv.channel.id, 'dm_keyword')).filter((a) => matches(a.config.match, msg.text));
+  if (!candidates.length && msg.text)
+    candidates = (await activeAutomations(conv.workspace_id, conv.channel.id, 'dm_keyword')).filter((a) => matches(a.config.match, msg.text));
   const a = candidates.find((x) => capability(x.trigger, conv.channel).status === 'available');
   if (!a) return 'none';
   const run = await startRun(a, `msg:${msg.id}`, contact.id, conv.id);
@@ -207,7 +237,10 @@ export async function processComment(ev: Extract<InboundEvent, { type: 'comment'
   const contact = await upsertContact(ch, ev.fromId, '', ev.fromUsername);
   if (contact.blocked || contact.opted_out) return;
   const a = (await activeAutomations(ch.workspace_id, ch.id, 'comment')).find(
-    (x) => (x.config.media.scope === 'all' || x.config.media.ids.includes(ev.mediaId)) && matches(x.config.match, ev.text) && capability('comment', ch).status === 'available',
+    (x) =>
+      (x.config.media.scope === 'all' || x.config.media.ids.includes(ev.mediaId)) &&
+      matches(x.config.match, ev.text) &&
+      capability('comment', ch).status === 'available',
   );
   if (!a) return;
   await q(`UPDATE ig_comments SET matched = true WHERE id = $1`, [ev.commentId]);

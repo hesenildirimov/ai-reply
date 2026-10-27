@@ -10,12 +10,16 @@ const MAX_CHARS = 12_000; // keeps the one-off learning call cheap
 
 /** Learns the business's writing style from staff replies we stored plus recent Instagram history. */
 export async function learnStyle(workspaceId: string): Promise<'ok' | 'not_enough'> {
-  const stored = openRows(await q<{ body: string; enc: boolean }>(
-    `SELECT body, enc FROM messages WHERE workspace_id = $1 AND sender = 'human' ORDER BY created_at DESC LIMIT $2`,
-    [workspaceId, MAX_SAMPLES],
-  ));
+  const stored = openRows(
+    await q<{ body: string; enc: boolean }>(`SELECT body, enc FROM messages WHERE workspace_id = $1 AND sender = 'human' ORDER BY created_at DESC LIMIT $2`, [
+      workspaceId,
+      MAX_SAMPLES,
+    ]),
+  );
   const samples = stored.map((m) => m.body);
-  for (const ch of await q(`SELECT external_id, access_token_enc FROM channels WHERE workspace_id = $1 AND type = 'instagram' AND status = 'active'`, [workspaceId])) {
+  for (const ch of await q(`SELECT external_id, access_token_enc FROM channels WHERE workspace_id = $1 AND type = 'instagram' AND status = 'active'`, [
+    workspaceId,
+  ])) {
     samples.push(...(await instagramOwnMessages(decrypt(ch.access_token_enc), ch.external_id).catch(() => [])));
   }
   const picked: string[] = [];

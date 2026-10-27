@@ -50,7 +50,10 @@ export async function subscriptionOf(workspaceId: string): Promise<Subscription 
 
 /** Counts one AI reply against the monthly limit (atomic: concurrent replies can't overshoot). 'expired' = not paid. */
 export async function reserveReply(workspaceId: string): Promise<'ok' | 'limit' | 'expired'> {
-  const ws = await one<{ monthly_reply_limit: number; expired: boolean }>(`SELECT w.monthly_reply_limit, ${EXPIRED} AS expired FROM workspaces w WHERE w.id = $1`, [workspaceId]);
+  const ws = await one<{ monthly_reply_limit: number; expired: boolean }>(
+    `SELECT w.monthly_reply_limit, ${EXPIRED} AS expired FROM workspaces w WHERE w.id = $1`,
+    [workspaceId],
+  );
   if (!ws || ws.expired) return 'expired';
   if (ws.monthly_reply_limit <= 0) return 'limit';
   const row = await one(
@@ -82,7 +85,13 @@ export interface SubscriptionTerms {
 }
 
 export const updateSubscription = (workspaceId: string, t: SubscriptionTerms) =>
-  q('UPDATE workspaces SET name = $2, monthly_reply_limit = $3, paid_until = $4, note = $5 WHERE id = $1', [workspaceId, t.name, t.replyLimit, t.paidUntil, t.note]);
+  q('UPDATE workspaces SET name = $2, monthly_reply_limit = $3, paid_until = $4, note = $5 WHERE id = $1', [
+    workspaceId,
+    t.name,
+    t.replyLimit,
+    t.paidUntil,
+    t.note,
+  ]);
 
 /** New customer workspace (inside the caller's transaction). Unknown plan id -> the default "Biznes" plan. */
 export async function createSubscription(c: pg.PoolClient, t: SubscriptionTerms & { planId?: string | null }): Promise<string> {

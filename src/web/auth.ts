@@ -62,7 +62,15 @@ export function registerAuth(app: FastifyInstance) {
         [sha256(token)],
       );
       if (row) {
-        req.user = { id: row.id, email: row.email, emailVerified: !!row.email_verified_at, workspaceId: row.workspace_id, role: row.role, isAdmin: row.is_admin, mfa: row.mfa };
+        req.user = {
+          id: row.id,
+          email: row.email,
+          emailVerified: !!row.email_verified_at,
+          workspaceId: row.workspace_id,
+          role: row.role,
+          isAdmin: row.is_admin,
+          mfa: row.mfa,
+        };
         req.csrfToken = row.csrf_token;
         if (row.stale) {
           await q(`UPDATE sessions SET expires_at = now() + interval '${SESSION_DAYS} days' WHERE id_hash = $1`, [sha256(token)]);
@@ -84,7 +92,7 @@ export function registerAuth(app: FastifyInstance) {
   // CSRF: same-origin check + token on every state-changing request (except signed Meta callbacks).
   app.addHook('preHandler', async (req, reply) => {
     if (req.method === 'GET' || req.method === 'HEAD' || req.routeOptions.config?.csrf === false) return;
-    const origin = req.headers.origin ?? (req.headers.referer ? URL.parse(req.headers.referer)?.origin ?? 'invalid' : undefined);
+    const origin = req.headers.origin ?? (req.headers.referer ? (URL.parse(req.headers.referer)?.origin ?? 'invalid') : undefined);
     const token = (req.body as any)?._csrf ?? req.headers['x-csrf-token'];
     if ((origin && origin !== config.appOrigin) || typeof token !== 'string' || !req.csrfToken || !safeEqual(token, req.csrfToken)) {
       return reply.code(403).send('Forbidden (CSRF)');
@@ -94,16 +102,56 @@ export function registerAuth(app: FastifyInstance) {
 
 export type Role = 'owner' | 'admin' | 'agent' | 'analyst';
 export type Permission =
-  | 'inbox.reply' | 'inbox.manage' | 'contacts.write' | 'automations.write' | 'assistant.write'
-  | 'channels.manage' | 'team.manage' | 'billing.view' | 'analytics.view' | 'workspace.delete'
-  | 'contacts.export' | 'integrations.manage' | 'audit.view' | 'inbox.view' | 'data.export';
+  | 'inbox.reply'
+  | 'inbox.manage'
+  | 'contacts.write'
+  | 'automations.write'
+  | 'assistant.write'
+  | 'channels.manage'
+  | 'team.manage'
+  | 'billing.view'
+  | 'analytics.view'
+  | 'workspace.delete'
+  | 'contacts.export'
+  | 'integrations.manage'
+  | 'audit.view'
+  | 'inbox.view'
+  | 'data.export';
 
 /** Backend permission matrix. Every write route checks this (UI hiding is only cosmetic). */
 const PERMS: Record<Role, Permission[]> = {
-  owner: ['inbox.view', 'data.export', 'inbox.reply', 'inbox.manage', 'contacts.write', 'automations.write', 'assistant.write', 'channels.manage', 'team.manage', 'billing.view', 'analytics.view', 'workspace.delete',
-    'contacts.export', 'integrations.manage', 'audit.view'],
-  admin: ['inbox.view', 'inbox.reply', 'inbox.manage', 'contacts.write', 'automations.write', 'assistant.write', 'channels.manage', 'team.manage', 'billing.view', 'analytics.view',
-    'contacts.export', 'integrations.manage', 'audit.view'],
+  owner: [
+    'inbox.view',
+    'data.export',
+    'inbox.reply',
+    'inbox.manage',
+    'contacts.write',
+    'automations.write',
+    'assistant.write',
+    'channels.manage',
+    'team.manage',
+    'billing.view',
+    'analytics.view',
+    'workspace.delete',
+    'contacts.export',
+    'integrations.manage',
+    'audit.view',
+  ],
+  admin: [
+    'inbox.view',
+    'inbox.reply',
+    'inbox.manage',
+    'contacts.write',
+    'automations.write',
+    'assistant.write',
+    'channels.manage',
+    'team.manage',
+    'billing.view',
+    'analytics.view',
+    'contacts.export',
+    'integrations.manage',
+    'audit.view',
+  ],
   agent: ['inbox.view', 'inbox.reply', 'inbox.manage', 'contacts.write', 'analytics.view'],
   analyst: ['analytics.view'],
 };

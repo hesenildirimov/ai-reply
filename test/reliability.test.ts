@@ -20,7 +20,11 @@ describe.skipIf(!enabled)('P0 reliability (integration)', () => {
   }
   const outbound = async (conversationId: string) => {
     const { openRows } = await import('../src/messages.js');
-    return openRows(await db.q(`SELECT sender, status, body, enc, error FROM messages WHERE conversation_id = $1 AND direction = 'out' ORDER BY created_at`, [conversationId])).map(({ enc, ...m }) => m);
+    return openRows(
+      await db.q(`SELECT sender, status, body, enc, error FROM messages WHERE conversation_id = $1 AND direction = 'out' ORDER BY created_at`, [
+        conversationId,
+      ]),
+    ).map(({ enc, ...m }) => m);
   };
 
   beforeAll(async () => {
@@ -73,7 +77,10 @@ describe.skipIf(!enabled)('P0 reliability (integration)', () => {
 
   it('expired token: message is not marked sent and the channel needs re-authorization', async () => {
     const { conversationId, messageId } = await inbound('Salam');
-    fake.handler = (_b, path) => (path.endsWith('/messages') && !path.startsWith('/v1') ? { status: 401, json: { error: { code: 190, message: 'Error validating access token' } } } : undefined);
+    fake.handler = (_b, path) =>
+      path.endsWith('/messages') && !path.startsWith('/v1')
+        ? { status: 401, json: { error: { code: 190, message: 'Error validating access token' } } }
+        : undefined;
     await expect(pipeline.processReply(conversationId, messageId)).rejects.toMatchObject({ reason: 'token_invalid', retryable: false });
     expect((await outbound(conversationId)).map((m) => m.status)).toEqual(['failed']);
     const ch = await db.one(`SELECT status, status_reason FROM channels WHERE id = $1`, [ws.channelId]);
@@ -99,7 +106,8 @@ describe.skipIf(!enabled)('P0 reliability (integration)', () => {
 
   it('Claude failure: retried while attempts remain, then handed to staff (no silent drop, no invented reply)', async () => {
     const { conversationId, messageId } = await inbound('Sabah açıqsınız?');
-    fake.handler = (_b, path) => (path === '/v1/messages' ? { status: 529, json: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } } } : undefined);
+    fake.handler = (_b, path) =>
+      path === '/v1/messages' ? { status: 529, json: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } } } : undefined;
     await expect(pipeline.processReply(conversationId, messageId, false)).rejects.toBeTruthy();
     expect(fake.sends()).toHaveLength(0);
     await pipeline.processReply(conversationId, messageId, true);
@@ -125,7 +133,10 @@ describe.skipIf(!enabled)('P0 reliability (integration)', () => {
     fake.handler = (_b, path) => (path === '/v1/messages' ? aiText('45 AZN') : undefined);
     const { conversationId, messageId } = await inbound('Qiymət?');
     await pipeline.processReply(conversationId, messageId);
-    const u = await db.one(`SELECT input_tokens, output_tokens, cache_read_tokens, est_cost_usd::float AS cost, outcome FROM ai_usage WHERE conversation_id = $1`, [conversationId]);
+    const u = await db.one(
+      `SELECT input_tokens, output_tokens, cache_read_tokens, est_cost_usd::float AS cost, outcome FROM ai_usage WHERE conversation_id = $1`,
+      [conversationId],
+    );
     expect(u).toMatchObject({ input_tokens: 1200, output_tokens: 40, cache_read_tokens: 900, outcome: 'reply' });
     expect(u.cost).toBeGreaterThan(0);
   });
@@ -151,7 +162,10 @@ describe.skipIf(!enabled)('P0 reliability (integration)', () => {
     const { readdirSync, readFileSync } = await import('node:fs');
     const tables = async () => (await db.q(`SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY 1`)).map((t) => t.tablename);
     const before = await tables();
-    const downs = readdirSync('migrations/down').filter((f) => f.endsWith('.down.sql')).sort().reverse();
+    const downs = readdirSync('migrations/down')
+      .filter((f) => f.endsWith('.down.sql'))
+      .sort()
+      .reverse();
     expect(downs.length).toBeGreaterThanOrEqual(6);
     for (const f of downs) await db.pool.query(readFileSync(`migrations/down/${f}`, 'utf8'));
     const after = await tables();

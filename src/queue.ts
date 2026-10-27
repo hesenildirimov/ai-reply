@@ -1,6 +1,6 @@
-import type { InboundEvent } from './channels/types.js';
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
+import type { InboundEvent } from './channels/types.js';
 import { config } from './config.js';
 
 /**

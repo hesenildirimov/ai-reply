@@ -5,11 +5,16 @@
  * - a link to a domain the business never mentioned (phishing via prompt injection).
  */
 const MONEY = /(?:(\d+(?:[.,]\d+)?)\s*(?:azn|₼|manat|man\b)|(?:₼|azn)\s*(\d+(?:[.,]\d+)?))/giu;
-const URLISH = /\b(?:https?:\/\/|www\.)([^\s/?#<>"']+)|\b([a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:az|com|net|org|ru|tr|me|io|link|shop|store|site|online|xyz|top|info|biz|ly|gl|co))\b/giu;
+const URLISH =
+  /\b(?:https?:\/\/|www\.)([^\s/?#<>"']+)|\b([a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:az|com|net|org|ru|tr|me|io|link|shop|store|site|online|xyz|top|info|biz|ly|gl|co))\b/giu;
 
 const num = (s: string) => String(Number(s.replace(',', '.')));
 const numbersIn = (facts: string) => new Set([...facts.matchAll(/\d+(?:[.,]\d+)?/g)].map((m) => num(m[0])));
-const domain = (h: string) => h.toLowerCase().replace(/^www\./, '').replace(/[.,;:!)]+$/, '');
+const domain = (h: string) =>
+  h
+    .toLowerCase()
+    .replace(/^www\./, '')
+    .replace(/[.,;:!)]+$/, '');
 
 export function checkReply(text: string, facts: string): { ok: true } | { ok: false; reason: 'unverified_price' | 'unverified_link'; detail: string } {
   const known = numbersIn(facts);

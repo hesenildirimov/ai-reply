@@ -2,7 +2,16 @@ import { one } from './db.js';
 import { audit } from './events.js';
 import { redis } from './queue.js';
 
-export const LIMIT_KEYS = ['contacts', 'channels', 'active_automations', 'members', 'bot_messages_month', 'ai_budget_usd_month', 'ai_budget_usd_day', 'history_days'] as const;
+export const LIMIT_KEYS = [
+  'contacts',
+  'channels',
+  'active_automations',
+  'members',
+  'bot_messages_month',
+  'ai_budget_usd_month',
+  'ai_budget_usd_day',
+  'history_days',
+] as const;
 export type LimitKey = (typeof LIMIT_KEYS)[number];
 export const LIMIT_LABELS: Record<LimitKey, string> = {
   contacts: 'Aktiv kontaktlar (30 gün)',

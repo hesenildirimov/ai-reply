@@ -17,7 +17,10 @@ const PREFIX_MIN = 3;
 const PREFIX_MAX = 6;
 
 const mac = (key: Buffer, term: string) => createHmac('sha256', key).update(term).digest('base64url').slice(0, 12);
-const words = (text: string) => normalize(text).split(' ').filter((w) => w && w.length <= 40);
+const words = (text: string) =>
+  normalize(text)
+    .split(' ')
+    .filter((w) => w && w.length <= 40);
 
 /** Index terms of a text: each word and its 3..6-letter beginnings. */
 export function indexTerms(text: string): string[] {

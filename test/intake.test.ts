@@ -17,9 +17,27 @@ describe.skipIf(!enabled)('webhook intake and echoes (integration)', () => {
   let n = 0;
   let decrypt: (s: string) => string;
 
-  const post = (url: string, payload: string) => app.inject({ method: 'POST', url, headers: { 'content-type': 'application/json', 'x-hub-signature-256': sign(payload) }, payload });
+  const post = (url: string, payload: string) =>
+    app.inject({ method: 'POST', url, headers: { 'content-type': 'application/json', 'x-hub-signature-256': sign(payload) }, payload });
   const waBody = (mid: string, text: string) =>
-    JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: 'WABA1', changes: [{ field: 'messages', value: { metadata: { phone_number_id: 'PN1' }, contacts: [{ wa_id: '99450', profile: { name: 'Aysel' } }], messages: [{ from: '99450', id: mid, type: 'text', text: { body: text } }] } }] }] });
+    JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA1',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                metadata: { phone_number_id: 'PN1' },
+                contacts: [{ wa_id: '99450', profile: { name: 'Aysel' } }],
+                messages: [{ from: '99450', id: mid, type: 'text', text: { body: text } }],
+              },
+            },
+          ],
+        },
+      ],
+    });
   /** New customer per call (own conversation); returns their id as `user`. */
   async function inbound(text: string) {
     const mid = `e.${++n}`;
@@ -31,7 +49,9 @@ describe.skipIf(!enabled)('webhook intake and echoes (integration)', () => {
   }
   const conv = (id: string) => db.one(`SELECT ai_paused_until > now() AS paused FROM conversations WHERE id = $1`, [id]);
   const outbound = async (id: string) =>
-    (await db.q(`SELECT sender, status, external_id, body, enc FROM messages WHERE conversation_id = $1 AND direction = 'out' ORDER BY created_at`, [id])).map(({ enc, ...m }) => ({ ...m, body: enc ? decrypt(m.body) : m.body }));
+    (await db.q(`SELECT sender, status, external_id, body, enc FROM messages WHERE conversation_id = $1 AND direction = 'out' ORDER BY created_at`, [id])).map(
+      ({ enc, ...m }) => ({ ...m, body: enc ? decrypt(m.body) : m.body }),
+    );
 
   beforeAll(async () => {
     await startFake();
@@ -43,7 +63,10 @@ describe.skipIf(!enabled)('webhook intake and echoes (integration)', () => {
     await resetDb();
     ws = await seedWorkspace('intake', 'IGE');
     const { encrypt } = await import('../src/crypto.js');
-    await db.q(`INSERT INTO channels (workspace_id, type, external_id, waba_id, display_name, access_token_enc) VALUES ($1, 'whatsapp', 'PN1', 'WABA1', 'WA', $2)`, [ws.workspaceId, encrypt('wa-token')]);
+    await db.q(
+      `INSERT INTO channels (workspace_id, type, external_id, waba_id, display_name, access_token_enc) VALUES ($1, 'whatsapp', 'PN1', 'WABA1', 'WA', $2)`,
+      [ws.workspaceId, encrypt('wa-token')],
+    );
     app = await (await import('../src/server.js')).buildServer();
   });
   beforeEach(async () => {
@@ -140,7 +163,9 @@ describe.skipIf(!enabled)('webhook intake and echoes (integration)', () => {
       const lost = await inbound('Cavab gəlmədi');
       const answered = await inbound('Cavab gəldi');
       await pipeline.processReply(answered.conversationId, answered.messageId);
-      await db.q(`UPDATE conversations SET last_inbound_at = now() - interval '10 minutes' WHERE id = ANY($1)`, [[lost.conversationId, answered.conversationId]]);
+      await db.q(`UPDATE conversations SET last_inbound_at = now() - interval '10 minutes' WHERE id = ANY($1)`, [
+        [lost.conversationId, answered.conversationId],
+      ]);
       await db.q(`UPDATE messages SET created_at = now() - interval '10 minutes' WHERE id = ANY($1)`, [[lost.messageId, answered.messageId]]);
       await queues.queue.drain(true); // Redis lost its jobs
       expect(await requeueStranded()).toBe(1);
@@ -177,7 +202,10 @@ describe.skipIf(!enabled)('webhook intake and echoes (integration)', () => {
 
     it('unknown echo while one of our sends is in flight waits instead of guessing; then counts as staff', async () => {
       const { conversationId, user } = await inbound('Salam');
-      await db.q(`INSERT INTO messages (workspace_id, conversation_id, direction, sender, body, status, idempotency_key) VALUES ($1, $2, 'out', 'ai', 'AI mətni', 'pending', 'k-wait')`, [ws.workspaceId, conversationId]);
+      await db.q(
+        `INSERT INTO messages (workspace_id, conversation_id, direction, sender, body, status, idempotency_key) VALUES ($1, $2, 'out', 'ai', 'AI mətni', 'pending', 'k-wait')`,
+        [ws.workspaceId, conversationId],
+      );
       expect(await pipeline.processEcho(ws.channelId, user, 'mid.staff1', 'Əməkdaş yazdı', false)).toBe('wait');
       expect((await conv(conversationId)).paused).toBeFalsy();
       // Our send finished with its own id: the echo is not ours -> staff.
