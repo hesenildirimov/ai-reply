@@ -22,7 +22,8 @@ export const MESSAGES: Record<string, PageOpts['flash']> = {
   locked: { type: 'error', text: 'Çox sayda uğursuz cəhd. 15 dəqiqə sonra yenidən yoxlayın.' },
   password_set: { type: 'ok', text: 'Şifrə təyin edildi. İndi daxil olun.' },
   invalid: { type: 'error', text: 'Məlumatlar düzgün deyil. Yenidən yoxlayın.' },
-  bad_code: { type: 'error', text: 'Kod yanlışdır və ya artıq istifadə olunub.' },
+  bad_code: { type: 'error', text: 'Kod yanlışdır. Telefonunuzdakı vaxtın düzgün olduğunu yoxlayın.' },
+  saved: { type: 'ok', text: 'Yadda saxlanıldı.' },
   account_deleted: { type: 'ok', text: 'Hesabınız və bütün məlumatlarınız silindi.' },
 };
 

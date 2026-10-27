@@ -132,7 +132,7 @@ describe.skipIf(!enabled)('security (integration)', () => {
   });
 
   it('enforces payment date and monthly limit on the server', async () => {
-    const { reserveReply } = await import('../src/pipeline.js');
+    const { reserveReply } = await import('../src/billing.js');
     await db.q(`UPDATE workspaces SET paid_until = current_date - 1 WHERE id = $1`, [ids.ws_b]);
     expect(await reserveReply(ids.ws_b!)).toBe('expired');
     await db.q(`UPDATE workspaces SET paid_until = NULL, monthly_reply_limit = 2 WHERE id = $1`, [ids.ws_b]);

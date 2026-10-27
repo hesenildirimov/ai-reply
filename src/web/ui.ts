@@ -11,6 +11,8 @@ export const when = (d: Date | string) => {
   const sameDay = t.toLocaleDateString('az-AZ', BAKU) === new Date().toLocaleDateString('az-AZ', BAKU);
   return sameDay ? t.toLocaleTimeString('az-AZ', { ...BAKU, hour: '2-digit', minute: '2-digit' }) : t.toLocaleDateString('az-AZ', { ...BAKU, day: '2-digit', month: '2-digit' });
 };
+/** Calendar date (YYYY-MM-DD) of a date column, '' for null (date inputs, payment dates). */
+export const day = (d: Date | string | null) => (d ? new Date(d).toISOString().slice(0, 10) : '');
 export const typeLabel = (t: string) => (t === 'whatsapp' ? 'WhatsApp' : 'Instagram');
 export const initials = (name: string) => (name.replace(/^@/, '').trim().slice(0, 1) || '?').toUpperCase();
 export const avatar = (name: string, type: string) => html`<span class="avatar ${type === 'whatsapp' ? 'wa' : 'ig'}">${initials(name)}<span class="badge">${channelIcon(type)}</span></span>`;

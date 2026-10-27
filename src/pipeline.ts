@@ -4,6 +4,7 @@ import { SendError } from './channels/index.js';
 import { checkReply } from './guard.js';
 import { aiRetryable, generateReply } from './ai.js';
 import { aiConfig } from './aiconfig.js';
+import { reserveReply } from './billing.js';
 import { buildContext } from './context.js';
 import { aiBudgetExceeded, automationBlocked, limitAlert, LIMIT_LABELS } from './plans.js';
 import { deliver, failedBody, handoff, inWindow, loadConv, } from './conversation.js';
@@ -78,23 +79,6 @@ export async function ingest(ev: InboundEvent): Promise<void> {
   if (ch.type === 'whatsapp') await inboundQueue.add('wa_read', { kind: 'wa_read', channelId: ch.id, mid: ev.mid }, { attempts: 1, jobId: `read-${msg.id}` }).catch(() => {});
   // Debounce: customers often send several short messages; only the latest job replies.
   await queue.add('reply', { kind: 'reply', conversationId: conv!.id, messageId: msg.id }, { delay: config.AI_DEBOUNCE_MS, jobId: `reply-${msg.id}` });
-}
-
-/** Counts one AI reply against the monthly limit. 'expired' = subscription not paid (paid_until passed). */
-export async function reserveReply(workspaceId: string): Promise<'ok' | 'limit' | 'expired'> {
-  const ws = await one<{ monthly_reply_limit: number; expired: boolean }>(
-    'SELECT monthly_reply_limit, coalesce(paid_until < current_date, false) AS expired FROM workspaces WHERE id = $1',
-    [workspaceId],
-  );
-  if (!ws || ws.expired) return 'expired';
-  if (ws.monthly_reply_limit <= 0) return 'limit';
-  const row = await one(
-    `INSERT INTO usage_counters (workspace_id, period, ai_replies) VALUES ($1, to_char(now(), 'YYYY-MM'), 1)
-     ON CONFLICT (workspace_id, period) DO UPDATE SET ai_replies = usage_counters.ai_replies + 1
-     WHERE usage_counters.ai_replies < $2 RETURNING ai_replies`,
-    [workspaceId, ws.monthly_reply_limit],
-  );
-  return row ? 'ok' : 'limit';
 }
 
 /** Max AI replies per conversation per hour: stops one spammer from burning the business's monthly quota. */

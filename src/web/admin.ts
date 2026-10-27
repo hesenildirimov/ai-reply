@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { removeChannel } from '../channels/index.js';
 import type { ChannelRow } from '../channels/types.js';
+import { createSubscription, daysLeft, extendSubscription, listSubscriptions, updateSubscription } from '../billing.js';
 import { config } from '../config.js';
 import { one, q, tx } from '../db.js';
 import { sendMail } from '../mailer.js';
@@ -9,7 +10,8 @@ import { requireAdmin } from './auth.js';
 import { audit } from '../events.js';
 import { LIMIT_KEYS, LIMIT_LABELS, limitsOf, usageOf } from '../plans.js';
 import { csrfField, html, pageHead, raw } from './html.js';
-import { channelIcon, icon, type IconName } from './icons.js';
+import { channelIcon, icon } from './icons.js';
+import { day, idParam, stat } from './ui.js';
 import { emailSchema, MESSAGES, passwordLink, view } from './public.js';
 
 Object.assign(MESSAGES, {
@@ -19,10 +21,6 @@ Object.assign(MESSAGES, {
 
 const date = z.union([z.literal(''), z.string().regex(/^\d{4}-\d{2}-\d{2}$/)]);
 const plusDays = (n: number) => new Date(Date.now() + n * 86400_000).toISOString().slice(0, 10);
-const day = (d: Date | null) => (d ? new Date(d).toISOString().slice(0, 10) : '');
-const stat = (ic: IconName, label: string, value: number, tone = '') =>
-  html`<div class="stat ${tone}"><span class="stat-ic">${icon(ic)}</span><div><p class="stat-label">${label}</p><p class="stat-value">${value}</p></div></div>`;
-const daysLeft = (d: Date | null) => (d ? Math.ceil((new Date(day(d)).getTime() - new Date(new Date().toISOString().slice(0, 10)).getTime()) / 86400_000) : null);
 const payChip = (d: Date | null) => {
   const n = daysLeft(d);
   if (n === null) return html`<span class="chip neutral">limitsiz</span>`;
@@ -30,7 +28,6 @@ const payChip = (d: Date | null) => {
   if (n <= 5) return html`<span class="chip warn">${n} gün qalıb · ${day(d)}</span>`;
   return html`<span class="chip ok">${day(d)}</span>`;
 };
-const idParam = (req: FastifyRequest) => z.uuid().safeParse((req.params as any).id).data;
 
 const linkBox = (link: string, email: string) => html`<div class="card link-box"><div class="card-head"><h2>${icon('link')}Şifrə təyin etmə linki</h2></div>
   <p>Bu linki müştəriyə göndərin (WhatsApp və s.). Link <b>72 saat</b> etibarlıdır və yalnız bir dəfə işləyir. Müştəri şifrəsini təyin edib <b>${email}</b> ilə daxil olacaq.</p>
@@ -42,23 +39,15 @@ export function adminRoutes(app: FastifyInstance) {
     r.addHook('preHandler', requireAdmin);
 
     r.get('/admin', async (req, reply) => {
-      const rows = await q(
-        `SELECT w.id, w.name, w.paid_until, w.monthly_reply_limit, w.note,
-           (SELECT string_agg(u.email, ', ') FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = w.id) AS emails,
-           (SELECT bool_or(u.email_verified_at IS NOT NULL) FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = w.id) AS activated,
-           (SELECT ai_replies FROM usage_counters uc WHERE uc.workspace_id = w.id AND period = to_char(now(), 'YYYY-MM')) AS used,
-           (SELECT string_agg(type, ', ') FROM channels c WHERE c.workspace_id = w.id) AS channels,
-           w.paid_until IS NOT NULL AND w.paid_until < current_date AS expired
-         FROM workspaces w ORDER BY w.paid_until NULLS LAST, w.name`,
-      );
+      const rows = await listSubscriptions();
       const n = (f: (w: any) => boolean) => rows.filter(f).length;
       const plans = await q(`SELECT id, name, price_note FROM plans ORDER BY created_at`);
       return view(req, reply, 'Admin', html`${pageHead('Müştərilər', 'Hesabları yaradın, ödənişləri qeyd edin. Ödəniş tarixi keçəndə AI avtomatik dayanır.')}
         <div class="stats">
           ${stat('users', 'Cəmi müştəri', rows.length)}
           ${stat('check', 'Aktiv', n((w) => !w.expired))}
-          ${stat('clock', '5 gün içində bitir', n((w) => { const d = daysLeft(w.paid_until); return d !== null && d >= 0 && d <= 5; }), 'warn')}
-          ${stat('alert', 'Ödənişi bitib', n((w) => w.expired), 'danger')}
+          ${stat('clock', '5 gün içində bitir', n((w) => { const d = daysLeft(w.paid_until); return d !== null && d >= 0 && d <= 5; }), '', 'warn')}
+          ${stat('alert', 'Ödənişi bitib', n((w) => w.expired), '', 'danger')}
         </div>
         <section class="card"><div class="card-head"><h2>${icon('plus')}Yeni müştəri</h2></div>
         <form method="post" action="/admin/customers" class="grid">${csrfField(req.csrfToken)}
@@ -88,12 +77,9 @@ export function adminRoutes(app: FastifyInstance) {
       const userId = await tx(async (c) => {
         // Unusable password until the customer sets one from the link.
         const u = (await c.query(`INSERT INTO users (email, password_hash) VALUES ($1, '!') RETURNING id`, [d.email])).rows[0];
-        const w = (await c.query(
-          `INSERT INTO workspaces (name, monthly_reply_limit, paid_until, note, plan_id) VALUES ($1, $2, $3, $4, coalesce((SELECT id FROM plans WHERE id = $5), (SELECT id FROM plans WHERE name = 'Biznes'))) RETURNING id`,
-          [d.name, d.limit, d.paid_until || null, d.note, d.plan_id ?? null],
-        )).rows[0];
-        await c.query(`INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, 'owner')`, [w.id, u.id]);
-        await c.query('INSERT INTO assistants (workspace_id, business_name) VALUES ($1, $2)', [w.id, d.name]);
+        const workspaceId = await createSubscription(c, { name: d.name, replyLimit: d.limit, paidUntil: d.paid_until || null, note: d.note, planId: d.plan_id });
+        await c.query(`INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, 'owner')`, [workspaceId, u.id]);
+        await c.query('INSERT INTO assistants (workspace_id, business_name) VALUES ($1, $2)', [workspaceId, d.name]);
         return u.id as string;
       });
       const link = await passwordLink(userId, '72 hours');
@@ -147,7 +133,7 @@ export function adminRoutes(app: FastifyInstance) {
       const w = await load(req);
       const p = z.object({ name: z.string().trim().min(1).max(120), limit: z.coerce.number().int().min(0).max(1_000_000), paid_until: date, note: z.string().trim().max(500) }).safeParse(req.body);
       if (!w || !p.success) return reply.redirect('/admin?m=invalid');
-      await q('UPDATE workspaces SET name = $2, monthly_reply_limit = $3, paid_until = $4, note = $5 WHERE id = $1', [w.id, p.data.name, p.data.limit, p.data.paid_until || null, p.data.note]);
+      await updateSubscription(w.id, { name: p.data.name, replyLimit: p.data.limit, paidUntil: p.data.paid_until || null, note: p.data.note });
       req.log.info({ event: 'admin_customer_updated', admin: req.user!.id, workspace: w.id, paid_until: p.data.paid_until, limit: p.data.limit }, 'audit');
       return reply.redirect(`/admin/w/${w.id}?m=saved`);
     });
@@ -176,9 +162,8 @@ export function adminRoutes(app: FastifyInstance) {
     r.post('/admin/w/:id/extend', async (req, reply) => {
       const w = await load(req);
       if (!w) return reply.code(404).send('Not found');
-      // Extend from the later of today and the current paid date.
       req.log.info({ event: 'admin_payment_extended', admin: req.user!.id, workspace: w.id }, 'audit');
-      await q(`UPDATE workspaces SET paid_until = greatest(coalesce(paid_until, current_date), current_date) + 30 WHERE id = $1`, [w.id]);
+      await extendSubscription(w.id, 30);
       return reply.redirect(`/admin/w/${w.id}?m=saved`);
     });
 
