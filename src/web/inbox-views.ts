@@ -1,4 +1,5 @@
 import type { FastifyRequest } from 'fastify';
+import { onMetaCdn } from '../channels/instagram.js';
 import { inWindow } from '../conversation.js';
 import { randomToken } from '../crypto.js';
 import type { Filters, PaneData, ProfileData, ThreadItem } from '../data/inbox.js';
@@ -41,6 +42,8 @@ function mediaHtml(m: any, msgId: string): Safe {
   return html`${items.map((x: any, i: number) => {
     const src = x.url ? x.url : x.id ? `/app/media/${msgId}/${i}` : '';
     if (!src) return html`<span class="media-ph">📎 ${x.type}</span>`;
+    // Old rows and link shares can carry any URL: only Meta's CDN is embedded, anything else is a plain link.
+    if (x.url && !onMetaCdn(x.url)) return html`<a href="${x.url}" target="_blank" rel="noopener noreferrer nofollow">🔗 ${String(x.url).slice(0, 80)}</a>`;
     if (['image', 'story', 'story_mention', 'sticker'].includes(x.type))
       return html`<a href="${src}" target="_blank" rel="noopener noreferrer"><img class="msg-img" src="${src}" alt="${x.type}" loading="lazy" referrerpolicy="no-referrer"></a>`;
     if (x.type === 'video' || x.type === 'reel') return html`<video class="msg-img" src="${src}" controls preload="none"></video>`;

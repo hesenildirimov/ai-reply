@@ -7,7 +7,7 @@ import * as data from '../data/inbox.js';
 import { audit } from '../events.js';
 import { sendManualReply } from '../pipeline.js';
 import { publish, subscribe } from '../realtime.js';
-import { can, type Permission, requirePerm, requireUser } from './auth.js';
+import { can, type Permission, requirePerm, requireUser, SID, sessionAlive } from './auth.js';
 import type { Safe } from './html.js';
 import { html } from './html.js';
 import { inboxBody, listHtml, paneHtml, profileHtml, savedRepliesHtml, threadHtml } from './inbox-views.js';
@@ -21,6 +21,11 @@ Object.assign(MESSAGES, {
   window_closed: { type: 'error', text: 'Müştərinin son mesajından 24 saat keçib. Meta qaydalarına görə indi cavab göndərmək olmur.' },
   send_failed: { type: 'error', text: 'Göndərmək alınmadı. Bir az sonra yenidən cəhd edin.' },
 });
+
+// Live inbox streams (SSE): a few tabs per user are normal, thousands would exhaust the web process.
+const SSE_MAX_PER_USER = 5;
+const SSE_PING_MS = 25_000;
+const sseOpen = new Map<string, number>();
 
 const wantsJson = (req: FastifyRequest) => String(req.headers.accept ?? '').includes('application/json');
 const done = (req: FastifyRequest, reply: FastifyReply, id: string, m = 'saved') =>
@@ -94,8 +99,15 @@ export function inboxRoutes(app: FastifyInstance) {
       return reply.code(404).send('');
     });
 
-    // Server-Sent Events: new messages / conversation changes for this workspace only.
+    // Server-Sent Events: new messages / conversation changes for this workspace only (ids, never message text).
+    // Per-process cap on live streams per user; each ping re-checks that the session and membership still exist,
+    // so a logged-out or removed member's open tab stops receiving events within one ping.
     r.get('/app/events', { config: { rateLimit: false } }, (req, reply) => {
+      const uid = req.user!.id;
+      const ws = req.user!.workspaceId;
+      const token = req.cookies[SID] ?? '';
+      if ((sseOpen.get(uid) ?? 0) >= SSE_MAX_PER_USER) return reply.code(429).send('Too many requests');
+      sseOpen.set(uid, (sseOpen.get(uid) ?? 0) + 1);
       reply.hijack();
       const res = reply.raw;
       res.writeHead(200, {
@@ -105,11 +117,21 @@ export function inboxRoutes(app: FastifyInstance) {
         'X-Accel-Buffering': 'no',
       });
       res.write('retry: 5000\n\n');
-      const off = subscribe(req.user!.workspaceId, (ev) => res.write(`data: ${JSON.stringify(ev)}\n\n`));
-      const ping = setInterval(() => res.write(': ping\n\n'), 25_000);
+      const off = subscribe(ws, (ev) => res.write(`data: ${JSON.stringify(ev)}\n\n`));
+      const ping = setInterval(async () => {
+        const alive = await sessionAlive(token, ws).catch(() => true); // DB hiccup: keep the stream, check again next ping
+        if (!alive) return res.end();
+        res.write(': ping\n\n');
+      }, SSE_PING_MS);
+      let closed = false;
       req.raw.on('close', () => {
+        if (closed) return;
+        closed = true;
         clearInterval(ping);
         off();
+        const n = (sseOpen.get(uid) ?? 1) - 1;
+        if (n > 0) sseOpen.set(uid, n);
+        else sseOpen.delete(uid);
       });
     });
 

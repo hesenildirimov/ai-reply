@@ -56,10 +56,15 @@ services:
     restart: unless-stopped
     depends_on: [web]
   backup:
-    image: postgres:16
-    environment: { PGUSER: aireply_owner, PGPASSWORD: "${POSTGRES_PASSWORD}", BACKUP_KEEP_DAYS: "${BACKUP_KEEP_DAYS:-14}" }
+    # Dumps are encrypted with age to BACKUP_AGE_RECIPIENT (public key) before they are written (scripts/backup.sh).
+    build: { context: ., dockerfile: docker/backup.Dockerfile }
+    environment:
+      PGUSER: aireply_owner
+      PGPASSWORD: "${POSTGRES_PASSWORD}"
+      BACKUP_KEEP_DAYS: "${BACKUP_KEEP_DAYS:-14}"
+      BACKUP_AGE_RECIPIENT: "${BACKUP_AGE_RECIPIENT:?set BACKUP_AGE_RECIPIENT in .env (age-keygen, docs/DEPLOY.md)}"
     volumes: [./backups:/backups, ./scripts/backup.sh:/backup.sh:ro]
-    entrypoint: ["sh", "/backup.sh"]
+    entrypoint: ["bash", "/backup.sh"]
     restart: unless-stopped
     depends_on: [db]
 volumes: { pgdata: {}, redisdata: {}, caddy_data: {}, caddy_config: {} }

@@ -46,6 +46,7 @@ const form = (req: FastifyRequest, action: string, it?: any) => html`<form metho
 export function knowledgeRoutes(app: FastifyInstance) {
   app.register(async (r) => {
     r.addHook('preHandler', requireUser);
+    r.addHook('preHandler', requirePerm('knowledge.view'));
     const write = { preHandler: requirePerm('assistant.write') };
 
     r.get('/app/knowledge', async (req, reply) => {

@@ -95,12 +95,24 @@ export function automationRoutes(app: FastifyInstance) {
   // Public click-tracking redirect for automation links.
   app.get('/r/:code', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (req, reply) => {
     const { resolveClick } = await import('../links.js');
-    const url = await resolveClick(String((req.params as any).code ?? ''));
-    return url ? reply.redirect(url) : reply.code(404).send('Link tapılmadı');
+    const url = URL.parse((await resolveClick(String((req.params as any).code ?? ''))) ?? '');
+    if (!url || !['http:', 'https:'].includes(url.protocol)) return reply.code(404).send('Link tapılmadı');
+    // Interstitial instead of a silent 302: the platform's domain must not lend its name to any tenant's links (phishing).
+    reply.header('Cache-Control', 'no-store').header('X-Robots-Tag', 'noindex, nofollow').header('Referrer-Policy', 'no-referrer');
+    return view(
+      req,
+      reply,
+      'Xarici link',
+      html`<section class="auth card"><h1>Xarici sayta keçid</h1>
+      <p>Bu link sizi <b>${url.host}</b> saytına aparır. Bu sayt AI Reply-a aid deyil.</p>
+      <p class="muted" style="word-break:break-all">${url.href}</p>
+      <a class="btn block" href="${url.href}" rel="noopener noreferrer nofollow">Davam et</a></section>`,
+    );
   });
 
   app.register(async (r) => {
     r.addHook('preHandler', requireUser);
+    r.addHook('preHandler', requirePerm('automations.view'));
     const write = { preHandler: requirePerm('automations.write') };
 
     r.get('/app/automations', async (req, reply) => {
@@ -342,7 +354,7 @@ export function automationRoutes(app: FastifyInstance) {
     });
 
     // Dry run against sample text — nothing is sent, no run is recorded.
-    r.post('/app/automations/:id/test', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
+    r.post('/app/automations/:id/test', { ...write, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
       const a = await loadOwned(req);
       if (!a) return reply.code(404).send({ ok: false });
       const text =
@@ -366,7 +378,7 @@ export function automationRoutes(app: FastifyInstance) {
       });
     });
 
-    r.get('/app/automations/:id/media', async (req, reply) => {
+    r.get('/app/automations/:id/media', write, async (req, reply) => {
       const a = await loadOwned(req);
       if (!a) return reply.code(404).send({ ok: false });
       const ch = await one<ChannelRow>(

@@ -24,9 +24,12 @@ declare module 'fastify' {
   }
 }
 
-const SID = config.isProd ? '__Host-sid' : 'sid';
+export const SID = config.isProd ? '__Host-sid' : 'sid';
 const PRE = config.isProd ? '__Host-pcsrf' : 'pcsrf';
-const SESSION_DAYS = 7;
+const SESSION_DAYS = 7; // sliding: extended while the session is used
+// Absolute lifetime however active the session is: a stolen cookie can't live forever (audit A-12).
+export const SESSION_MAX_DAYS = 30;
+const ADMIN_SESSION_MAX_HOURS = 12;
 const cookieOpts = { httpOnly: true, secure: config.isProd, sameSite: 'lax' as const, path: '/' };
 const NO_SESSION = /^\/(public|webhooks|meta|healthz|readyz|sw\.js)(\/|$)/;
 
@@ -47,6 +50,20 @@ export async function destroySession(req: FastifyRequest, reply: FastifyReply): 
   reply.clearCookie(SID, { path: '/' });
 }
 
+// A live session: not expired, within its absolute lifetime, user still a member. Params: $1 id hash, $2 days, $3 admin hours.
+const SESSION_FROM = `FROM sessions s JOIN users u ON u.id = s.user_id JOIN memberships m ON m.user_id = u.id
+  WHERE s.id_hash = $1 AND s.expires_at > now()
+    AND s.created_at > now() - make_interval(days => $2)
+    AND (NOT u.is_admin OR s.created_at > now() - make_interval(hours => $3))`;
+
+/** For long-lived connections (SSE): is this session token still valid for this workspace? */
+export const sessionAlive = async (token: string, workspaceId: string) =>
+  !!(await one(`SELECT 1 ${SESSION_FROM} AND m.workspace_id = $4`, [sha256(token), SESSION_MAX_DAYS, ADMIN_SESSION_MAX_HOURS, workspaceId]));
+
+/** Ends every session of the user except the current one (after a security change: 2FA on, password change). */
+export const endOtherSessions = (req: FastifyRequest, userId: string) =>
+  q('DELETE FROM sessions WHERE user_id = $1 AND id_hash <> $2', [userId, sha256(req.cookies[SID] ?? '')]);
+
 export function registerAuth(app: FastifyInstance) {
   app.decorateRequest('user', null);
   app.decorateRequest('csrfToken', '');
@@ -57,9 +74,8 @@ export function registerAuth(app: FastifyInstance) {
     if (token) {
       const row = await one(
         `SELECT s.csrf_token, s.expires_at < now() + interval '6 days' AS stale, u.id, u.email, u.email_verified_at, u.is_admin, u.totp_enabled_at IS NOT NULL AS mfa, m.workspace_id, m.role
-         FROM sessions s JOIN users u ON u.id = s.user_id JOIN memberships m ON m.user_id = u.id
-         WHERE s.id_hash = $1 AND s.expires_at > now() LIMIT 1`,
-        [sha256(token)],
+         ${SESSION_FROM} LIMIT 1`,
+        [sha256(token), SESSION_MAX_DAYS, ADMIN_SESSION_MAX_HOURS],
       );
       if (row) {
         req.user = {
@@ -116,12 +132,16 @@ export type Permission =
   | 'integrations.manage'
   | 'audit.view'
   | 'inbox.view'
+  | 'automations.view'
+  | 'knowledge.view'
   | 'data.export';
 
 /** Backend permission matrix. Every write route checks this (UI hiding is only cosmetic). */
 const PERMS: Record<Role, Permission[]> = {
   owner: [
     'inbox.view',
+    'automations.view',
+    'knowledge.view',
     'data.export',
     'inbox.reply',
     'inbox.manage',
@@ -139,6 +159,8 @@ const PERMS: Record<Role, Permission[]> = {
   ],
   admin: [
     'inbox.view',
+    'automations.view',
+    'knowledge.view',
     'inbox.reply',
     'inbox.manage',
     'contacts.write',
@@ -152,7 +174,8 @@ const PERMS: Record<Role, Permission[]> = {
     'integrations.manage',
     'audit.view',
   ],
-  agent: ['inbox.view', 'inbox.reply', 'inbox.manage', 'contacts.write', 'analytics.view'],
+  // Agents read automations and the knowledge base to answer customers; analysts see analytics only (audit A-11).
+  agent: ['inbox.view', 'automations.view', 'knowledge.view', 'inbox.reply', 'inbox.manage', 'contacts.write', 'analytics.view'],
   analyst: ['analytics.view'],
 };
 export const can = (user: SessionUser | null, p: Permission) => !!user && (PERMS[user.role] ?? []).includes(p);

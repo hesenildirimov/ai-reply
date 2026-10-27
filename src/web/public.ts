@@ -48,7 +48,28 @@ export async function passwordLink(userId: string, ttl: '1 hour' | '72 hours'): 
 }
 
 const contact = () => html`<a href="mailto:${config.SUPPORT_EMAIL}">${config.SUPPORT_EMAIL}</a>${config.CONTACT_PHONE ? html` · ${config.CONTACT_PHONE}` : ''}`;
-const lockKey = (e: string) => `loginfail:${sha256(e).toString('hex')}`;
+// Password failures: per e-mail + IP (stops one attacker) and per e-mail overall with a higher bar (stops a botnet),
+// so nobody can lock a person out of their account from a single address (audit A-1).
+const lockKey = (e: string, ip?: string) => `loginfail:${sha256(ip ? `${e}|${ip}` : e).toString('hex')}`;
+const LOCK_PER_IP = 10;
+const LOCK_PER_ACCOUNT = 100;
+const LOCK_TTL = 900; // 15 min
+// 2FA failures are counted per user, not per login: a new password login must not reset them (audit O-1).
+const MFA_FAIL_MAX = 10;
+const MFA_FAIL_TTL = 900;
+const mfaFailKey = (userId: string) => `mfafail:${userId}`;
+const RESET_MAILS_PER_HOUR = 3;
+
+/** Reset mail for an existing account. Runs in the background: the response time must not reveal whether it exists (A-2). */
+async function sendResetLink(email: string): Promise<void> {
+  const u = await one<{ id: string }>('SELECT id FROM users WHERE email = $1', [email]);
+  if (!u) return;
+  await sendMail(
+    email,
+    'Şifrənin bərpası',
+    `Yeni şifrə təyin etmək üçün (1 saat etibarlıdır):\n${await passwordLink(u.id, '1 hour')}\n\nBunu siz istəməmisinizsə, məktuba məhəl qoymayın.`,
+  );
+}
 
 export function publicRoutes(app: FastifyInstance) {
   app.get('/healthz', { config: { rateLimit: false } }, async () => ({ ok: true }));
@@ -86,8 +107,10 @@ export function publicRoutes(app: FastifyInstance) {
   app.post('/login', { config: AUTH_LIMIT }, async (req, reply) => {
     const p = z.object({ email: emailSchema, password: z.string().max(200) }).safeParse(req.body);
     if (!p.success) return reply.redirect('/login?m=bad_login');
-    const key = lockKey(p.data.email);
-    if (Number(await redis.get(key)) >= 10) {
+    const key = lockKey(p.data.email, req.ip);
+    const accKey = lockKey(p.data.email);
+    const [ipFails = 0, accFails = 0] = (await redis.mget(key, accKey)).map(Number);
+    if (ipFails >= LOCK_PER_IP || accFails >= LOCK_PER_ACCOUNT) {
       req.log.warn({ event: 'login_locked', account: sha256(p.data.email).toString('hex').slice(0, 16) }, 'security');
       return reply.redirect('/login?m=locked');
     }
@@ -98,11 +121,15 @@ export function publicRoutes(app: FastifyInstance) {
     const ok = await verify(u?.password_hash ?? DUMMY_HASH, p.data.password).catch(() => false);
     // email_verified_at is set when the user sets a password from their invite link.
     if (!u || !ok || !u.email_verified_at) {
-      await redis.multi().incr(key).expire(key, 900).exec();
+      await redis.multi().incr(key).expire(key, LOCK_TTL).incr(accKey).expire(accKey, LOCK_TTL).exec();
       req.log.warn({ event: 'login_failed', account: sha256(p.data.email).toString('hex').slice(0, 16), known: !!u }, 'security');
       return reply.redirect('/login?m=bad_login');
     }
-    await redis.del(key);
+    await redis.del(key); // this address only; the account-wide counter expires on its own
+    if (u.totp_enabled_at && Number(await redis.get(mfaFailKey(u.id))) >= MFA_FAIL_MAX) {
+      req.log.warn({ event: 'mfa_locked', user: u.id }, 'security');
+      return reply.redirect('/login?m=locked');
+    }
     if (u.totp_enabled_at) {
       // Password OK; the session is only created after the 6-digit code (5 min, 5 attempts).
       const t = randomToken();
@@ -132,19 +159,34 @@ export function publicRoutes(app: FastifyInstance) {
     const key = t ? `mfa:${sha256(t).toString('hex')}` : '';
     const userId = key ? await redis.get(key) : null;
     if (!userId) return reply.redirect('/login?m=bad_login');
+    const failKey = mfaFailKey(userId);
+    if (Number(await redis.get(failKey)) >= MFA_FAIL_MAX) {
+      await redis.del(key, `${key}:n`);
+      return reply.redirect('/login?m=locked');
+    }
     const tries = await redis.incr(`${key}:n`);
     await redis.expire(`${key}:n`, 300);
-    const u = await one('SELECT totp_secret_enc, totp_last_step FROM users WHERE id = $1', [userId]);
+    const u = await one('SELECT email, totp_secret_enc, totp_last_step FROM users WHERE id = $1', [userId]);
     const step = u?.totp_secret_enc ? verifyTotp(decrypt(u.totp_secret_enc), String((req.body as any)?.code ?? ''), Number(u.totp_last_step)) : null;
     // Atomic: the same code (time step) can never be used twice.
     const ok =
       step !== null && tries <= 5 && (await one('UPDATE users SET totp_last_step = $2 WHERE id = $1 AND totp_last_step < $2 RETURNING id', [userId, step]));
     if (!ok) {
-      req.log.warn({ event: 'mfa_failed', user: userId, tries }, 'security');
-      if (tries >= 5) await redis.del(key);
-      return reply.redirect(tries >= 5 ? '/login?m=locked' : '/login/2fa?m=bad_code');
+      const [[, fails]] = (await redis.multi().incr(failKey).expire(failKey, MFA_FAIL_TTL).exec()) as [[null, number]];
+      req.log.warn({ event: 'mfa_failed', user: userId, tries, fails }, 'security');
+      // The owner learns that someone who knows the password is guessing codes.
+      if (fails === MFA_FAIL_MAX && u?.email && config.mailEnabled) {
+        void sendMail(
+          u.email,
+          'AI Reply: giriş bloklandı',
+          'Hesabınıza 2FA kodu ilə daxil olmaq üçün çox sayda səhv cəhd edildi və giriş 15 dəqiqəlik bloklandı. Bu siz deyilsinizsə, şifrənizi dərhal dəyişin.',
+        ).catch(() => {});
+      }
+      const locked = tries >= 5 || fails >= MFA_FAIL_MAX;
+      if (locked) await redis.del(key);
+      return reply.redirect(locked ? '/login?m=locked' : '/login/2fa?m=bad_code');
     }
-    await redis.del(key, `${key}:n`);
+    await redis.del(key, `${key}:n`, failKey);
     reply.clearCookie('mfa', { path: '/login' });
     await createSession(reply, userId);
     req.log.info({ event: 'login_ok', user: userId, mfa: true }, 'security');
@@ -168,14 +210,13 @@ export function publicRoutes(app: FastifyInstance) {
     );
     app.post('/forgot', { config: AUTH_LIMIT }, async (req, reply) => {
       const p = emailSchema.safeParse((req.body as any)?.email);
-      const u = p.success ? await one('SELECT id FROM users WHERE email = $1', [p.data]) : undefined;
-      if (u)
-        await sendMail(
-          p.data!,
-          'Şifrənin bərpası',
-          `Yeni şifrə təyin etmək üçün (1 saat etibarlıdır):\n${await passwordLink(u.id, '1 hour')}\n\nBunu siz istəməmisinizsə, məktuba məhəl qoymayın.`,
-        );
-      return reply.redirect('/login?m=check_email'); // same response either way (no account enumeration)
+      if (p.success) {
+        // At most a few mails per address per hour: the form must not be a way to flood someone's inbox.
+        const k = `forgot:${sha256(p.data).toString('hex')}`;
+        const [[, n]] = (await redis.multi().incr(k).expire(k, 3600, 'NX').exec()) as [[null, number]];
+        if (n <= RESET_MAILS_PER_HOUR) void sendResetLink(p.data).catch((e) => req.log.error({ err: e }, 'reset mail failed'));
+      }
+      return reply.redirect('/login?m=check_email'); // same response, same speed either way (no account enumeration)
     });
   }
 

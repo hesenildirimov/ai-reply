@@ -18,6 +18,7 @@ DNS-də domenin (məsələn `app.sizinbiznes.az`) **A record**-unu serverin IP-s
 | `APP_URL` / `DOMAIN` | `https://app.sizinbiznes.az` / `app.sizinbiznes.az` |
 | `ENCRYPTION_KEY` | `openssl rand -base64 32` |
 | `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `APP_DB_PASSWORD` | `openssl rand -hex 24` (hər biri ayrıca). Tətbiq bazaya məhdud `app_rw` rolu ilə qoşulur, superuser yalnız miqrasiya və backup üçündür |
+| `BACKUP_AGE_RECIPIENT` | Backup-ların açıq açarı (`age1...`). **Öz kompüterinizdə** yaradın: `age-keygen -o age-key.txt`. Faylda `# public key: age1...` sətri var, onu bura yazın. `age-key.txt` (gizli açar) serverə qoyulmur: parol menecerində və oflayn saxlayın |
 | `ANTHROPIC_API_KEY` | console.anthropic.com |
 | Meta, Telegram, WhatsApp bildiriş və VAPID dəyərləri | README-dəki bölmələrə baxın |
 
@@ -40,10 +41,15 @@ Telefonu itirsəniz, eyni əmri yenidən işə salın: 2FA sıfırlanır və yen
 Caddy SSL sertifikatını avtomatik alır və yeniləyir. HTTP sorğuları HTTPS-ə yönləndirilir.
 
 ## 5. Backup
-- `backup` servisi hər gün `./backups/aireply-*.dump` faylını yaradır və 14 gündən köhnələri silir.
+- `backup` servisi hər gün `./backups/aireply-*.dump.age` faylını yaradır və 14 gündən köhnələri silir.
+- Fayl yazılmazdan əvvəl `age` ilə `BACKUP_AGE_RECIPIENT` açıq açarına şifrələnir. Serverdə yalnız açıq açar var:
+  server və ya backup diski oğurlansa da yazışmalar oxunmur. Açmaq üçün gizli açar (`age-key.txt`) lazımdır.
 - **Serverdən kənara da köçürün** (eyni diskdə olan backup tam backup deyil), məsələn rclone ilə şifrəli Backblaze B2 və ya S3-ə:
   `rclone sync ./backups b2crypt:aireply-backups` (cron ilə gündəlik).
-- Bərpa: `./scripts/restore.sh backups/aireply-YYYYMMDD-HHMM.dump`. Ayda bir dəfə test serverində yoxlayın.
+- Bərpa: `apt install age`, gizli açarı müvəqqəti serverə köçürün və
+  `./scripts/restore.sh backups/aireply-YYYYMMDD-HHMM.dump.age age-key.txt` işlədin. Sonra açarı serverdən silin
+  (`shred -u age-key.txt`). Köhnə şifrəsiz `.dump` faylları üçün ikinci arqument lazım deyil. Ayda bir dəfə test
+  serverində yoxlayın.
 
 ## 6. Yeniləmə
 ```bash
@@ -55,7 +61,7 @@ Miqrasiyalar (`migrations/NNN_*.sql`) hər buraxılışda avtomatik və ardıcı
 
 Yeniləmədən **əvvəl** həmişə backup götürün:
 ```bash
-docker compose exec backup sh -c 'pg_dump -h db -U aireply_owner -d aireply -Fc -f /backups/pre-update-$(date -u +%Y%m%d-%H%M).dump'
+docker compose exec backup bash -c 'set -o pipefail; pg_dump -h db -U aireply_owner -d aireply -Fc | age -r "$BACKUP_AGE_RECIPIENT" -o /backups/pre-update-$(date -u +%Y%m%d-%H%M).dump.age'
 git log --oneline -1                     # hazırkı versiyanı qeyd edin
 ```
 
@@ -101,3 +107,46 @@ Köhnə açıq mətnli sətirləri worker hər saat paketlərlə şifrələyir (
 
 ## 9. Tarif limitləri
 Tariflər `plans` cədvəlindədir (Start / Biznes / Pro, `migrations/007`). Admin panelində müştəri səhifəsindən tarif seçilir və istənilən limit fərdi olaraq dəyişdirilir ("limitsiz" və ya rəqəm). Limitlər serverdə yoxlanılır: kanallar, komanda üzvləri, aktiv avtomatlaşdırmalar, aktiv kontaktlar (30 gün), aylıq avtomatik mesaj sayı, AI büdcəsi (gün/ay), analitika tarixçəsi. Limit dolanda avtomatik cavablar dayanır, gələn mesajlar saxlanılır və əl ilə cavab vermək mümkün qalır. Hadisə audit jurnalına `plan.limit_reached` kimi yazılır.
+
+## 10. Railway (docker-compose olmadan)
+Railway-in Postgres istifadəçisi (`postgres`) **superuser**-dir. Web və worker onunla işləsə, gələcəkdə yaranan hər
+hansı SQL injection DB serverində əmr icrasına (`COPY ... TO PROGRAM`) çevrilə bilər. Ona görə də tətbiq yalnız data
+oxuyub-yazan `app_rw` rolu ilə işləyir. Production-da web/worker imtiyazlı rolla **işə düşmür**
+(`FATAL: DATABASE_URL uses a privileged role`).
+
+**Sıra vacibdir:** əvvəl 1 və 2-ci addımlar, sonra bu versiyanın deploy-u.
+
+**1. Rolu yaradın** (Railway → Postgres → Data → Query, `postgres` istifadəçisi ilə, bir dəfə). `<PAROL>` =
+`openssl rand -hex 24`. Baza adı adətən `railway`-dir, fərqlidirsə dəyişin.
+```sql
+CREATE ROLE app_rw LOGIN PASSWORD '<PAROL>' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+GRANT CONNECT ON DATABASE railway TO app_rw;
+GRANT USAGE ON SCHEMA public TO app_rw;
+-- Mövcud cədvəllər (default privileges yalnız yeni cədvəllərə aiddir)
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_rw;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_rw;
+-- Gələcək miqrasiyaların yaratdığı cədvəllər
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_rw;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO app_rw;
+-- Miqrasiya cədvəlinə tətbiq yazmır (014 miqrasiyası da bunu edir)
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON schema_migrations FROM app_rw;
+```
+
+**2. Mühit dəyişənləri**
+
+| Servis | Dəyişən | Dəyər |
+|---|---|---|
+| web | `DATABASE_URL` | `postgresql://app_rw:<PAROL>@<host>:<port>/railway` |
+| web | `MIGRATE_DATABASE_URL` | `${{Postgres.DATABASE_URL}}` (owner; yalnız `preDeployCommand` miqrasiyası istifadə edir) |
+| worker | `DATABASE_URL` | `postgresql://app_rw:<PAROL>@<host>:<port>/railway` |
+| web, worker | `NODE_ENV` | `production` (Dockerfile da təyin edir; məcburidir, standart dəyər yoxdur) |
+
+Worker-ə `MIGRATE_DATABASE_URL` verilmir. `<host>`/`<port>` Postgres servisinin `PGHOST`/`PGPORT` dəyişənləridir.
+
+**Keçid dövrü:** rol hələ hazır deyilsə, müvəqqəti `ALLOW_PRIVILEGED_DB=1` qoymaq olar. Hazır olan kimi silin.
+
+**Yoxlama:** deploy logunda `FATAL: DATABASE_URL uses a privileged role` yoxdur, `/readyz` 200 qaytarır və
+`SELECT user_id, count(*) FROM memberships GROUP BY 1 HAVING count(*) > 1;` boşdur (014 miqrasiyası bunu tələb edir).
+
+**Backup:** Railway Postgres-in öz backup-larını aktiv edin. Əlavə nüsxə üçün `scripts/backup.sh`-ı ayrıca servis kimi
+(`docker/backup.Dockerfile`, `BACKUP_AGE_RECIPIENT` ilə) işlədib faylları serverdən kənara köçürmək olar.

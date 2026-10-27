@@ -1,5 +1,5 @@
 import { hash, verify } from '@node-rs/argon2';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import QRCode from 'qrcode';
 import { z } from 'zod';
 import { subscriptionOf } from '../billing.js';
@@ -15,7 +15,7 @@ import { redis } from '../queue.js';
 import { telegramEnabled } from '../telegram.js';
 import { newTotpSecret, otpauthUrl, verifyTotp } from '../totp.js';
 import { subscriptionSchema } from '../webpush.js';
-import { can, destroySession, requireOwner, requirePerm, requireUser } from './auth.js';
+import { can, destroySession, endOtherSessions, requireOwner, requirePerm, requireUser } from './auth.js';
 import { csrfField, html, pageHead, raw, type Safe } from './html.js';
 import { type IconName, icon } from './icons.js';
 import { ARGON, MESSAGES, passwordSchema, view } from './public.js';
@@ -47,6 +47,30 @@ async function exportConversations(workspaceId: string) {
     byConv.set(m.conversation_id, list);
   }
   return convs.map((c) => ({ ...c, messages: byConv.get(c.id) ?? [] }));
+}
+
+const REAUTH_FAIL_MAX = 5;
+
+/**
+ * Re-authentication for security-sensitive settings (2FA on/off, password change, account deletion): a stolen session
+ * cookie alone must not be enough (A-3). Wrong passwords are counted per user; after REAUTH_FAIL_MAX in 15 minutes all of
+ * the user's sessions end, so a cookie thief can't keep guessing. On failure the redirect is already sent.
+ */
+async function reauth(req: FastifyRequest, reply: FastifyReply, pw: unknown): Promise<boolean> {
+  const userId = req.user!.id;
+  const u = await one<{ password_hash: string }>('SELECT password_hash FROM users WHERE id = $1', [userId]);
+  if (u && (await verify(u.password_hash, String(pw ?? '').slice(0, 200)).catch(() => false))) {
+    await redis.del(`reauthfail:${userId}`);
+    return true;
+  }
+  const [[, fails]] = (await redis.multi().incr(`reauthfail:${userId}`).expire(`reauthfail:${userId}`, 900).exec()) as [[null, number]];
+  req.log.warn({ event: 'reauth_failed', user: userId, fails }, 'security');
+  if (fails >= REAUTH_FAIL_MAX) {
+    await q('DELETE FROM sessions WHERE user_id = $1', [userId]);
+    await redis.del(`reauthfail:${userId}`);
+    reply.redirect('/login?m=locked');
+  } else reply.redirect('/app/settings?m=bad_password');
+  return false;
 }
 
 /** Account settings: plan and limits, alert channels, two-factor login, password, data export, account deletion. */
@@ -101,7 +125,7 @@ export function settingsRoutes(app: FastifyInstance) {
               req.user!.mfa
                 ? req.user!.isAdmin
                   ? ''
-                  : html`<form method="post" action="/app/2fa/disable" class="inline-form">${csrfField(req.csrfToken)}<input name="code" inputmode="numeric" maxlength="6" placeholder="6 rəqəmli kod" required><button class="btn sm danger-ghost">Söndür</button></form>`
+                  : html`<form method="post" action="/app/2fa/disable" class="inline-form">${csrfField(req.csrfToken)}<input name="password" type="password" required autocomplete="current-password" placeholder="Cari şifrə"><input name="code" inputmode="numeric" maxlength="6" placeholder="6 rəqəmli kod" required><button class="btn sm danger-ghost">Söndür</button></form>`
                 : html`<a class="btn" href="/app/2fa">${icon('shield')}Qur</a>`
             }</section>
           <section class="card"><div class="card-head"><h2>${icon('lock')}Şifrəni dəyiş</h2></div>
@@ -140,12 +164,14 @@ export function settingsRoutes(app: FastifyInstance) {
           <p class="muted">Skan edə bilmirsinizsə, bu açarı əl ilə daxil edin: <code>${secret.replace(/(.{4})/g, '$1 ').trim()}</code></p>
           <ol class="mfa-steps" start="2"><li>Tətbiqin göstərdiyi 6 rəqəmli kodu yazın:</li></ol>
           <form method="post" action="/app/2fa" class="inline-form">${csrfField(req.csrfToken)}
-            <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required placeholder="123456"><button class="btn">Təsdiqlə və aktiv et</button></form>
+            <input name="password" type="password" required autocomplete="current-password" placeholder="Cari şifrə"><input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required placeholder="123456"><button class="btn">Təsdiqlə və aktiv et</button></form>
         </section>`,
       );
     });
 
     r.post('/app/2fa', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+      // Re-authentication: a stolen session cookie alone must not be able to register the attacker's authenticator (A-3).
+      if (!(await reauth(req, reply, (req.body as any)?.password))) return reply;
       const pending = await redis.get(`mfa-setup:${req.user!.id}`);
       if (!pending) return reply.redirect('/app/2fa');
       const secret = decrypt(pending);
@@ -156,12 +182,14 @@ export function settingsRoutes(app: FastifyInstance) {
       }
       await q('UPDATE users SET totp_secret_enc = $2, totp_enabled_at = now(), totp_last_step = $3 WHERE id = $1', [req.user!.id, encrypt(secret), step]);
       await redis.del(`mfa-setup:${req.user!.id}`);
+      await endOtherSessions(req, req.user!.id); // a parallel session of an intruder ends here
       req.log.info({ event: 'mfa_enabled', user: req.user!.id }, 'security');
       return reply.redirect('/app/settings?m=mfa_on');
     });
 
     r.post('/app/2fa/disable', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
       if (req.user!.isAdmin) return reply.redirect('/app/settings?m=mfa_required');
+      if (!(await reauth(req, reply, (req.body as any)?.password))) return reply;
       const u = await one('SELECT totp_secret_enc, totp_last_step FROM users WHERE id = $1', [req.user!.id]);
       const step = u?.totp_secret_enc ? verifyTotp(decrypt(u.totp_secret_enc), String((req.body as any)?.code ?? ''), Number(u.totp_last_step)) : null;
       if (step === null) return reply.redirect('/app/settings?m=bad_code');
@@ -211,8 +239,7 @@ export function settingsRoutes(app: FastifyInstance) {
     r.post('/app/settings/password', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
       const p = z.object({ current: z.string().max(200), password: passwordSchema }).safeParse(req.body);
       if (!p.success) return reply.redirect('/app/settings?m=invalid');
-      const u = await one('SELECT password_hash FROM users WHERE id = $1', [req.user!.id]);
-      if (!(await verify(u.password_hash, p.data.current).catch(() => false))) return reply.redirect('/app/settings?m=bad_password');
+      if (!(await reauth(req, reply, p.data.current))) return reply;
       await q('UPDATE users SET password_hash = $2 WHERE id = $1', [req.user!.id, await hash(p.data.password, ARGON)]);
       await q('DELETE FROM sessions WHERE user_id = $1', [req.user!.id]);
       return reply.redirect('/login?m=password_set');
@@ -241,14 +268,17 @@ export function settingsRoutes(app: FastifyInstance) {
     });
 
     r.post('/app/settings/delete', { preHandler: requireOwner, config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
-      const pw = String((req.body as any)?.password ?? '').slice(0, 200);
-      const u = await one('SELECT password_hash FROM users WHERE id = $1', [req.user!.id]);
-      if (!(await verify(u.password_hash, pw).catch(() => false))) return reply.redirect('/app/settings?m=bad_password');
+      if (!(await reauth(req, reply, (req.body as any)?.password))) return reply;
       for (const ch of await q<ChannelRow>('SELECT * FROM channels WHERE workspace_id = $1', [req.user!.workspaceId])) await removeChannel(ch);
       await destroySession(req, reply);
       await tx(async (c) => {
+        const members = (await c.query('SELECT user_id FROM memberships WHERE workspace_id = $1', [req.user!.workspaceId])).rows.map((x) => x.user_id);
         await c.query('DELETE FROM workspaces WHERE id = $1', [req.user!.workspaceId]);
-        await c.query('DELETE FROM users WHERE id = $1', [req.user!.id]);
+        // Every member goes too (a user belongs to one business only): no orphaned e-mails, password hashes or 2FA secrets (A-5).
+        // Platform admins are kept.
+        await c.query('DELETE FROM users WHERE id = ANY($1) AND NOT is_admin AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = users.id)', [
+          members,
+        ]);
       });
       return reply.redirect('/login?m=account_deleted');
     });

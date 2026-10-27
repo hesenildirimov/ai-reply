@@ -165,6 +165,20 @@ function post(url: string, body: string, headers: Record<string, string>): Promi
   });
 }
 
+/**
+ * Coarse, tenant-visible reason for a failed delivery. Raw socket errors ("connect ECONNREFUSED 1.2.3.4:443") would
+ * let a tenant use webhooks to probe which hosts and ports are open.
+ */
+export function errorCategory(e: unknown): string {
+  const msg = String((e as Error)?.message ?? '');
+  const code = String((e as { code?: unknown })?.code ?? '');
+  if (msg === 'timeout') return 'vaxt bitdi';
+  if (msg === 'blocked address') return 'ünvan bloklanıb';
+  if (/ENOTFOUND|EAI_AGAIN/.test(code + msg)) return 'domen tapılmadı';
+  if (/CERT|SSL|TLS/i.test(code + msg)) return 'TLS xətası';
+  return 'bağlantı alınmadı';
+}
+
 /** Worker entry: one attempt. Throws to let BullMQ retry; records the outcome either way. */
 export async function deliverWebhook(deliveryId: string, attempt: number, final: boolean): Promise<void> {
   const d = await one(`SELECT d.*, w.url, w.secret_enc, w.active FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id WHERE d.id = $1`, [
@@ -184,7 +198,7 @@ export async function deliverWebhook(deliveryId: string, attempt: number, final:
     });
     if (code < 200 || code >= 300) error = `HTTP ${code}`;
   } catch (e) {
-    error = String((e as Error).message).slice(0, 200);
+    error = errorCategory(e);
   }
   const permanent = code >= 400 && code < 500 && code !== 408 && code !== 429;
   const done = !error || permanent || final;

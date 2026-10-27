@@ -268,35 +268,33 @@ describe.skipIf(!enabled)('security audit regressions', () => {
 
   // ---------------- 7. Abuse protection ----------------
   describe('Abuse', () => {
-    it('login: per-IP rate limit (429) and per-account lockout after 10 failures', async () => {
+    it('login: per-IP rate limit (429); lockout per e-mail+IP (10) and per account (100) — A-1', async () => {
       const page = await app.inject({ url: '/login' });
       const pre = page.cookies.find((c) => c.name === 'pcsrf')!.value;
       const csrf = /name="_csrf" value="([^"]+)"/.exec(page.body)![1]!;
-      const codes: number[] = [];
-      for (let i = 0; i < 12; i++) {
-        const r = await app.inject({
+      const login = (ip: string, email: string, password: string) =>
+        app.inject({
           method: 'POST',
           url: '/login',
-          remoteAddress: '10.9.9.9',
+          remoteAddress: ip,
           headers: { origin: 'http://localhost:3000', cookie: `pcsrf=${pre}` },
-          payload: { _csrf: csrf, email: 'victim@sa.az', password: 'wrong-password' },
+          payload: { _csrf: csrf, email, password },
         });
-        codes.push(r.statusCode);
-      }
+      const codes: number[] = [];
+      for (let i = 0; i < 12; i++) codes.push((await login('10.9.9.9', 'victim@sa.az', 'wrong-password')).statusCode);
       expect(codes).toContain(429);
-      // lockout is per account: a different IP is also refused (also a lockout-DoS vector, see report)
       const { redis } = await import('../src/queue.js');
       const { sha256 } = await import('../src/crypto.js');
-      await redis.set(`loginfail:${sha256('analyst@sa.az').toString('hex')}`, '10');
-      const r = await app.inject({
-        method: 'POST',
-        url: '/login',
-        remoteAddress: '10.9.9.10',
-        headers: { origin: 'http://localhost:3000', cookie: `pcsrf=${pre}` },
-        payload: { _csrf: csrf, email: 'analyst@sa.az', password: 'correct-horse-battery' },
-      });
-      expect(r.headers.location).toContain('locked');
-      await redis.del(`loginfail:${sha256('analyst@sa.az').toString('hex')}`);
+      const ipKey = (ip: string) => `loginfail:${sha256(`analyst@sa.az|${ip}`).toString('hex')}`;
+      const accKey = `loginfail:${sha256('analyst@sa.az').toString('hex')}`;
+      // 10 failures from one address lock that address only: the real user elsewhere still gets in (no lockout DoS)
+      await redis.set(ipKey('10.9.9.10'), '10');
+      expect((await login('10.9.9.10', 'analyst@sa.az', 'correct-horse-battery')).headers.location).toContain('locked');
+      expect((await login('10.9.9.11', 'analyst@sa.az', 'correct-horse-battery')).headers.location).toBe('/app');
+      // a distributed attack (100 failures in total) locks the account from everywhere
+      await redis.set(accKey, '100');
+      expect((await login('10.9.9.12', 'analyst@sa.az', 'correct-horse-battery')).headers.location).toContain('locked');
+      await redis.del(ipKey('10.9.9.10'), accKey);
     });
     it('F-08 concurrent invites cannot exceed the member limit (race)', async () => {
       const used = (await db.one(`SELECT count(*)::int AS n FROM memberships WHERE workspace_id = $1`, [A.workspaceId])).n;

@@ -17,6 +17,8 @@ import { day, idParam, stat } from './ui.js';
 Object.assign(MESSAGES, {
   customer_exists: { type: 'error', text: 'Bu e-poçt ilə istifadəçi artıq var.' },
   customer_deleted: { type: 'ok', text: 'Müştəri və bütün məlumatları silindi.' },
+  link_mailed: { type: 'ok', text: 'Hesab aktivdir: şifrə linki yalnız müştərinin öz e-poçtuna göndərildi.' },
+  mail_required: { type: 'error', text: 'Hesab aktivdir: link yalnız müştərinin e-poçtuna göndərilə bilər, bunun üçün SMTP qurulmalıdır.' },
 });
 
 const date = z.union([z.literal(''), z.string().regex(/^\d{4}-\d{2}-\d{2}$/)]);
@@ -250,9 +252,25 @@ export function adminRoutes(app: FastifyInstance) {
       const w = await load(req);
       const u =
         w &&
-        (await one(`SELECT u.id, u.email FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1 AND m.role = 'owner' LIMIT 1`, [w.id]));
+        (await one(
+          `SELECT u.id, u.email, u.email_verified_at FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1 AND m.role = 'owner' LIMIT 1`,
+          [w.id],
+        ));
       if (!u) return reply.code(404).send('Not found');
       req.log.info({ event: 'admin_password_link', admin: req.user!.id, user: u.id }, 'audit');
+      // Active account: the link goes only to the customer's own inbox, never to the admin's screen, and the customer
+      // sees it in their audit log (A-4). Not yet activated: the admin hands the invite link over as before.
+      if (u.email_verified_at) {
+        if (!config.mailEnabled) return reply.redirect(`/admin/w/${w.id}?m=mail_required`);
+        await audit(w.id, req.user!.id, 'admin.password_link', 'user', u.id, { sent_to: 'owner_email' });
+        await sendMail(
+          u.email,
+          'AI Reply: şifrə bərpası',
+          `Administrator sizin üçün şifrə bərpası linki yaratdı (72 saat etibarlıdır):\n${await passwordLink(u.id, '72 hours')}\n\nBunu siz istəməmisinizsə, dərhal bizimlə əlaqə saxlayın.`,
+        );
+        return reply.redirect(`/admin/w/${w.id}?m=link_mailed`);
+      }
+      await audit(w.id, req.user!.id, 'admin.password_link', 'user', u.id, { sent_to: 'admin_screen', activated: false });
       return view(
         req,
         reply,

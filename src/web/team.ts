@@ -46,6 +46,7 @@ const AUDIT_GROUPS: Record<string, string> = {
   'channel.': 'Kanallar',
   'ai.': 'AI',
   'plan.': 'Tarif limitləri',
+  'admin.': 'Platforma admini',
 };
 
 export function teamRoutes(app: FastifyInstance) {

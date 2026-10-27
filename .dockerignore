@@ -1,4 +1,16 @@
+# Only what the image needs goes into the build context: no history, secrets, tests or backups.
 node_modules
 dist
+.git
+.github
 .env
+.env.*
+*.pem
+*.key
+*.p12
 test
+backups
+*.dump
+*.dump.age
+docs
+scripts

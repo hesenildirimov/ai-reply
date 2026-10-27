@@ -17,6 +17,7 @@ import { linkWhatsAppAlerts, notifyChannelProblem } from './notify.js';
 import { ingest, lookupInstagramName, processEcho, processReply } from './pipeline.js';
 import { type JobData, queue } from './queue.js';
 import { learnStyle } from './style.js';
+import { SESSION_MAX_DAYS } from './web/auth.js';
 import { deliverWebhook } from './webhooks.js';
 
 export type Data = JobData | { kind: 'maintenance' };
@@ -149,7 +150,7 @@ export async function reencryptSecrets() {
 }
 
 export async function maintenance() {
-  await q('DELETE FROM sessions WHERE expires_at < now()');
+  await q(`DELETE FROM sessions WHERE expires_at < now() OR created_at < now() - make_interval(days => $1)`, [SESSION_MAX_DAYS]);
   await q(`DELETE FROM auth_tokens WHERE expires_at < now() - interval '1 day'`);
   await q('DELETE FROM oauth_states WHERE expires_at < now()');
   // Data minimization: drop old messages and empty conversations.

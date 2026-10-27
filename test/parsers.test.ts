@@ -146,4 +146,29 @@ describe('Russian in Latin letters', () => {
     expect(checkReply('Стоит 45 манатов', 'Don: 45 AZN')).toEqual({ ok: true });
     expect(checkReply('30 ман.', 'Don: 45 AZN')).toMatchObject({ ok: false });
   });
+  it('the price guard catches other currencies and ignores long numbers in the facts (A-9)', async () => {
+    const { checkReply } = await import('../src/guard.js');
+    const facts = 'Qiymət: 25 AZN';
+    for (const t of [
+      'Qiyməti 10 USD-dir',
+      'Cəmi $10',
+      '10$ olar',
+      '15 € və ya 15 euro',
+      '200 TL',
+      '₺200',
+      '100 rubl',
+      '100 ₽',
+      '100 рублей',
+      '20 dollara',
+      '20 доллар',
+    ])
+      expect(checkReply(t, facts), t).toMatchObject({ ok: false, reason: 'unverified_price' });
+    expect(checkReply('25 AZN', 'Qiymət: 25 AZN, tel 0501234567')).toEqual({ ok: true });
+    // a phone, IBAN or order number in the business info does not whitelist a made-up price
+    expect(checkReply('Qiyməti 501234567 AZN', 'tel 0501234567')).toMatchObject({ ok: false });
+    expect(checkReply('Qiyməti 2 USD', 'IBAN AZ21NABZ00000000137010001944')).toMatchObject({ ok: false });
+    // ordinary words that only look like currency codes are not prices
+    for (const t of ['10 mangal var', 'try 10 times', '3 man-ı', 'Saat 10-da'])
+      expect(checkReply(t, facts), t).toEqual(t === '3 man-ı' ? expect.objectContaining({ ok: false }) : { ok: true });
+  });
 });

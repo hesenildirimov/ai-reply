@@ -3,7 +3,9 @@ import { z } from 'zod';
 const optional = z.string().trim().min(1).optional().catch(undefined);
 
 const schema = z.object({
-  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  // No default: a missing NODE_ENV must fail loudly, not silently run production as development (no Secure cookies,
+  // no trusted proxy, debug logs). .env.example sets development, the Dockerfile production, vitest test.
+  NODE_ENV: z.enum(['development', 'production', 'test']),
   PORT: z.coerce.number().int().default(3000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug']).optional().catch(undefined),
   APP_URL: z.url(),

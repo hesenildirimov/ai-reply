@@ -200,9 +200,12 @@ describe.skipIf(!enabled)('multi-tenant isolation (every route)', () => {
     expect(changed).toEqual([]);
   });
 
-  it('B link redirect /r/:code is public by design (only resolves the stored URL)', async () => {
+  it('B link /r/:code is public by design: an interstitial names the target, no silent redirect (A-7)', async () => {
     const res = await app.inject({ url: '/r/bcode1' });
-    expect(res.statusCode).toBe(302);
-    expect(res.headers.location).toBe('https://b.example.com/landing');
+    expect(res.statusCode).toBe(200);
+    expect(res.headers.location).toBeUndefined();
+    expect(res.body).toContain('<b>b.example.com</b>');
+    expect(res.body).toContain('href="https://b.example.com/landing" rel="noopener noreferrer nofollow"');
+    expect(res.headers['x-robots-tag']).toContain('noindex');
   });
 });

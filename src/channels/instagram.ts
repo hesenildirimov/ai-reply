@@ -7,6 +7,17 @@ export const IG_TEXT_LIMIT = 1000;
 export const IG_SCOPES = ['instagram_business_basic', 'instagram_business_manage_messages', 'instagram_business_manage_comments'];
 const IG = () => config.IG_GRAPH_BASE;
 
+/** Only https URLs from the webhook are kept: they are rendered later in the operator's browser. */
+const httpsUrl = (v: unknown) => (typeof v === 'string' && URL.parse(v)?.protocol === 'https:' ? v : undefined);
+
+// Meta's media CDNs. Images/videos from anywhere else are shown as plain links: an <img> from a customer-chosen
+// host would hand the operator's IP and timing to a third party.
+const META_CDN = /(^|\.)(cdninstagram\.com|fbcdn\.net|fbsbx\.com)$/i;
+export const onMetaCdn = (u: string) => {
+  const x = URL.parse(u);
+  return !!x && x.protocol === 'https:' && META_CDN.test(x.hostname);
+};
+
 export const igRedirectUri = () => `${config.APP_URL}/oauth/instagram/callback`;
 
 export function instagramAuthorizeUrl(state: string): string {
@@ -117,7 +128,7 @@ export function parseInstagramWebhook(body: any): InboundEvent[] {
       }
       if (!sender || sender === igId) continue;
       const attachments: any[] = Array.isArray(m.attachments) ? m.attachments : [];
-      const media = attachments.map((a) => ({ type: String(a?.type ?? 'file'), url: typeof a?.payload?.url === 'string' ? a.payload.url : undefined }));
+      const media = attachments.map((a) => ({ type: String(a?.type ?? 'file'), url: httpsUrl(a?.payload?.url) }));
       const text = typeof m.text === 'string' && m.text.trim() && !m.is_unsupported ? m.text : null;
       const kind = m.quick_reply?.payload
         ? 'quick_reply'
@@ -128,7 +139,8 @@ export function parseInstagramWebhook(body: any): InboundEvent[] {
             : !text && media.length
               ? 'media'
               : 'text';
-      if (m.reply_to?.story?.url) media.push({ type: 'story', url: String(m.reply_to.story.url) });
+      const storyUrl = httpsUrl(m.reply_to?.story?.url);
+      if (storyUrl) media.push({ type: 'story', url: storyUrl });
       out.push({
         type: 'message',
         channelType: 'instagram',
@@ -177,7 +189,7 @@ export async function recentMedia(token: string) {
     id: m.id,
     caption: (m.caption ?? '').slice(0, 120),
     type: m.media_type ?? '',
-    thumb: m.thumbnail_url ?? m.media_url ?? '',
+    thumb: [m.thumbnail_url, m.media_url].find((u) => u && onMetaCdn(u)) ?? '',
     permalink: m.permalink ?? '',
     timestamp: m.timestamp ?? '',
   }));

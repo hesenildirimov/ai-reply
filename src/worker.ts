@@ -4,10 +4,11 @@ import { config } from './config.js';
 import { pool } from './db.js';
 import { drainOutbox } from './inbound.js';
 import { type Data, runJob } from './jobs.js';
-import { assertEncryptionKey } from './keycheck.js';
+import { assertEncryptionKey, assertLeastPrivilege } from './keycheck.js';
 import { closeQueues, INBOUND_QUEUE, QUEUE, queue, redis } from './queue.js';
 
 await assertEncryptionKey();
+await assertLeastPrivilege();
 
 // Two pools of slots: webhook intake (short DB work) never waits behind AI replies (seconds each).
 // Sizes come from scripts/loadtest.ts measurements; see README "Capacity".

@@ -1,6 +1,10 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { pool, tx } from './db.js';
+
+// Migrations need DDL rights; the web/worker DATABASE_URL is the least-privilege app_rw role (docs/DEPLOY.md).
+// config.ts reads process.env when it loads, so db.js is imported after the swap.
+if (process.env.MIGRATE_DATABASE_URL) process.env.DATABASE_URL = process.env.MIGRATE_DATABASE_URL;
+const { pool, tx } = await import('./db.js');
 
 const dir = path.resolve('migrations');
 

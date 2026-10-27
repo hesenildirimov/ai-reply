@@ -7,7 +7,7 @@ import staticFiles from '@fastify/static';
 import Fastify from 'fastify';
 import { config } from './config.js';
 import { pool } from './db.js';
-import { assertEncryptionKey } from './keycheck.js';
+import { assertEncryptionKey, assertLeastPrivilege } from './keycheck.js';
 import { closeQueues, redis } from './queue.js';
 import { registerTelegramWebhook } from './telegram.js';
 import { adminRoutes } from './web/admin.js';
@@ -62,14 +62,16 @@ export async function buildServer() {
     }
   });
 
+  const META_MEDIA = ['https://*.cdninstagram.com', 'https://*.fbcdn.net', 'https://*.fbsbx.com'];
   await app.register(helmet, {
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'", 'https://connect.facebook.net'],
         styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'], // FB SDK injects inline styles
-        imgSrc: ["'self'", 'data:', 'https:'],
-        mediaSrc: ["'self'", 'https:'], // Instagram CDN video/audio in the inbox
+        // Instagram CDN photos/video/audio in the inbox and post thumbnails; Facebook's own images in its login dialog.
+        imgSrc: ["'self'", 'data:', ...META_MEDIA, 'https://*.facebook.com'],
+        mediaSrc: ["'self'", ...META_MEDIA],
         connectSrc: ["'self'", 'https://graph.facebook.com', 'https://www.facebook.com', 'https://connect.facebook.net'],
         frameSrc: ['https://www.facebook.com', 'https://web.facebook.com', 'https://business.facebook.com'],
         formAction: ["'self'", 'https://t.me', 'https://wa.me', 'https://api.whatsapp.com'], // alert sign-up redirects after POST
@@ -141,6 +143,7 @@ export async function buildServer() {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   await assertEncryptionKey();
+  await assertLeastPrivilege();
   const app = await buildServer();
   const close = async () => {
     await app.close();

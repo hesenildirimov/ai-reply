@@ -240,7 +240,8 @@ Addım-addım: [`docs/DEPLOY.md`](docs/DEPLOY.md) (Caddy/HTTPS, 2FA, backup, `EN
 - [ ] `ENCRYPTION_KEY`-in ehtiyat nüsxəsi (itsə, token-lar oxunmaz və bütün kanallar yenidən bağlanmalıdır)
 - [ ] `npm run create-admin:prod -- email` ilə admin yaradılması
 - [ ] (İstəyə görə) SMTP, domen üçün SPF/DKIM
-- [ ] Postgres üçün avtomatik backup, Redis persistence (AOF)
+- [ ] Postgres üçün avtomatik **şifrəli** backup (`BACKUP_AGE_RECIPIENT`, gizli açar serverdən kənarda), Redis persistence (AOF)
+- [ ] Web/worker bazaya məhdud `app_rw` rolu ilə qoşulur, miqrasiya `MIGRATE_DATABASE_URL` ilə (Railway: `docs/DEPLOY.md` §10). Superuser ilə production işə düşmür
 - [ ] Hüquqi səhifələrdəki şirkət adı, ünvan və e-poçt (`LEGAL_*`). Mətnləri hüquqşünasa yoxlatdırın.
 - [ ] Monitorinq: `/readyz` (`degraded: true` = Redis əlçatmazdır), worker logları, uğursuz job-lar, `inbound_outbox`-da sətir sayı
 - [ ] Redis: AOF və `maxmemory-policy noeviction`; worker sayı yuxarıdakı "Tutum" bölməsinə görə
