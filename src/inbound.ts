@@ -68,4 +68,6 @@ export async function drainOutbox(limit = 500): Promise<number> {
 }
 
 /** Test hook: forget a tripped breaker. */
-export const resetIntake = () => void (redisDownUntil = 0);
+export function resetIntake() {
+  redisDownUntil = 0;
+}

@@ -64,7 +64,7 @@ export function queryTokens(query: string): string[][] {
 
 /** Free text stored encrypted without a flag column (AI summaries, webhook payloads): `v1:` ciphertext or legacy plaintext. */
 export const sealText = (s: string) => (s ? encrypt(s) : '');
-export const openText = (s: string | null | undefined) => (s && s.startsWith('v1:') ? decrypt(s) : (s ?? ''));
+export const openText = (s: string | null | undefined) => (s?.startsWith('v1:') ? decrypt(s) : (s ?? ''));
 
 /** Re-seals a row under the current key during rotation; null when it is already current. */
 export function resealIfStale(body: string): Sealed | null {

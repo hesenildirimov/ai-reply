@@ -5,7 +5,7 @@
     const svg = wrap.querySelector('svg');
     if (!tip || !svg) return;
     const show = (g) => {
-      wrap.querySelectorAll('.col.on').forEach((x) => x.classList.remove('on'));
+      wrap.querySelectorAll('.col.on').forEach((x) => { x.classList.remove('on'); });
       g.classList.add('on');
       tip.replaceChildren();
       const head = document.createElement('div');
@@ -30,7 +30,7 @@
       tip.style.left = `${left}px`;
       tip.style.top = '4px';
     };
-    const hide = () => { tip.hidden = true; wrap.querySelectorAll('.col.on').forEach((x) => x.classList.remove('on')); };
+    const hide = () => { tip.hidden = true; wrap.querySelectorAll('.col.on').forEach((x) => { x.classList.remove('on'); }); };
     svg.querySelectorAll('.col').forEach((g) => {
       g.addEventListener('pointerenter', () => show(g));
       g.addEventListener('focus', () => show(g));

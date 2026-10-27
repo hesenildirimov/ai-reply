@@ -52,7 +52,7 @@ const idParam = (req: FastifyRequest) => uuid.safeParse((req.params as any).id).
 const BAKU = { timeZone: 'Asia/Baku' } as const;
 const fmt = (d: Date | string | null) => (d ? new Date(d).toLocaleString('az-AZ', { ...BAKU, dateStyle: 'short', timeStyle: 'short' }) : '—');
 /** Short relative time for lists: "14:05" today, otherwise "24.10". */
-const when = (d: Date | string) => {
+const _when = (d: Date | string) => {
   const t = new Date(d);
   const sameDay = t.toLocaleDateString('az-AZ', BAKU) === new Date().toLocaleDateString('az-AZ', BAKU);
   return sameDay ? t.toLocaleTimeString('az-AZ', { ...BAKU, hour: '2-digit', minute: '2-digit' }) : t.toLocaleDateString('az-AZ', { ...BAKU, day: '2-digit', month: '2-digit' });
@@ -60,7 +60,7 @@ const when = (d: Date | string) => {
 const typeLabel = (t: string) => (t === 'whatsapp' ? 'WhatsApp' : 'Instagram');
 const day = (d: Date | null) => (d ? new Date(d).toISOString().slice(0, 10) : '');
 const initials = (name: string) => (name.replace(/^@/, '').trim().slice(0, 1) || '?').toUpperCase();
-const avatar = (name: string, type: string) => html`<span class="avatar ${type === 'whatsapp' ? 'wa' : 'ig'}">${initials(name)}<span class="badge">${channelIcon(type)}</span></span>`;
+const _avatar = (name: string, type: string) => html`<span class="avatar ${type === 'whatsapp' ? 'wa' : 'ig'}">${initials(name)}<span class="badge">${channelIcon(type)}</span></span>`;
 const chip = (cls: 'ok' | 'warn' | 'danger' | 'neutral', text: string) => html`<span class="chip ${cls}">${text}</span>`;
 const stat = (ic: IconName, label: string, value: unknown, meta: unknown = '', tone = '') =>
   html`<div class="stat ${tone}"><span class="stat-ic">${icon(ic)}</span><div><p class="stat-label">${label}</p><p class="stat-value">${value}</p>${meta ? html`<p class="stat-meta">${meta}</p>` : ''}</div></div>`;

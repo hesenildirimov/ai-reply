@@ -135,7 +135,7 @@ function mediaHtml(m: any, msgId: string): Safe {
   })}`;
 }
 
-async function threadHtml(req: FastifyRequest, c: any): Promise<Safe> {
+async function threadHtml(_req: FastifyRequest, c: any): Promise<Safe> {
   const [msgs, notes] = await Promise.all([
     q(`SELECT * FROM (SELECT id, sender, body, enc, created_at, status, kind, media, payload, error FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 150) t ORDER BY created_at`, [c.id]).then(openRows),
     q(`SELECT n.body, n.created_at, u.email FROM conversation_notes n LEFT JOIN users u ON u.id = n.user_id WHERE n.conversation_id = $1 ORDER BY n.created_at DESC LIMIT 50`, [c.id]),
@@ -186,7 +186,6 @@ async function paneHtml(req: FastifyRequest, c: any): Promise<Safe> {
   const name = c.contact_name || c.display_name || c.external_user_id;
   const ajax = (action: string, inner: Safe) => html`<form method="post" action="${action}" class="inline" data-ajax>${csrfField(req.csrfToken)}${inner}</form>`;
   const saved = await q(`SELECT title, body FROM saved_replies WHERE workspace_id = $1 ORDER BY title LIMIT 50`, [c.workspace_id]);
-  const botOn = !c.needs_human && !c.paused && !c.assignee_user_id;
   const banner = c.channel_status !== 'active'
     ? html`<div class="banner warn">${icon('alert')}<span>Kanal yenidən bağlanmalıdır. <a href="/app/channels">Kanallar</a></span></div>`
     : c.assignee_user_id

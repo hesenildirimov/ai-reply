@@ -62,7 +62,7 @@
   // Meta: a comment flow can send only one private reply and nothing that needs the person to answer first.
   const allowed = isComment ? ['message', 'tag', 'field', 'condition', 'handoff'] : Object.keys(STEP_TYPES);
 
-  function stepBody(s, render) {
+  function stepBody(s, _render) {
     switch (s.type) {
       case 'message': {
         const qrs = h('div', { class: 'qr-list' });

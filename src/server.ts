@@ -82,7 +82,7 @@ export async function buildServer() {
   // Readiness (Docker healthcheck / Railway / uptime monitor). Postgres is required. Redis is not: without it
   // webhooks still land in the Postgres outbox and staff can still read and answer, so the web stays in service
   // and only reports itself degraded. No other details leaked.
-  app.get('/readyz', { config: { rateLimit: false } }, async (req, reply) => {
+  app.get('/readyz', { config: { rateLimit: false } }, async (_req, reply) => {
     try {
       await pool.query('SELECT 1');
     } catch {
@@ -93,7 +93,7 @@ export async function buildServer() {
   });
 
   // Service worker must be served from the root to control /app pages.
-  app.get('/sw.js', { config: { rateLimit: false } }, (req, reply) => reply.header('Cache-Control', 'no-cache').sendFile('sw.js'));
+  app.get('/sw.js', { config: { rateLimit: false } }, (_req, reply) => reply.header('Cache-Control', 'no-cache').sendFile('sw.js'));
 
   registerAuth(app);
   publicRoutes(app);

@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, } from 'fastify';
 import { z } from 'zod';
 import { addTags, FIELD_KEY, mergeContacts } from '../contacts.js';
 import { csvLine, parseCsv } from '../csv.js';

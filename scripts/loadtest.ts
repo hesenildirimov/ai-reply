@@ -201,7 +201,7 @@ for (const [user, sends] of sentAt) {
   const got = replies.get(user) ?? [];
   answered += Math.min(got.length, sends.length);
   duplicates += Math.max(0, got.length - sends.length);
-  got.slice(0, sends.length).forEach((g, k) => replyLat.push(g - sends[k]! - DEBOUNCE));
+  for (const [k, g] of got.slice(0, sends.length).entries()) replyLat.push(g - sends[k]! - DEBOUNCE);
 }
 const [db] = await q(`SELECT
   (SELECT count(*)::int FROM messages WHERE direction = 'in') AS inbound,

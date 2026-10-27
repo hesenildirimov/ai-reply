@@ -7,7 +7,7 @@ self.addEventListener('push', (e) => {
 });
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
-  const url = e.notification.data && e.notification.data.url ? e.notification.data.url : '/app/inbox';
+  const url = e.notification.data?.url ? e.notification.data.url : '/app/inbox';
   e.waitUntil((async () => {
     const wins = await clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const w of wins) if ('focus' in w) { await w.navigate(url); return w.focus(); }

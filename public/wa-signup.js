@@ -38,7 +38,7 @@
   btn.addEventListener('click', () => {
     if (!window.FB) { status.textContent = 'Facebook SDK yüklənmədi. Reklam bloklayıcını söndürün.'; return; }
     FB.login((response) => {
-      if (response.authResponse && response.authResponse.code) {
+      if (response.authResponse?.code) {
         code = response.authResponse.code;
         finish();
       } else status.textContent = 'Bağlantı ləğv edildi.';

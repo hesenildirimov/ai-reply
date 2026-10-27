@@ -6,7 +6,7 @@ import { aiRetryable, generateReply } from './ai.js';
 import { aiConfig } from './aiconfig.js';
 import { buildContext } from './context.js';
 import { aiBudgetExceeded, automationBlocked, limitAlert, LIMIT_LABELS } from './plans.js';
-import { deliver, failedBody, handoff, inWindow, loadConv, WINDOW_MS } from './conversation.js';
+import { deliver, failedBody, handoff, inWindow, loadConv, } from './conversation.js';
 import { instagramUsername } from './channels/instagram.js';
 import type { ChannelRow, InboundEvent } from './channels/types.js';
 import { config } from './config.js';
@@ -189,7 +189,7 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
   if (ctx.unsummarized >= aiConfig.limits.summary_after_messages) {
     await queue.add('summarize', { kind: 'summarize', conversationId: c.id, workspaceId: c.workspace_id }, { jobId: `sum-${c.id}-${Math.floor(Date.now() / 600_000)}` });
   }
-  let result;
+  let result: Awaited<ReturnType<typeof generateReply>>;
   try {
     result = await generateReply(a, ctx.history, a.ai_disclosure && c.ai_sent === 0, { workspaceId: c.workspace_id, conversationId: c.id, purpose: 'reply', route: ctx.route }, ctx.extra);
   } catch (e) {

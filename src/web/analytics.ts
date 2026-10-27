@@ -19,7 +19,7 @@ const dur = (s: number | null) => (s === null ? '—' : s < 90 ? `${Math.round(s
 function dailyChart(rows: { day: string; incoming: number; outgoing: number }[]): Safe {
   const W = 760, H = 220, L = 36, B = 24, T = 8;
   const max = Math.max(4, ...rows.map((r) => Math.max(r.incoming, r.outgoing)));
-  const step = Math.pow(10, Math.floor(Math.log10(max))) * (max / Math.pow(10, Math.floor(Math.log10(max))) > 5 ? 2 : 1);
+  const step = 10 ** Math.floor(Math.log10(max)) * (max / 10 ** Math.floor(Math.log10(max)) > 5 ? 2 : 1);
   const top = Math.ceil(max / step) * step;
   const ticks = Array.from({ length: Math.floor(top / step) + 1 }, (_, i) => i * step);
   const y = (v: number) => T + (H - T - B) * (1 - v / top);

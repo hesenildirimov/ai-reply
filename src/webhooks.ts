@@ -116,7 +116,7 @@ export async function deliverWebhook(deliveryId: string, attempt: number, final:
     `SELECT d.*, w.url, w.secret_enc, w.active FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id WHERE d.id = $1`,
     [deliveryId],
   );
-  if (!d || d.status !== 'pending' || !d.active) return;
+  if (d?.status !== 'pending' || !d.active) return;
   const body = JSON.stringify({ id: d.id, ...openPayload(d.payload) });
   const ts = String(Math.floor(Date.now() / 1000));
   let code = 0;

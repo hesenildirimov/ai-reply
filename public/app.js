@@ -1,6 +1,6 @@
 // Small progressive enhancements (no inline JS: CSP blocks it).
 document.addEventListener('submit', (e) => {
-  const msg = e.target.dataset && e.target.dataset.confirm;
+  const msg = e.target.dataset?.confirm;
   if (msg && !window.confirm(msg)) e.preventDefault();
 });
 
@@ -31,4 +31,4 @@ if (box) {
   }, Number(box.dataset.autorefresh) * 1000);
 }
 // Selects marked data-autosubmit submit their form on change (filters, role pickers).
-document.addEventListener('change', (e) => { if (e.target.matches && e.target.matches('[data-autosubmit]')) e.target.form.requestSubmit(); });
+document.addEventListener('change', (e) => { if (e.target.matches?.('[data-autosubmit]')) e.target.form.requestSubmit(); });

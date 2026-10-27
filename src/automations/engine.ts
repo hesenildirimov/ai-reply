@@ -160,9 +160,9 @@ const configOf = async (automationId: string, version: number): Promise<Automati
 /** Resumes a run after a delay step. Stops if the automation was paused meanwhile or the 24h window closed. */
 export async function resumeRun(runId: string, step: number): Promise<void> {
   const run = await one<RunRow & { status: string }>(`SELECT * FROM automation_runs WHERE id = $1`, [runId]);
-  if (!run || !run.conversation_id || !run.contact_id) return;
+  if (!run?.conversation_id || !run.contact_id) return;
   const a = await one<AutomationRow>(`SELECT * FROM automations WHERE id = $1`, [run.automation_id]);
-  if (!a || a.status !== 'active') return void (await finish(run.id, run.sent_at ? 'sent' : 'skipped', 'automation_paused'));
+  if (a?.status !== 'active') return void (await finish(run.id, run.sent_at ? 'sent' : 'skipped', 'automation_paused'));
   const conv = await loadConv(run.conversation_id);
   const contact = await one<ContactRow>(`SELECT * FROM contacts WHERE id = $1`, [run.contact_id]);
   if (!conv || !contact || contact.opted_out || contact.blocked || conv.needs_human || conv.ai_paused || conv.assignee_user_id) {

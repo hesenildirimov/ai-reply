@@ -104,7 +104,7 @@ export function integrationRoutes(app: FastifyInstance) {
 
     r.post('/app/integrations/:id/test', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
       const h = await owned(req);
-      if (!h || !h.active) return reply.redirect('/app/integrations?m=invalid');
+      if (!h?.active) return reply.redirect('/app/integrations?m=invalid');
       const payload = { event: 'ping', created_at: new Date().toISOString(), data: { message: 'AI Reply test hadisəsi' } };
       const d = await one(`INSERT INTO webhook_deliveries (webhook_id, workspace_id, event, payload) VALUES ($1, $2, 'ping', $3) RETURNING id`, [h.id, h.workspace_id, sealPayload(payload)]);
       await queue.add('webhook', { kind: 'webhook', deliveryId: d!.id }, { jobId: `wh-${d!.id}`, attempts: 1 });

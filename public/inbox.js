@@ -50,18 +50,22 @@
 
   function bindPane() {
     const thread = document.getElementById('thread'); if (thread) thread.scrollTop = thread.scrollHeight;
-    document.querySelectorAll('.composer-tabs [data-tab]').forEach((b) => b.addEventListener('click', () => {
-      document.querySelectorAll('.composer-tabs [data-tab]').forEach((x) => x.classList.toggle('on', x === b));
-      document.querySelectorAll('[data-tab-panel]').forEach((p) => (p.hidden = p.dataset.tabPanel !== b.dataset.tab));
-    }));
+    for (const b of document.querySelectorAll('.composer-tabs [data-tab]')) {
+      b.addEventListener('click', () => {
+        for (const x of document.querySelectorAll('.composer-tabs [data-tab]')) x.classList.toggle('on', x === b);
+        for (const p of document.querySelectorAll('[data-tab-panel]')) p.hidden = p.dataset.tabPanel !== b.dataset.tab;
+      });
+    }
     document.querySelector('[data-saved]')?.addEventListener('change', (e) => {
       const t = document.querySelector('.composer textarea[name=text]');
       if (t && e.target.value) { t.value = (t.value ? `${t.value}\n` : '') + e.target.value; t.focus(); }
       e.target.value = '';
     });
-    document.querySelectorAll('.composer textarea').forEach((t) => t.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); t.form.requestSubmit(); }
-    }));
+    for (const t of document.querySelectorAll('.composer textarea')) {
+      t.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); t.form.requestSubmit(); }
+      });
+    }
     document.querySelector('[data-toggle-profile]')?.addEventListener('click', () => root.classList.toggle('show-profile'));
   }
   bindPane();
