@@ -39,10 +39,24 @@ export interface Sealed {
   search_tokens: string[];
 }
 
+/** Blind-index tokens of a text under the current key. */
+export const searchTokensOf = (text: string) => indexTerms(text).map((t) => mac(searchKeys()[0]!, t));
+
 /** Encrypted body + blind-index tokens for a new message row. */
 export function sealBody(text: string): Sealed {
-  const key = searchKeys()[0]!;
-  return { body: encrypt(text), enc: true, search_tokens: indexTerms(text).map((t) => mac(key, t)) };
+  return { body: encrypt(text), enc: true, search_tokens: searchTokensOf(text) };
+}
+
+/** Body of a media-only message (no caption); replaced by the media note (src/media.ts) once there is one. */
+export const MEDIA_PLACEHOLDER = '[Customer sent an attachment (photo/voice/video/sticker) that cannot be viewed]';
+
+/** A message as the AI and staff read it: the media note replaces the placeholder, or follows the caption. */
+export const withNote = (body: string, note: string | null | undefined) => (!note ? body : body === MEDIA_PLACEHOLDER ? note : `${body}\n${note}`);
+
+/** Opens body and media note of rows (`enc`, `media_text`) into `body`. */
+export function openTurns<T extends { body: string; enc?: boolean | null; media_text?: string | null }>(rows: T[]): T[] {
+  for (const r of rows) r.body = withNote(openBody(r), openText(r.media_text));
+  return rows;
 }
 
 /** Plaintext of a stored message (legacy rows are plaintext). */

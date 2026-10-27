@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 
 /** Programmable stand-in for Meta Graph + Anthropic APIs (both point at FAKE_PORT in vitest.config.ts). */
-type Reply = { status?: number; json?: unknown; hang?: boolean; delayMs?: number; drop?: boolean };
+type Reply = { status?: number; json?: unknown; hang?: boolean; delayMs?: number; drop?: boolean; file?: { body: Buffer; type: string } };
 type Handler = (body: any, path: string) => Reply | undefined;
 
 export const fake = {
@@ -56,6 +56,10 @@ export async function startFake(port = Number(process.env.FAKE_PORT ?? 4011)) {
       if (r.hang) return; // simulate a timeout
       if (r.drop) return void req.socket.destroy(); // connection lost after the request left: outcome unknown
       const send = () => {
+        if (r.file) {
+          res.writeHead(r.status ?? 200, { 'content-type': r.file.type, 'content-length': r.file.body.length });
+          return void res.end(r.file.body);
+        }
         res.writeHead(r.status ?? 200, { 'content-type': 'application/json' });
         res.end(JSON.stringify(r.json ?? {}));
       };

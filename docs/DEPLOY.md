@@ -78,6 +78,10 @@ Bir neçə addım geri getmək üçün down fayllarını tərs ardıcıllıqla i
 | `AI_MODELS_FILE` | `config/ai-models.json` | Model qiymətləri, routing, token büdcələri |
 | `ENCRYPTION_KEY_PREVIOUS` | — | Yalnız açar rotasiyası zamanı: köhnə açar. Worker məlumatları (mesajlar da daxil, saatda bir hissə) yeni açarla yenidən şifrələyir. `app_meta`-da `encryption_key_fp` yeni açara keçəndə (və `msg_rotation_cursor` silinəndə) rotasiya bitib. Bundan sonra silin |
 | `WEBHOOK_ALLOW_PRIVATE` | — | **Yalnız lokal test**: lokal IP-yə webhook. Production-da nəzərə alınmır |
+| `HUMAN_PAUSE_MINUTES` | `60` | Əməkdaş yazandan sonra AI neçə dəqiqə susur |
+| `AI_CONV_HOURLY_CAP` | `30` | Bir söhbətdə saatda maksimum AI cavabı (sonra operatora keçir) |
+| `MEDIA_ANALYSIS` | `on` | Şəkil, video və səsli mesajlara baxılır (ffmpeg lazımdır, Docker image-də var) |
+| `STT_API_URL`, `STT_API_KEY`, `STT_MODEL` | — / `whisper-1` | Səsli mesajlar üçün nitqi mətnə çevirmə (OpenAI-uyğun `/audio/transcriptions`). Boşdursa, AI müştəridən yazmağı xahiş edir |
 | `WORKER_CONCURRENCY` | `100` | Bir worker prosesində eyni anda AI cavabı/göndəriş sayı (ölçmə: README → "Tutum") |
 | `INBOUND_CONCURRENCY` | `50` | Bir worker prosesində eyni anda webhook qəbulu işi (qısa DB işləri) |
 | `DB_POOL_MAX` | `20` | Proses başına Postgres bağlantısı. Cəmi (web + worker-lər) Postgres `max_connections`-dan az olmalıdır |

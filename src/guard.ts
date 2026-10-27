@@ -4,7 +4,8 @@
  * - an amount of money that appears nowhere in the business's own information;
  * - a link to a domain the business never mentioned (phishing via prompt injection).
  */
-const MONEY = /(?:(\d+(?:[.,]\d+)?)\s*(?:azn|₼|manat|man\b)|(?:₼|azn)\s*(\d+(?:[.,]\d+)?))/giu;
+// Latin and Cyrillic currency words: replies can be Russian ("50 манат", "50 ман.", "50 азн").
+const MONEY = /(?:(\d+(?:[.,]\d+)?)\s*(?:azn|₼|manat|man(?!\p{L})|азн|манат\p{L}*|ман(?!\p{L}))|(?:₼|azn|азн)\s*(\d+(?:[.,]\d+)?))/giu;
 const URLISH =
   /\b(?:https?:\/\/|www\.)([^\s/?#<>"']+)|\b([a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:az|com|net|org|ru|tr|me|io|link|shop|store|site|online|xyz|top|info|biz|ly|gl|co))\b/giu;
 

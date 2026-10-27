@@ -144,9 +144,13 @@ export async function sendWhatsAppTemplate(token: string, phoneNumberId: string,
 }
 
 /** Downloads WhatsApp media (URL from Graph needs the same token; it expires after minutes). */
-export async function fetchWhatsAppMedia(token: string, mediaId: string): Promise<{ body: ArrayBuffer; mime: string }> {
-  const meta = await graph<{ url: string; mime_type: string }>(G(), fbPath(mediaId), { token, appSecretProof: true });
+export async function fetchWhatsAppMedia(token: string, mediaId: string, maxBytes = Infinity): Promise<{ body: ArrayBuffer; mime: string }> {
+  const meta = await graph<{ url: string; mime_type: string; file_size?: number }>(G(), fbPath(mediaId), { token, appSecretProof: true });
+  if ((meta.file_size ?? 0) > maxBytes) throw new Error('media too large');
   const res = await fetch(meta.url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) });
   if (!res.ok) throw new Error(`media download ${res.status}`);
-  return { body: await res.arrayBuffer(), mime: meta.mime_type || 'application/octet-stream' };
+  if (Number(res.headers.get('content-length') ?? 0) > maxBytes) throw new Error('media too large');
+  const body = await res.arrayBuffer();
+  if (body.byteLength > maxBytes) throw new Error('media too large');
+  return { body, mime: meta.mime_type || 'application/octet-stream' };
 }

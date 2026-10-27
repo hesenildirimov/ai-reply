@@ -6,28 +6,28 @@ import { runMessageAutomations } from './automations/engine.js';
 import { reserveReply } from './billing.js';
 import { SendError } from './channels/index.js';
 import { instagramUsername } from './channels/instagram.js';
-import type { ChannelRow, InboundEvent } from './channels/types.js';
+import type { ChannelRow, InboundEvent, Media } from './channels/types.js';
 import { config } from './config.js';
 import { type ContactRow, upsertContact } from './contacts.js';
 import { buildContext } from './context.js';
-import { deliver, failedBody, handoff, inWindow, loadConv } from './conversation.js';
+import { type ConvCtx, deliver, failedBody, handoff, inWindow, loadConv } from './conversation.js';
 import { decrypt, encrypt, sha256 } from './crypto.js';
 import { one, q } from './db.js';
 import { audit, recordEvent } from './events.js';
 import { checkReply } from './guard.js';
 import { withLock } from './locks.js';
-import { openBody, openRows, sealBody } from './messages.js';
+import { mediaNote } from './media.js';
+import { MEDIA_PLACEHOLDER, openBody, openRows, sealBody, sealText, searchTokensOf } from './messages.js';
 import { notifyWaiting } from './notify.js';
 import { aiBudgetExceeded, automationBlocked, LIMIT_LABELS, limitAlert } from './plans.js';
 import { inboundQueue, queue, redis } from './queue.js';
 import { publish } from './realtime.js';
 import { emit } from './webhooks.js';
 
-const HUMAN_PAUSE = "interval '12 hours'";
-const HUMAN_KEYWORDS = /(?<!\p{L})(operator|human|agent|insan|canl[ıi]|menecer|оператор|менеджер|человек)(?!\p{L})/iu;
+// Also Russian in Latin letters ("chelovek", "menedzher"), see language.ts.
+const HUMAN_KEYWORDS = /(?<!\p{L})(operator|human|agent|insan|canl[ıi]|menecer|оператор|менеджер|человек|chelovek|menedzher|menedjer|menejer)(?!\p{L})/iu;
 const STOP_RE = /^(stop|unsubscribe|dayan|dayandir|dayandır|abunelikden cix|abunəlikdən çıx|стоп)$/i;
 const START_RE = /^(start|basla|başla|старт)$/i;
-const MEDIA_PLACEHOLDER = '[Customer sent an attachment (photo/voice/video/sticker) that cannot be viewed]';
 
 export async function ingest(ev: InboundEvent): Promise<void> {
   if (ev.type === 'comment') {
@@ -102,11 +102,8 @@ export async function ingest(ev: InboundEvent): Promise<void> {
   await queue.add('reply', { kind: 'reply', conversationId: conv!.id, messageId: msg.id }, { delay: config.AI_DEBOUNCE_MS, jobId: `reply-${msg.id}` });
 }
 
-/** Max AI replies per conversation per hour: stops one spammer from burning the business's monthly quota. */
-const CONV_HOURLY_CAP = 15;
-
 /** Lock TTL must exceed the slowest path: Claude (30 s timeout × 2 tries) + Meta send + DB. */
-const CONV_LOCK_MS = 120_000;
+const CONV_LOCK_MS = 300_000; // also covers media analysis (download, ffmpeg, speech-to-text, one vision call)
 
 /**
  * Handles the newest inbound message of a conversation. Serialized per conversation with a Redis lock
@@ -116,6 +113,31 @@ const CONV_LOCK_MS = 120_000;
 export async function processReply(conversationId: string, messageId: string, finalAttempt = true): Promise<'done' | 'busy' | 'throttled'> {
   const r = await withLock(`conv:${conversationId}`, CONV_LOCK_MS, () => replyLocked(conversationId, messageId, finalAttempt));
   return r === 'busy' || r === 'throttled' ? r : 'done';
+}
+
+/** Writes the media note (src/media.ts) of each unanswered customer message with attachments. */
+async function annotateMedia(c: ConvCtx, finalAttempt: boolean): Promise<void> {
+  const pending = await q<{ id: string; media: Media[] }>(
+    `SELECT id, media FROM messages WHERE conversation_id = $1 AND direction = 'in' AND media IS NOT NULL AND media_text IS NULL
+       AND created_at > coalesce((SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'out'), '-infinity')
+     ORDER BY created_at LIMIT 5`,
+    [c.id],
+  );
+  for (const m of pending) {
+    let note: string;
+    try {
+      note = await mediaNote(c.channel, m.media, { workspaceId: c.workspace_id, conversationId: c.id });
+    } catch (e) {
+      if (aiRetryable(e) && !finalAttempt) throw e; // Claude busy: the job retries
+      note = '[Fayl: baxmaq mümkün olmadı]';
+    }
+    // Transcripts and descriptions become searchable in the inbox too.
+    await q(`UPDATE messages SET media_text = $2, search_tokens = search_tokens || $3::text[] WHERE id = $1 AND media_text IS NULL`, [
+      m.id,
+      sealText(note),
+      searchTokensOf(note),
+    ]);
+  }
 }
 
 /** Everything the business itself has stated (general info + active knowledge items): the reference for checkReply. */
@@ -181,7 +203,7 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
     `SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND sender = 'ai' AND created_at > now() - interval '1 hour'`,
     [c.id],
   );
-  if (hourly!.n >= CONV_HOURLY_CAP) return handoff(c, '', 'çox sayda mesaj (spam ola bilər)', messageId);
+  if (hourly!.n >= config.AI_CONV_HOURLY_CAP) return handoff(c, '', 'çox sayda mesaj (spam ola bilər)', messageId);
 
   // Cost guardrails: workspace AI budget (plan) and a per-minute burst limit.
   const spent = await aiBudgetExceeded(c.workspace_id);
@@ -203,6 +225,8 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
   if (quota === 'limit') return handoff(c, a.handoff_message, 'aylıq AI limiti bitib', messageId);
 
   // Token-efficient context: budgeted recent turns + rolling summary + only the relevant knowledge items.
+  // Photos, videos and voice messages since our last answer: looked at / transcribed once, before the AI answers.
+  await annotateMedia(c, finalAttempt);
   const ctx = await buildContext(c.id, c.workspace_id);
   if (ctx.unsummarized >= aiConfig.limits.summary_after_messages) {
     await queue.add(
@@ -303,7 +327,10 @@ export async function processEcho(channelId: string, userId: string, mid: string
     [conv.workspace_id, conv.id, mid, sealed.body, sealed.search_tokens],
   );
   if (inserted) {
-    await q(`UPDATE conversations SET ai_paused_until = now() + ${HUMAN_PAUSE}, last_message_at = now() WHERE id = $1`, [conv.id]);
+    await q(`UPDATE conversations SET ai_paused_until = now() + make_interval(mins => $2), last_message_at = now() WHERE id = $1`, [
+      conv.id,
+      config.HUMAN_PAUSE_MINUTES,
+    ]);
     await publish(conv.workspace_id, { type: 'message', conversationId: conv.id });
   }
   return 'done';
@@ -318,6 +345,6 @@ export async function sendManualReply(workspaceId: string, conversationId: strin
   if (!inWindow(c)) return 'window_closed';
   // nonce comes from the form: a double-click or browser resubmit can't send the same reply twice.
   await deliver(c, text, 'human', `human:${nonce}`);
-  await q(`UPDATE conversations SET ai_paused_until = now() + ${HUMAN_PAUSE} WHERE id = $1`, [c.id]);
+  await q(`UPDATE conversations SET ai_paused_until = now() + make_interval(mins => $2) WHERE id = $1`, [c.id, config.HUMAN_PAUSE_MINUTES]);
   return 'sent';
 }

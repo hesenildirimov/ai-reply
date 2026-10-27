@@ -8,7 +8,7 @@
   "routing": {
     "_comment": "fast = short, simple messages and summaries; smart = everything else. Override with AI_MODEL_FAST / AI_MODEL.",
     "fast": "claude-haiku-5-5",
-    "smart": "claude-opus-5-5"
+    "smart": "claude-sonnet-5-5"
   },
   "limits": {
     "max_output_tokens": 2000,

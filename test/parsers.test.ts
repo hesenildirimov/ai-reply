@@ -122,3 +122,28 @@ describe('toMessages', () => {
     ]);
   });
 });
+
+describe('Russian in Latin letters', () => {
+  it('detects translit Russian, not Azerbaijani, English or Cyrillic', async () => {
+    const { isLatinRussian } = await import('../src/language.js');
+    for (const t of ['privet', 'Skolko stoit eta sumka?', 'u vas est dostavka v Sumgait?', 'Mojno zakazat?', 'Salam skolko stoit', 'spasibo bolshoe'])
+      expect(isLatinRussian(t), t).toBe(true);
+    for (const t of [
+      'Salam, qiymeti nece?',
+      'Salam',
+      'bu çanta var?',
+      'Cənab, çatdırılma var?',
+      'ok',
+      'Привет, сколько стоит?',
+      'Hello how much',
+      'Zakaz vermək istəyirəm',
+    ])
+      expect(isLatinRussian(t), t).toBe(false);
+  });
+  it('the price guard also reads Cyrillic currency words', async () => {
+    const { checkReply } = await import('../src/guard.js');
+    expect(checkReply('Цена 50 манат', 'Don: 45 AZN')).toMatchObject({ ok: false, reason: 'unverified_price' });
+    expect(checkReply('Стоит 45 манатов', 'Don: 45 AZN')).toEqual({ ok: true });
+    expect(checkReply('30 ман.', 'Don: 45 AZN')).toMatchObject({ ok: false });
+  });
+});

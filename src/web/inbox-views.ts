@@ -57,6 +57,7 @@ export function threadHtml(items: ThreadItem[]): Safe {
       ? html`<div class="note"><small>${icon('book', 'i xs')} Daxili qeyd · ${it.n.email?.split('@')[0] ?? ''} · ${fmt(it.n.created_at)}</small>${it.n.body}</div>`
       : html`<div class="msg ${it.m.sender}">${KIND_LABEL[it.m.kind] ? html`<small class="kind">${KIND_LABEL[it.m.kind]}</small>` : ''}
           ${it.m.media ? mediaHtml(it.m.media, it.m.id) : ''}${it.m.body && !it.m.body.startsWith('[') ? html`<div class="bubble">${it.m.body}</div>` : it.m.media ? '' : html`<div class="bubble muted">${it.m.body}</div>`}
+          ${it.m.note ? html`<small class="media-note" title="AI-nin gördüyü / eşitdiyi">${icon('sparkle', 'i xs')} ${it.m.note.replace(/^\[|\]$/g, '')}</small>` : ''}
           <small>${it.m.sender !== 'customer' ? html`${it.m.sender === 'human' ? '' : icon('bot', 'i xs')} ${who(it.m.sender)} · ` : ''}${fmt(it.m.created_at)} ${STATUS_ICON[it.m.status] ?? ''}</small></div>`,
   )}`;
 }

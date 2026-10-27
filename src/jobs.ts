@@ -12,7 +12,7 @@ import { one, q } from './db.js';
 import { markReauth, recordEvent } from './events.js';
 import { finishKeyRotation } from './keycheck.js';
 import { withLock } from './locks.js';
-import { resealIfStale, sealBody, sealText } from './messages.js';
+import { openText, resealIfStale, sealBody, sealText, searchTokensOf } from './messages.js';
 import { linkWhatsAppAlerts, notifyChannelProblem } from './notify.js';
 import { ingest, lookupInstagramName, processEcho, processReply } from './pipeline.js';
 import { type JobData, queue } from './queue.js';
@@ -54,12 +54,13 @@ const FREE_TEXT = [
   ['conversations', 'summary'],
   ['conversation_notes', 'body'],
 ] as const;
-type Resealed = { id: string; body: string; tokens: string[] };
-/** One statement for a whole batch of message rows. */
+type Resealed = { id: string; body: string; tokens: string[]; note?: string | null };
+/** One statement for a whole batch of message rows (`note` given = media note re-encrypted too). */
 const writeSealed = (rows: Resealed[]) =>
   q(
-    `UPDATE messages m SET body = x.body, enc = true, search_tokens = ARRAY(SELECT jsonb_array_elements_text(x.tokens))
-     FROM jsonb_to_recordset($1::jsonb) AS x(id uuid, body text, tokens jsonb) WHERE m.id = x.id`,
+    `UPDATE messages m SET body = x.body, enc = true, search_tokens = ARRAY(SELECT jsonb_array_elements_text(x.tokens)),
+       media_text = CASE WHEN x.note IS NOT NULL THEN x.note ELSE m.media_text END
+     FROM jsonb_to_recordset($1::jsonb) AS x(id uuid, body text, tokens jsonb, note text) WHERE m.id = x.id`,
     [JSON.stringify(rows)],
   );
 
@@ -94,10 +95,16 @@ async function rotateMessages(budgetMs = 120_000): Promise<boolean> {
   const until = Date.now() + budgetMs;
   let cursor = (await one<{ value: string }>(`SELECT value FROM app_meta WHERE key = 'msg_rotation_cursor'`))?.value ?? '00000000-0000-0000-0000-000000000000';
   while (Date.now() < until) {
-    const rows = await q<{ id: string; body: string }>(`SELECT id, body FROM messages WHERE enc AND id > $1 ORDER BY id LIMIT ${BATCH}`, [cursor]);
+    const rows = await q<{ id: string; body: string; media_text: string | null }>(
+      `SELECT id, body, media_text FROM messages WHERE enc AND id > $1 ORDER BY id LIMIT ${BATCH}`,
+      [cursor],
+    );
     const stale = rows.flatMap((r) => {
       const s = resealIfStale(r.body);
-      return s ? [{ id: r.id, body: s.body, tokens: s.search_tokens }] : [];
+      if (!s) return [];
+      // Tokens are re-made from both texts, so the media note stays searchable under the new key.
+      const note = r.media_text ? openText(r.media_text) : '';
+      return [{ id: r.id, body: s.body, tokens: [...s.search_tokens, ...searchTokensOf(note)], note: note ? sealText(note) : null }];
     });
     if (stale.length) await writeSealed(stale);
     if (rows.length < BATCH) {

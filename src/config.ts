@@ -19,6 +19,18 @@ const schema = z.object({
   AI_ROUTING: z.enum(['on', 'off']).default('on'),
   // Max AI calls per workspace per minute (protects against bursts / runaway cost)
   AI_WORKSPACE_RPM: z.coerce.number().int().min(1).default(30),
+  // Max AI replies per conversation per hour (stops one spammer from burning the monthly quota)
+  AI_CONV_HOURLY_CAP: z.coerce.number().int().min(1).default(30),
+  // Minutes the AI stays silent in a conversation after staff wrote in it (Instagram app or the inbox)
+  HUMAN_PAUSE_MINUTES: z.coerce.number().int().min(1).default(60),
+
+  // Photos / videos / voice messages: the AI looks at them before answering (off = the AI is told it can't open media)
+  MEDIA_ANALYSIS: z.enum(['on', 'off']).default('on'),
+  // Speech-to-text for voice messages and video sound (Claude does not take audio). Any OpenAI-compatible
+  // /audio/transcriptions endpoint, e.g. https://api.openai.com/v1/audio/transcriptions (whisper-1 / gpt-4o-transcribe).
+  STT_API_URL: z.url().optional().catch(undefined),
+  STT_API_KEY: optional,
+  STT_MODEL: z.string().default('whisper-1'),
 
   // Meta app (WhatsApp Cloud API + Embedded Signup)
   META_APP_ID: optional,

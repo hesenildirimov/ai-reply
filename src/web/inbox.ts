@@ -12,12 +12,12 @@ import type { Safe } from './html.js';
 import { html } from './html.js';
 import { inboxBody, listHtml, paneHtml, profileHtml, savedRepliesHtml, threadHtml } from './inbox-views.js';
 import { MESSAGES, view } from './public.js';
-import { idParam } from './ui.js';
+import { idParam, pauseLabel } from './ui.js';
 
 /** Inbox routes: tenant checks, permissions and validation here; SQL in data/inbox.ts, HTML in inbox-views.ts. */
 
 Object.assign(MESSAGES, {
-  sent: { type: 'ok', text: 'Göndərildi. AI bu söhbətdə 12 saat dayandırıldı.' },
+  sent: { type: 'ok', text: `Göndərildi. AI bu söhbətdə ${pauseLabel()} dayandırıldı.` },
   window_closed: { type: 'error', text: 'Müştərinin son mesajından 24 saat keçib. Meta qaydalarına görə indi cavab göndərmək olmur.' },
   send_failed: { type: 'error', text: 'Göndərmək alınmadı. Bir az sonra yenidən cəhd edin.' },
 });

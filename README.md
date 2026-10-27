@@ -112,11 +112,31 @@ Meta webhook-larını lokalda yoxlamaq üçün HTTPS tunel lazımdır (məsələ
 
 - **24 saat qaydası**: AI və əl ilə cavab yalnız müştərinin son mesajından 24 saat ərzində göndərilir (`pipeline.ts`).
 - **Ümumi təyinatlı AI chatbot qadağası** (WhatsApp Business Solution Terms, 2026): bot yalnız biznesin öz mövzularında cavab verir, kənar suallardan imtina edir (`ai.ts` → RULES). Məhsulu "WhatsApp-da ChatGPT" kimi reklam etməyin. Bu, biznesin müştəri xidməti köməkçisidir.
-- **İnsana ötürmə**: açar sözlər ("operator", "insan", "оператор"...), AI-nin `request_human` aləti, limitin bitməsi. Əməkdaş Instagram tətbiqindən yazdıqda AI həmin söhbətdə 12 saat dayanır. Sistemin öz mesajının echo-su
+- **İnsana ötürmə**: açar sözlər ("operator", "insan", "оператор"...), AI-nin `request_human` aləti, limitin bitməsi. Əməkdaş Instagram tətbiqindən və ya paneldən yazdıqda AI həmin söhbətdə 1 saat dayanır (`HUMAN_PAUSE_MINUTES`). Bir söhbətdə saatda ən çox 30 AI cavabı (`AI_CONV_HOURLY_CAP`), sonra operatora keçir. Sistemin öz mesajının echo-su
   əməkdaş mesajı sayılmır. Bunu vaxt fərqi yox, məlumat təyin edir: Meta ID-si bizim sətirdə varsa və ya göndərilməkdə
   olan sətrimizin mətni eynidirsə, echo bizimdir. Göndərişimiz hələ cavab gözləyirsə, echo onun nəticəsini gözləyir.
 - **AI olduğunu bildirmək**: default olaraq söndürülüb. AI özünü təqdim etmir, amma ciddi soruşulanda yalan danışmır (bax `SECURITY.md` §11).
 - **Minimal icazələr**, **məlumatların silinməsi** (callback-lər, kanalı ayırmaq, hesabı silmək, `PARTNER_REMOVED` webhook-u), **saxlama müddəti** (`RETENTION_DAYS`, standart 90 gün), **məlumatların yüklənməsi** (JSON export).
+
+## Şəkil, video və səsli mesajlar
+
+AI cavab yazmazdan əvvəl müştərinin göndərdiyinə baxır (`src/media.ts`):
+
+| Müştəri göndərir | Nə olur | AI-nin gördüyü qeyd (nümunə) |
+|---|---|---|
+| Şəkil | Kiçildilir (≤1568 px), Claude (Sonnet 5.5) nə göstərdiyini yazır | `[Şəkil: qara dəri çanta, qızılı zəncir, üzərində "ZARA" yazısı]` |
+| Video | 4 kadr çıxarılır + səsi mətnə çevrilir, Claude birlikdə təsvir edir | `[Video: ... Səs: "bu rəngdən var?"]` |
+| Səsli mesaj | Nitq mətnə çevrilir (speech-to-text) | `[Səsli mesaj: "Salam, Gəncəyə çatdırılma var?"]` |
+
+Claude səsi və videonu birbaşa qəbul etmir. Video `ffmpeg` ilə kadrlara bölünür (Docker image-də quraşdırılıb). Səs üçün ayrıca
+speech-to-text xidməti lazımdır: `.env`-də `STT_API_URL` + `STT_API_KEY` (istənilən OpenAI-uyğun `/audio/transcriptions`, məs. Whisper).
+Qurulmayıbsa, AI müştəridən sualını yazmağı xahiş edir. Qeyd mesajla birlikdə şifrəli saxlanır, paneldə mesajın altında görünür və
+axtarışda tapılır. Şəkil təsviri AI büdcəsinə daxildir (`ai_usage.purpose = 'media'`).
+
+## Dil
+
+AI müştərinin dilində yazır. Rus dilində latın hərfləri ilə yazanlar ("privet, skolko stoit?") ayrıca tanınır (`src/language.ts`) və
+onlara rusca (kiril hərfləri ilə) cavab verilir, biznesin üslubu (ton, emoji, uzunluq) saxlanılır.
 
 ## Təbii danışıq və üslub öyrənmə
 
@@ -227,7 +247,7 @@ Addım-addım: [`docs/DEPLOY.md`](docs/DEPLOY.md) (Caddy/HTTPS, 2FA, backup, `EN
 
 ## AI xərci
 
-Modellər, qiymətlər və token büdcələri `config/ai-models.json`-dadır. Sadə, qısa suallar sürətli modelə (`claude-haiku-5-5`), mürəkkəb və həssas suallar isə əsas modelə (`claude-opus-5-5`) gedir (`AI_ROUTING`).
+Modellər, qiymətlər və token büdcələri `config/ai-models.json`-dadır. Sadə, qısa suallar sürətli modelə (`claude-haiku-5-5`), mürəkkəb və həssas suallar, həmçinin şəkil və videolar isə əsas modelə (`claude-sonnet-5-5`) gedir (`AI_ROUTING`).
 - Kiçik bilik bazası (≈4000 token) bütövlükdə cache-lənən hissəyə qoyulur. Böyük baza üçün isə hər mesaja yalnız uyğun maddələr seçilir.
 - Köhnə yazışma xülasə ilə əvəz olunur.
 - Hər çağırış `ai_usage` jurnalına yazılır: tokenlər, cache, təxmini xərc və gecikmə. Analitika səhifəsində görünür.

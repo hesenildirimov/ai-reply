@@ -2,7 +2,8 @@ import type { ReplyContext, Turn } from './ai.js';
 import { aiConfig, estimateTokens } from './aiconfig.js';
 import { config } from './config.js';
 import { one, q } from './db.js';
-import { openRows, openText, sealText } from './messages.js';
+import { isLatinRussian } from './language.js';
+import { openText, openTurns, sealText } from './messages.js';
 import { normalize } from './text.js';
 
 export interface BuiltContext {
@@ -96,9 +97,9 @@ export function chooseRoute(latest: string, turns: number, knowledgeChars: numbe
  */
 export async function buildContext(conversationId: string, workspaceId: string): Promise<BuiltContext> {
   const conv = await loadSummary(conversationId);
-  const rows = openRows(
-    await q<{ sender: string; body: string; enc: boolean; created_at: Date }>(
-      `SELECT sender, body, enc, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') AND created_at > coalesce($2, '-infinity'::timestamptz)
+  const rows = openTurns(
+    await q<{ sender: string; body: string; enc: boolean; media_text: string | null; created_at: Date }>(
+      `SELECT sender, body, enc, media_text, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') AND created_at > coalesce($2, '-infinity'::timestamptz)
      ORDER BY created_at DESC LIMIT 60`,
       [conversationId, conv?.summary_upto ?? null],
     ),
@@ -125,7 +126,7 @@ export async function buildContext(conversationId: string, workspaceId: string):
   const lastText = recent.at(-1)?.body ?? '';
   return {
     history,
-    extra: { pinnedKnowledge: pinned || undefined, knowledge, summary: conv?.summary || undefined },
+    extra: { pinnedKnowledge: pinned || undefined, knowledge, summary: conv?.summary || undefined, latinRussian: isLatinRussian(latestInbound) },
     route: chooseRoute(lastText, history.length, knowledge.length),
     unsummarized: rows.length - recent.length,
     estInputTokens: used + estimateTokens(pinned) + estimateTokens(knowledge) + estimateTokens(conv?.summary ?? ''),
@@ -142,9 +143,9 @@ async function loadSummary(conversationId: string) {
 export async function updateSummary(conversationId: string, workspaceId: string): Promise<void> {
   const { summarizeTurns } = await import('./ai.js');
   const conv = await loadSummary(conversationId);
-  const rows = openRows(
-    await q<{ sender: string; body: string; enc: boolean; created_at: Date }>(
-      `SELECT sender, body, enc, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') AND created_at > coalesce($2, '-infinity'::timestamptz) ORDER BY created_at`,
+  const rows = openTurns(
+    await q<{ sender: string; body: string; enc: boolean; media_text: string | null; created_at: Date }>(
+      `SELECT sender, body, enc, media_text, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') AND created_at > coalesce($2, '-infinity'::timestamptz) ORDER BY created_at`,
       [conversationId, conv?.summary_upto ?? null],
     ),
   );

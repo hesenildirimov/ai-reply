@@ -1,5 +1,6 @@
 import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { config } from '../config.js';
 import { csrfField, html, raw, type Safe } from './html.js';
 import { channelIcon, type IconName, icon } from './icons.js';
 
@@ -15,6 +16,8 @@ export const when = (d: Date | string) => {
 };
 /** Calendar date (YYYY-MM-DD) of a date column, '' for null (date inputs, payment dates). */
 export const day = (d: Date | string | null) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+/** How long the AI stays silent after staff wrote, e.g. "1 saat" / "45 dəqiqə". */
+export const pauseLabel = (m = config.HUMAN_PAUSE_MINUTES) => (m % 60 === 0 ? `${m / 60} saat` : `${m} dəqiqə`);
 export const typeLabel = (t: string) => (t === 'whatsapp' ? 'WhatsApp' : 'Instagram');
 export const initials = (name: string) => (name.replace(/^@/, '').trim().slice(0, 1) || '?').toUpperCase();
 export const avatar = (name: string, type: string) =>
