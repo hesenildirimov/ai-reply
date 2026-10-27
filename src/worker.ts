@@ -18,6 +18,7 @@ const workers = [
 ];
 for (const w of workers) w.on('failed', (job, err) => console.error(`job ${job?.name} ${job?.id} failed (attempt ${job?.attemptsMade}):`, err.message));
 await queue.upsertJobScheduler('maintenance', { every: 3600_000 }, { name: 'maintenance', data: { kind: 'maintenance' } as never });
+await queue.upsertJobScheduler('sweep', { every: 300_000 }, { name: 'sweep', data: { kind: 'sweep' } });
 
 // Webhooks that arrived while Redis was unreachable wait in Postgres; move them into the queue.
 let draining = false;

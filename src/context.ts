@@ -3,6 +3,7 @@ import { aiConfig, estimateTokens } from './aiconfig.js';
 import { normalize } from './text.js';
 import { config } from './config.js';
 import { one, q } from './db.js';
+import { openRows, openText, sealText } from './messages.js';
 
 export interface BuiltContext {
   history: Turn[];
@@ -81,12 +82,12 @@ export function chooseRoute(latest: string, turns: number, knowledgeChars: numbe
  * of older turns, and only the knowledge items relevant to the latest messages.
  */
 export async function buildContext(conversationId: string, workspaceId: string): Promise<BuiltContext> {
-  const conv = await one<{ summary: string; summary_upto: Date | null }>(`SELECT summary, summary_upto FROM conversations WHERE id = $1`, [conversationId]);
-  const rows = await q<{ sender: string; body: string; created_at: Date }>(
-    `SELECT sender, body, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') AND created_at > coalesce($2, '-infinity'::timestamptz)
+  const conv = await loadSummary(conversationId);
+  const rows = openRows(await q<{ sender: string; body: string; enc: boolean; created_at: Date }>(
+    `SELECT sender, body, enc, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') AND created_at > coalesce($2, '-infinity'::timestamptz)
      ORDER BY created_at DESC LIMIT 60`,
     [conversationId, conv?.summary_upto ?? null],
-  );
+  ));
   const budget = aiConfig.limits.history_token_budget;
   const recent: typeof rows = [];
   let used = 0;
@@ -112,16 +113,22 @@ export async function buildContext(conversationId: string, workspaceId: string):
   };
 }
 
+/** Rolling summary of older turns (stored encrypted: it is conversation content too). */
+async function loadSummary(conversationId: string) {
+  const row = await one<{ summary: string; summary_upto: Date | null }>(`SELECT summary, summary_upto FROM conversations WHERE id = $1`, [conversationId]);
+  return row && { ...row, summary: openText(row.summary) };
+}
+
 /** Folds turns older than the newest MIN_RECENT*2 into the rolling summary (run by the worker, off the reply path). */
 export async function updateSummary(conversationId: string, workspaceId: string): Promise<void> {
   const { summarizeTurns } = await import('./ai.js');
-  const conv = await one<{ summary: string; summary_upto: Date | null }>(`SELECT summary, summary_upto FROM conversations WHERE id = $1`, [conversationId]);
-  const rows = await q<{ sender: string; body: string; created_at: Date }>(
-    `SELECT sender, body, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') AND created_at > coalesce($2, '-infinity'::timestamptz) ORDER BY created_at`,
+  const conv = await loadSummary(conversationId);
+  const rows = openRows(await q<{ sender: string; body: string; enc: boolean; created_at: Date }>(
+    `SELECT sender, body, enc, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') AND created_at > coalesce($2, '-infinity'::timestamptz) ORDER BY created_at`,
     [conversationId, conv?.summary_upto ?? null],
-  );
+  ));
   const older = rows.slice(0, Math.max(0, rows.length - MIN_RECENT * 2));
   if (older.length < aiConfig.limits.summary_after_messages / 2) return;
   const summary = await summarizeTurns(conv?.summary ?? '', older.map((m) => ({ role: m.sender === 'customer' ? 'user' : 'assistant', text: m.body })), { workspaceId, conversationId, purpose: 'summary' });
-  if (summary) await q(`UPDATE conversations SET summary = $2, summary_upto = $3 WHERE id = $1`, [conversationId, summary, older.at(-1)!.created_at]);
+  if (summary) await q(`UPDATE conversations SET summary = $2, summary_upto = $3 WHERE id = $1`, [conversationId, sealText(summary), older.at(-1)!.created_at]);
 }

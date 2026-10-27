@@ -127,7 +127,7 @@ describe.skipIf(!enabled)('P1 automations (integration)', () => {
     await engine.resumeRun(run.id, 2); // retried job: idempotent
     expect(fake.sends().map((s) => s.body.message.text)).toEqual(['bir', 'iki']);
     await db.q(`UPDATE automations SET status = 'paused' WHERE id = $1`, [id]);
-    await db.q(`DELETE FROM messages WHERE body = 'iki'`);
+    await db.q(`DELETE FROM messages WHERE idempotency_key = $1`, [`run:${run.id}:2`]); // forget the step-2 send so only the pause can stop it
     await engine.resumeRun(run.id, 2);
     expect(fake.sends()).toHaveLength(2);
   });

@@ -15,6 +15,7 @@ describe.skipIf(!enabled)('webhook intake and echoes (integration)', () => {
   let app: import('fastify').FastifyInstance;
   let ws: Awaited<ReturnType<typeof seedWorkspace>>;
   let n = 0;
+  let decrypt: (s: string) => string;
 
   const post = (url: string, payload: string) => app.inject({ method: 'POST', url, headers: { 'content-type': 'application/json', 'x-hub-signature-256': sign(payload) }, payload });
   const waBody = (mid: string, text: string) =>
@@ -29,7 +30,8 @@ describe.skipIf(!enabled)('webhook intake and echoes (integration)', () => {
     return { conversationId: row.conversation_id as string, messageId: row.id as string, user: from };
   }
   const conv = (id: string) => db.one(`SELECT ai_paused_until > now() AS paused FROM conversations WHERE id = $1`, [id]);
-  const outbound = (id: string) => db.q(`SELECT sender, status, external_id, body FROM messages WHERE conversation_id = $1 AND direction = 'out' ORDER BY created_at`, [id]);
+  const outbound = async (id: string) =>
+    (await db.q(`SELECT sender, status, external_id, body, enc FROM messages WHERE conversation_id = $1 AND direction = 'out' ORDER BY created_at`, [id])).map(({ enc, ...m }) => ({ ...m, body: enc ? decrypt(m.body) : m.body }));
 
   beforeAll(async () => {
     await startFake();
@@ -37,6 +39,7 @@ describe.skipIf(!enabled)('webhook intake and echoes (integration)', () => {
     pipeline = await import('../src/pipeline.js');
     queues = await import('../src/queue.js');
     intake = await import('../src/inbound.js');
+    ({ decrypt } = await import('../src/crypto.js'));
     await resetDb();
     ws = await seedWorkspace('intake', 'IGE');
     const { encrypt } = await import('../src/crypto.js');
@@ -115,6 +118,36 @@ describe.skipIf(!enabled)('webhook intake and echoes (integration)', () => {
         queues.inboundQueue.addBulk = real;
         await db.q(`ALTER TABLE inbound_outbox_off RENAME TO inbound_outbox`);
       }
+    });
+  });
+
+  describe('#10 Redis outage behaviour', () => {
+    it('readiness stays OK (degraded) without Redis: webhooks use the outbox, staff keep working', async () => {
+      const real = queues.redis.ping.bind(queues.redis);
+      queues.redis.ping = (() => Promise.reject(new Error('down'))) as never;
+      try {
+        const r = await app.inject({ url: '/readyz' });
+        expect(r.statusCode).toBe(200);
+        expect(r.json()).toEqual({ ok: true, degraded: true });
+      } finally {
+        queues.redis.ping = real;
+      }
+      expect((await app.inject({ url: '/readyz' })).json()).toEqual({ ok: true });
+    });
+
+    it('re-queues replies whose jobs were lost with Redis data, never twice and never after an answer', async () => {
+      const { requeueStranded } = await import('../src/jobs.js');
+      const lost = await inbound('Cavab gəlmədi');
+      const answered = await inbound('Cavab gəldi');
+      await pipeline.processReply(answered.conversationId, answered.messageId);
+      await db.q(`UPDATE conversations SET last_inbound_at = now() - interval '10 minutes' WHERE id = ANY($1)`, [[lost.conversationId, answered.conversationId]]);
+      await db.q(`UPDATE messages SET created_at = now() - interval '10 minutes' WHERE id = ANY($1)`, [[lost.messageId, answered.messageId]]);
+      await queues.queue.drain(true); // Redis lost its jobs
+      expect(await requeueStranded()).toBe(1);
+      expect(await queues.queue.getJob(`reply-${lost.messageId}`)).toBeTruthy();
+      expect(await requeueStranded()).toBe(0); // job exists now
+      await pipeline.processReply(lost.conversationId, lost.messageId);
+      expect((await outbound(lost.conversationId)).filter((m) => m.sender === 'ai')).toHaveLength(1);
     });
   });
 

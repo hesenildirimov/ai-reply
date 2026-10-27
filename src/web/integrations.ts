@@ -4,7 +4,7 @@ import { encrypt, randomToken } from '../crypto.js';
 import { one, q } from '../db.js';
 import { audit } from '../events.js';
 import { queue } from '../queue.js';
-import { validateWebhookUrl, WEBHOOK_EVENTS, type WebhookEvent } from '../webhooks.js';
+import { sealPayload, validateWebhookUrl, WEBHOOK_EVENTS, type WebhookEvent } from '../webhooks.js';
 import { requirePerm, requireUser } from './auth.js';
 import { csrfField, html, pageHead, raw } from './html.js';
 import { icon } from './icons.js';
@@ -106,7 +106,7 @@ export function integrationRoutes(app: FastifyInstance) {
       const h = await owned(req);
       if (!h || !h.active) return reply.redirect('/app/integrations?m=invalid');
       const payload = { event: 'ping', created_at: new Date().toISOString(), data: { message: 'AI Reply test hadisəsi' } };
-      const d = await one(`INSERT INTO webhook_deliveries (webhook_id, workspace_id, event, payload) VALUES ($1, $2, 'ping', $3) RETURNING id`, [h.id, h.workspace_id, payload]);
+      const d = await one(`INSERT INTO webhook_deliveries (webhook_id, workspace_id, event, payload) VALUES ($1, $2, 'ping', $3) RETURNING id`, [h.id, h.workspace_id, sealPayload(payload)]);
       await queue.add('webhook', { kind: 'webhook', deliveryId: d!.id }, { jobId: `wh-${d!.id}`, attempts: 1 });
       return reply.redirect('/app/integrations?m=webhook_test');
     });

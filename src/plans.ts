@@ -60,9 +60,9 @@ const botCounter = async (workspaceId: string) => {
  * allowance used up. Incoming messages are always stored and staff can still reply by hand. (Read-only check.)
  */
 export async function automationBlocked(workspaceId: string): Promise<LimitKey | null> {
-  if (!(await checkLimit(workspaceId, 'contacts', 0)).ok) return 'contacts';
-  const limit = (await limitsOf(workspaceId)).bot_messages_month;
-  if (limit !== null && Number(await redis.get(await botCounter(workspaceId))) >= limit) return 'bot_messages_month';
+  const limits = await limitsOf(workspaceId);
+  if (limits.contacts !== null && (await usageOf(workspaceId, 'contacts')) > limits.contacts) return 'contacts';
+  if (limits.bot_messages_month !== null && Number(await redis.get(await botCounter(workspaceId))) >= limits.bot_messages_month) return 'bot_messages_month';
   return null;
 }
 

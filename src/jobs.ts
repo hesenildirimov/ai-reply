@@ -12,9 +12,10 @@ import { one, q } from './db.js';
 import { markReauth, recordEvent } from './events.js';
 import { finishKeyRotation } from './keycheck.js';
 import { withLock } from './locks.js';
+import { resealIfStale, sealBody, sealText } from './messages.js';
 import { linkWhatsAppAlerts, notifyChannelProblem } from './notify.js';
-import { ingest, processEcho, processReply } from './pipeline.js';
-import type { JobData } from './queue.js';
+import { ingest, lookupInstagramName, processEcho, processReply } from './pipeline.js';
+import { queue, type JobData } from './queue.js';
 import { learnStyle } from './style.js';
 import { deliverWebhook } from './webhooks.js';
 
@@ -44,8 +45,62 @@ async function refreshTokens() {
   }
 }
 
-/** During a key rotation (ENCRYPTION_KEY_PREVIOUS set) re-encrypts every secret with the current key. */
-async function reencryptSecrets() {
+const BATCH = 1000;
+type Resealed = { id: string; body: string; tokens: string[] };
+/** One statement for a whole batch of message rows. */
+const writeSealed = (rows: Resealed[]) =>
+  q(
+    `UPDATE messages m SET body = x.body, enc = true, search_tokens = ARRAY(SELECT jsonb_array_elements_text(x.tokens))
+     FROM jsonb_to_recordset($1::jsonb) AS x(id uuid, body text, tokens jsonb) WHERE m.id = x.id`,
+    [JSON.stringify(rows)],
+  );
+
+/** Encrypts message text stored before encryption existed (bounded work per maintenance run). */
+export async function sealLegacyMessages(budgetMs = 60_000): Promise<number> {
+  const until = Date.now() + budgetMs;
+  let total = 0;
+  while (Date.now() < until) {
+    const rows = await q<{ id: string; body: string }>(`SELECT id, body FROM messages WHERE NOT enc ORDER BY id LIMIT ${BATCH}`);
+    if (rows.length) await writeSealed(rows.map((r) => ({ id: r.id, ...sealed(r.body) })));
+    total += rows.length;
+    if (rows.length < BATCH) break;
+  }
+  for (const c of await q<{ id: string; summary: string }>(`SELECT id, summary FROM conversations WHERE summary <> '' AND summary NOT LIKE 'v1:%' LIMIT 5000`)) {
+    await q(`UPDATE conversations SET summary = $2 WHERE id = $1 AND summary = $3`, [c.id, sealText(c.summary), c.summary]);
+  }
+  return total;
+}
+const sealed = (text: string) => {
+  const s = sealBody(text);
+  return { body: s.body, tokens: s.search_tokens };
+};
+
+/**
+ * Key rotation for message text: re-encrypts (and re-indexes) rows still under the previous key, resuming from a
+ * cursor so a large table is spread over several maintenance runs. Returns true when every row is done.
+ */
+async function rotateMessages(budgetMs = 120_000): Promise<boolean> {
+  const until = Date.now() + budgetMs;
+  let cursor = (await one<{ value: string }>(`SELECT value FROM app_meta WHERE key = 'msg_rotation_cursor'`))?.value ?? '00000000-0000-0000-0000-000000000000';
+  while (Date.now() < until) {
+    const rows = await q<{ id: string; body: string }>(`SELECT id, body FROM messages WHERE enc AND id > $1 ORDER BY id LIMIT ${BATCH}`, [cursor]);
+    const stale = rows.flatMap((r) => {
+      const s = resealIfStale(r.body);
+      return s ? [{ id: r.id, body: s.body, tokens: s.search_tokens }] : [];
+    });
+    if (stale.length) await writeSealed(stale);
+    if (rows.length < BATCH) {
+      await q(`DELETE FROM app_meta WHERE key = 'msg_rotation_cursor'`);
+      return true;
+    }
+    cursor = rows.at(-1)!.id;
+    await q(`INSERT INTO app_meta (key, value) VALUES ('msg_rotation_cursor', $1) ON CONFLICT (key) DO UPDATE SET value = $1`, [cursor]);
+  }
+  return false;
+}
+
+/** During a key rotation (ENCRYPTION_KEY_PREVIOUS set) re-encrypts every secret and message with the current key. */
+export async function reencryptSecrets() {
   if (!process.env.ENCRYPTION_KEY_PREVIOUS) return;
   const cols: [string, string][] = [['channels', 'access_token_enc'], ['channels', 'extra_enc'], ['users', 'totp_secret_enc'], ['notify_targets', 'data_enc'], ['webhooks', 'secret_enc']];
   for (const [table, col] of cols) {
@@ -54,7 +109,17 @@ async function reencryptSecrets() {
       if (stale) await q(`UPDATE ${table} SET ${col} = $2 WHERE id = $1 AND ${col} = $3`, [row.id, encrypt(plain), row.v]);
     }
   }
-  await finishKeyRotation();
+  // Encrypted free text (no flag column): conversation summaries, pending webhook payloads.
+  for (const c of await q<{ id: string; summary: string }>(`SELECT id, summary FROM conversations WHERE summary LIKE 'v1:%'`)) {
+    const { plain, stale } = decryptWithInfo(c.summary);
+    if (stale) await q(`UPDATE conversations SET summary = $2 WHERE id = $1 AND summary = $3`, [c.id, encrypt(plain), c.summary]);
+  }
+  for (const d of await q<{ id: string; enc: string }>(`SELECT id, payload->>'enc' AS enc FROM webhook_deliveries WHERE payload ? 'enc'`)) {
+    const { plain, stale } = decryptWithInfo(d.enc);
+    if (stale) await q(`UPDATE webhook_deliveries SET payload = jsonb_build_object('enc', $2::text) WHERE id = $1`, [d.id, encrypt(plain)]);
+  }
+  // Only once nothing under the old key is left may the old key be removed.
+  if (await rotateMessages()) await finishKeyRotation();
 }
 
 export async function maintenance() {
@@ -69,7 +134,33 @@ export async function maintenance() {
   // A send that crashed mid-flight stays 'pending'; after 15 min mark it 'unknown' (shown to staff, never auto-resent).
   await q(`UPDATE messages SET status = 'unknown', error = 'interrupted' WHERE status = 'pending' AND created_at < now() - interval '15 minutes'`);
   await refreshTokens();
+  await sealLegacyMessages();
   await reencryptSecrets();
+}
+
+/**
+ * Safety net for jobs lost with Redis data (Redis restarted without persistence, failover): re-queues the reply for
+ * recent customer messages that got no answer, no handoff and have no job any more. Safe to repeat: a reply is
+ * never sent twice for one message (idempotency key in deliver).
+ */
+export async function requeueStranded(): Promise<number> {
+  const rows = await q<{ id: string; conversation_id: string }>(
+    `SELECT m.id, c.id AS conversation_id FROM conversations c
+     JOIN LATERAL (SELECT id, created_at FROM messages WHERE conversation_id = c.id AND direction = 'in' ORDER BY created_at DESC LIMIT 1) m ON true
+     WHERE c.last_inbound_at BETWEEN now() - interval '30 minutes' AND now() - interval '3 minutes'
+       AND NOT c.needs_human AND c.assignee_user_id IS NULL AND (c.ai_paused_until IS NULL OR c.ai_paused_until < now())
+       AND EXISTS (SELECT 1 FROM assistants a WHERE a.workspace_id = c.workspace_id AND a.enabled)
+       AND NOT EXISTS (SELECT 1 FROM messages o WHERE o.conversation_id = c.id AND o.direction = 'out' AND o.created_at >= m.created_at)
+     LIMIT 1000`,
+  );
+  let n = 0;
+  for (const r of rows) {
+    if (await queue.getJob(`reply-${r.id}`)) continue; // queued, running, or finished without sending (e.g. a flow answered)
+    await queue.add('reply', { kind: 'reply', conversationId: r.conversation_id, messageId: r.id }, { jobId: `reply-${r.id}` });
+    n++;
+  }
+  if (n) console.warn(`requeued ${n} reply job(s) missing from Redis`);
+  return n;
 }
 
 async function waRead(channelId: string, mid: string) {
@@ -117,6 +208,8 @@ export async function runJob(job: Job<Data>, token?: string): Promise<void> {
       }
       case 'wa_read':
         return await waRead(d.channelId, d.mid);
+      case 'ig_profile':
+        return await lookupInstagramName(d.conversationId);
       case 'wa_partner_removed':
         return await partnerRemoved(d.wabaId);
       case 'wa_alert_link':
@@ -133,6 +226,8 @@ export async function runJob(job: Job<Data>, token?: string): Promise<void> {
         return await deliverWebhook(d.deliveryId, job.attemptsMade + 1, job.attemptsMade + 1 >= (job.opts.attempts ?? 1));
       case 'maintenance':
         return await maintenance();
+      case 'sweep':
+        return void (await requeueStranded());
     }
   } catch (e) {
     if (e instanceof DelayedError) throw e;

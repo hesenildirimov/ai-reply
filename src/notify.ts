@@ -3,6 +3,7 @@ import { config } from './config.js';
 import { decrypt } from './crypto.js';
 import { one, q } from './db.js';
 import { sendMail } from './mailer.js';
+import { openRows } from './messages.js';
 import { redis } from './queue.js';
 import { telegramEnabled, tgSend } from './telegram.js';
 import { sendPush } from './webpush.js';
@@ -13,7 +14,7 @@ const THROTTLE_SECONDS = 600; // at most one alert per conversation every 10 min
 export async function notifyWaiting(workspaceId: string, conversationId: string, customer: string, channel: string, reason: string): Promise<void> {
   if ((await redis.set(`notify:${conversationId}`, '1', 'EX', THROTTLE_SECONDS, 'NX')) !== 'OK') return;
   const [ws] = await q<{ name: string }>('SELECT name FROM workspaces WHERE id = $1', [workspaceId]);
-  const [last] = await q<{ body: string }>(`SELECT body FROM messages WHERE conversation_id = $1 AND direction = 'in' ORDER BY created_at DESC LIMIT 1`, [conversationId]);
+  const [last] = openRows(await q<{ body: string; enc: boolean }>(`SELECT body, enc FROM messages WHERE conversation_id = $1 AND direction = 'in' ORDER BY created_at DESC LIMIT 1`, [conversationId]));
   const link = `${config.APP_URL}/app/inbox/${conversationId}`;
   const snippet = (last?.body ?? '').slice(0, 160);
   const business = ws?.name ?? '';

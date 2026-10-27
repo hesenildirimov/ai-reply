@@ -7,6 +7,7 @@ import { decrypt, randomToken } from '../crypto.js';
 import { one, q } from '../db.js';
 import { audit } from '../events.js';
 import { sendManualReply } from '../pipeline.js';
+import { openBody, openRows, queryTokens } from '../messages.js';
 import { limitsOf } from '../plans.js';
 import { publish, subscribe } from '../realtime.js';
 import { can, requirePerm, requireUser, type Permission } from './auth.js';
@@ -36,12 +37,18 @@ const PAGE = 40;
 
 export const CONV_LIST_SQL = `SELECT c.id, c.display_name, c.external_user_id, c.needs_human, c.status, c.unread_count, c.assignee_user_id, c.contact_id,
     coalesce(c.ai_paused_until > now(), false) AS paused, c.last_message_at, ch.type, coalesce(ct.username, '') AS username, u.email AS assignee_email,
-    lm.body AS last, lm.sender AS last_sender
+    lm.body AS last, lm.enc AS last_enc, lm.sender AS last_sender
   FROM conversations c JOIN channels ch ON ch.id = c.channel_id
   LEFT JOIN contacts ct ON ct.id = c.contact_id
   LEFT JOIN users u ON u.id = c.assignee_user_id
-  LEFT JOIN LATERAL (SELECT body, sender FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) lm ON true
+  LEFT JOIN LATERAL (SELECT body, enc, sender FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) lm ON true
   WHERE c.workspace_id = $1`;
+
+/** Decrypts the last-message preview of CONV_LIST_SQL rows. */
+export const openLast = <T extends { last?: string | null; last_enc?: boolean }>(rows: T[]): T[] => {
+  for (const r of rows) if (r.last) r.last = openBody({ body: r.last, enc: r.last_enc });
+  return rows;
+};
 
 async function listConversations(workspaceId: string, userId: string, f: Filters) {
   const params: unknown[] = [workspaceId];
@@ -58,7 +65,10 @@ async function listConversations(workspaceId: string, userId: string, f: Filters
   if (f.auto) where.push(`EXISTS (SELECT 1 FROM automation_runs r WHERE r.conversation_id = c.id AND r.automation_id = ${p(f.auto)})`);
   if (f.q) {
     const like = p(`%${f.q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`);
-    where.push(`((coalesce(ct.display_name, '') || ' ' || coalesce(ct.username, '') || ' ' || c.display_name) ILIKE ${like} OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.body ILIKE ${like}))`);
+    // Message text is encrypted: it is searched through its blind index (words and word beginnings, see messages.ts).
+    const groups = queryTokens(f.q);
+    const inText = groups.length ? `EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND ${groups.map((g) => `m.search_tokens && ${p(g)}::text[]`).join(' AND ')})` : 'false';
+    where.push(`((coalesce(ct.display_name, '') || ' ' || coalesce(ct.username, '') || ' ' || c.display_name) ILIKE ${like} OR ${inText})`);
   }
   const hist = (await limitsOf(workspaceId)).history_days;
   if (hist) where.push(`c.last_message_at > now() - make_interval(days => ${p(hist)})`);
@@ -66,7 +76,7 @@ async function listConversations(workspaceId: string, userId: string, f: Filters
     const [t, id] = f.before.split('_');
     where.push(`(c.last_message_at, c.id) < (${p(t)}::timestamptz, ${p(id)}::uuid)`);
   }
-  const rows = await q(`${CONV_LIST_SQL} ${where.map((w) => `AND ${w}`).join(' ')} ORDER BY c.last_message_at DESC, c.id DESC LIMIT ${PAGE + 1}`, params);
+  const rows = openLast(await q(`${CONV_LIST_SQL} ${where.map((w) => `AND ${w}`).join(' ')} ORDER BY c.last_message_at DESC, c.id DESC LIMIT ${PAGE + 1}`, params));
   const more = rows.length > PAGE;
   return { rows: rows.slice(0, PAGE), next: more ? `${new Date(rows[PAGE - 1].last_message_at).toISOString()}_${rows[PAGE - 1].id}` : '' };
 }
@@ -127,7 +137,7 @@ function mediaHtml(m: any, msgId: string): Safe {
 
 async function threadHtml(req: FastifyRequest, c: any): Promise<Safe> {
   const [msgs, notes] = await Promise.all([
-    q(`SELECT * FROM (SELECT id, sender, body, created_at, status, kind, media, payload, error FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 150) t ORDER BY created_at`, [c.id]),
+    q(`SELECT * FROM (SELECT id, sender, body, enc, created_at, status, kind, media, payload, error FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 150) t ORDER BY created_at`, [c.id]).then(openRows),
     q(`SELECT n.body, n.created_at, u.email FROM conversation_notes n LEFT JOIN users u ON u.id = n.user_id WHERE n.conversation_id = $1 ORDER BY n.created_at DESC LIMIT 50`, [c.id]),
   ]);
   const items = [...msgs.map((m) => ({ t: new Date(m.created_at).getTime(), m })), ...notes.map((n) => ({ t: new Date(n.created_at).getTime(), n }))].sort((a, b) => a.t - b.t);

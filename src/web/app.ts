@@ -10,6 +10,7 @@ import { config } from '../config.js';
 import { decrypt, encrypt, randomToken, sha256 } from '../crypto.js';
 import { one, q, tx } from '../db.js';
 import { audit } from '../events.js';
+import { openRows } from '../messages.js';
 import { reserveReply } from '../pipeline.js';
 import { aiBudgetExceeded, checkLimit, LIMIT_KEYS, LIMIT_LABELS, limitsOf, usageOf } from '../plans.js';
 import { queue, redis } from '../queue.js';
@@ -20,7 +21,7 @@ import QRCode from 'qrcode';
 import { can, destroySession, requireOwner, requirePerm, requireUser } from './auth.js';
 import { csrfField, html, pageHead, raw, type Safe } from './html.js';
 import { channelIcon, icon, type IconName } from './icons.js';
-import { convRow, CONV_LIST_SQL } from './inbox.js';
+import { convRow, CONV_LIST_SQL, openLast } from './inbox.js';
 import { ARGON, MESSAGES, passwordSchema, view } from './public.js';
 
 Object.assign(MESSAGES, {
@@ -84,6 +85,15 @@ async function channelAllowed(workspaceId: string, type: string, externalId: str
   return lim.ok;
 }
 
+/** Every conversation with its messages, decrypted (the owner's own data export). */
+async function exportConversations(workspaceId: string) {
+  const convs = await q(`SELECT id, display_name, external_user_id FROM conversations WHERE workspace_id = $1 ORDER BY id`, [workspaceId]);
+  const msgs = openRows(await q(`SELECT conversation_id, sender, body, enc, created_at FROM messages WHERE workspace_id = $1 ORDER BY created_at`, [workspaceId]));
+  const byConv = new Map<string, { sender: string; body: string; at: Date }[]>();
+  for (const m of msgs) byConv.set(m.conversation_id, [...(byConv.get(m.conversation_id) ?? []), { sender: m.sender, body: m.body, at: m.created_at }]);
+  return convs.map((c) => ({ ...c, messages: byConv.get(c.id) ?? [] }));
+}
+
 export function appRoutes(app: FastifyInstance) {
   app.register(async (r) => {
     r.addHook('preHandler', requireUser);
@@ -101,7 +111,7 @@ export function appRoutes(app: FastifyInstance) {
                   (SELECT count(*)::int FROM conversations WHERE workspace_id = $1 AND needs_human) AS waiting`,
           [w],
         ),
-        can(req.user, 'inbox.view') ? q(`${CONV_LIST_SQL} AND c.status = 'open' ORDER BY c.needs_human DESC, c.last_message_at DESC LIMIT 5`, [w]) : Promise.resolve([]),
+        can(req.user, 'inbox.view') ? q(`${CONV_LIST_SQL} AND c.status = 'open' ORDER BY c.needs_human DESC, c.last_message_at DESC LIMIT 5`, [w]).then(openLast) : Promise.resolve([]),
       ]);
       const used = usage?.ai_replies ?? 0;
       const pct = ws.monthly_reply_limit ? Math.min(100, Math.round((used / ws.monthly_reply_limit) * 100)) : 100;
@@ -494,11 +504,7 @@ export function appRoutes(app: FastifyInstance) {
         workspace: await one('SELECT name, monthly_reply_limit, paid_until, created_at FROM workspaces WHERE id = $1', [w]),
         assistant: await one('SELECT business_name, knowledge, style_preset, style_guide, handoff_message, enabled, ai_disclosure FROM assistants WHERE workspace_id = $1', [w]),
         channels: await q('SELECT type, external_id, display_name, status, created_at FROM channels WHERE workspace_id = $1', [w]),
-        conversations: await q(
-          `SELECT c.id, c.display_name, c.external_user_id, coalesce(json_agg(json_build_object('sender', m.sender, 'body', m.body, 'at', m.created_at) ORDER BY m.created_at) FILTER (WHERE m.id IS NOT NULL), '[]') AS messages
-           FROM conversations c LEFT JOIN messages m ON m.conversation_id = c.id WHERE c.workspace_id = $1 GROUP BY c.id`,
-          [w],
-        ),
+        conversations: await exportConversations(w),
       };
       return reply.header('Content-Disposition', 'attachment; filename="ai-reply-export.json"').type('application/json').send(JSON.stringify(data, null, 2));
     });

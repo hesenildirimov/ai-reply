@@ -30,7 +30,7 @@ export async function buildServer() {
     trustProxy: config.isProd ? (_addr: string, hop: number) => hop === 0 : false,
     bodyLimit: 512 * 1024,
     logger: {
-      level: config.isProd ? 'info' : 'debug',
+      level: config.LOG_LEVEL ?? (config.isProd ? 'info' : 'debug'),
       redact: {
         paths: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-csrf-token"]', '*.access_token', '*.token', '*.password', '*.code', '*.secret'],
         censor: '[redacted]',
@@ -79,15 +79,17 @@ export async function buildServer() {
   await app.register(rateLimit, { global: true, max: 300, timeWindow: '1 minute', redis, skipOnError: true });
   await app.register(staticFiles, { root: path.resolve('public'), prefix: '/public/', maxAge: '1h' });
 
-  // Readiness: DB and Redis reachable (used by Docker healthcheck / uptime monitor). No details leaked.
+  // Readiness (Docker healthcheck / Railway / uptime monitor). Postgres is required. Redis is not: without it
+  // webhooks still land in the Postgres outbox and staff can still read and answer, so the web stays in service
+  // and only reports itself degraded. No other details leaked.
   app.get('/readyz', { config: { rateLimit: false } }, async (req, reply) => {
     try {
       await pool.query('SELECT 1');
-      await redis.ping();
-      return { ok: true };
     } catch {
       return reply.code(503).send({ ok: false });
     }
+    const redisOk = await redis.ping().then(() => true, () => false);
+    return redisOk ? { ok: true } : { ok: true, degraded: true };
   });
 
   // Service worker must be served from the root to control /app pages.

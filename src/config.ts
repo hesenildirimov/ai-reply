@@ -5,6 +5,7 @@ const optional = z.string().trim().min(1).optional().catch(undefined);
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().int().default(3000),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug']).optional().catch(undefined),
   APP_URL: z.url(),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
@@ -63,7 +64,7 @@ const schema = z.object({
   // Capacity (defaults measured with scripts/loadtest.ts, see README "Capacity"). Per process.
   DB_POOL_MAX: z.coerce.number().int().min(2).max(200).default(20),
   // Parallel AI replies / sends per worker process (I/O-bound: mostly waiting for Claude and Meta).
-  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(500).default(25),
+  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(500).default(100),
   // Parallel webhook-intake jobs per worker process (short DB work).
   INBOUND_CONCURRENCY: z.coerce.number().int().min(1).max(500).default(50),
   DEFAULT_REPLY_LIMIT: z.coerce.number().int().min(0).default(1000),

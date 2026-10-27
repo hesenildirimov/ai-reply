@@ -3,6 +3,7 @@ import { limitAlert, reserveAutomated } from './plans.js';
 import { SendError, sendText, textLimit, type SendOpts } from './channels/index.js';
 import type { ChannelRow } from './channels/types.js';
 import { one, q } from './db.js';
+import { openBody, sealBody } from './messages.js';
 import { notifyWaiting } from './notify.js';
 import { publish } from './realtime.js';
 
@@ -52,20 +53,21 @@ export async function deliver(c: Pick<ConvCtx, 'id' | 'workspace_id' | 'external
     await limitAlert(c.workspace_id, 'bot_messages_month');
     throw new SendError('plan_limit', true, false); // definite, not retryable: nothing was sent
   }
+  const sealed = sealBody(body);
   const claimed =
-    (await one<{ id: string; body: string }>(
-      `INSERT INTO messages (workspace_id, conversation_id, direction, sender, body, status, idempotency_key, kind)
-       VALUES ($1, $2, 'out', $3, $4, 'pending', $5, $6) ON CONFLICT (workspace_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING id, body`,
-      [c.workspace_id, c.id, sender, body, key, kind],
+    (await one<{ id: string; body: string; enc: boolean }>(
+      `INSERT INTO messages (workspace_id, conversation_id, direction, sender, body, enc, search_tokens, status, idempotency_key, kind)
+       VALUES ($1, $2, 'out', $3, $4, true, $5, 'pending', $6, $7) ON CONFLICT (workspace_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING id, body, enc`,
+      [c.workspace_id, c.id, sender, sealed.body, sealed.search_tokens, key, kind],
     )) ??
-    (await one<{ id: string; body: string }>(
-      `UPDATE messages SET status = 'pending', error = NULL WHERE workspace_id = $1 AND idempotency_key = $2 AND status = 'failed' RETURNING id, body`,
+    (await one<{ id: string; body: string; enc: boolean }>(
+      `UPDATE messages SET status = 'pending', error = NULL WHERE workspace_id = $1 AND idempotency_key = $2 AND status = 'failed' RETURNING id, body, enc`,
       [c.workspace_id, key],
     ));
   if (!claimed) return 'duplicate';
   let mid: string;
   try {
-    mid = await sendText(c.channel, c.external_user_id, claimed.body, opts);
+    mid = await sendText(c.channel, c.external_user_id, openBody(claimed), opts);
   } catch (e) {
     const se = e instanceof SendError ? e : new SendError('network', false, false);
     // An echo that already carried this message's id (processEcho) proves it was delivered despite the error.
@@ -89,8 +91,10 @@ export async function deliver(c: Pick<ConvCtx, 'id' | 'workspace_id' | 'external
 }
 
 /** Body of an earlier attempt that failed definitively, so a retry re-sends it instead of paying for a new AI call. */
-export const failedBody = async (workspaceId: string, key: string) =>
-  (await one<{ body: string; status: string }>(`SELECT body, status FROM messages WHERE workspace_id = $1 AND idempotency_key = $2`, [workspaceId, key])) ?? null;
+export async function failedBody(workspaceId: string, key: string): Promise<{ body: string; status: string } | null> {
+  const row = await one<{ body: string; enc: boolean; status: string }>(`SELECT body, enc, status FROM messages WHERE workspace_id = $1 AND idempotency_key = $2`, [workspaceId, key]);
+  return row ? { body: openBody(row), status: row.status } : null;
+}
 
 export async function handoff(c: ConvCtx, holdingReply: string, reason: string, messageId: string): Promise<void> {
   const flipped = await one(`UPDATE conversations SET needs_human = true WHERE id = $1 AND needs_human = false RETURNING id`, [c.id]);

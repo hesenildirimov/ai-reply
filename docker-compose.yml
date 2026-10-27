@@ -10,7 +10,8 @@ services:
     restart: unless-stopped
   redis:
     image: redis:7
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"]
+    # BullMQ requires noeviction: an evicted job key is a lost customer message. AOF keeps queued jobs across restarts.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"]
     volumes: [redisdata:/data]
     restart: unless-stopped
   migrate:

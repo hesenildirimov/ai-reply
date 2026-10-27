@@ -18,7 +18,10 @@ describe.skipIf(!enabled)('P0 reliability (integration)', () => {
     const row = await db.one(`SELECT id, conversation_id FROM messages WHERE external_id = $1`, [mid]);
     return { conversationId: row.conversation_id as string, messageId: row.id as string };
   }
-  const outbound = (conversationId: string) => db.q(`SELECT sender, status, body, error FROM messages WHERE conversation_id = $1 AND direction = 'out' ORDER BY created_at`, [conversationId]);
+  const outbound = async (conversationId: string) => {
+    const { openRows } = await import('../src/messages.js');
+    return openRows(await db.q(`SELECT sender, status, body, enc, error FROM messages WHERE conversation_id = $1 AND direction = 'out' ORDER BY created_at`, [conversationId])).map(({ enc, ...m }) => m);
+  };
 
   beforeAll(async () => {
     await startFake();

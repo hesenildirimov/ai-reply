@@ -6,6 +6,7 @@ import { config } from './config.js';
 import { decrypt, hmacSha256 } from './crypto.js';
 import { one, q } from './db.js';
 import { audit } from './events.js';
+import { openText, sealText } from './messages.js';
 import { queue } from './queue.js';
 
 /**
@@ -20,6 +21,10 @@ export const WEBHOOK_EVENTS = {
 } as const;
 export type WebhookEvent = keyof typeof WEBHOOK_EVENTS;
 
+/** Payloads carry message text and contact names: stored encrypted until delivered (kept 14 days for retries). */
+export const sealPayload = (payload: Record<string, unknown>) => ({ enc: sealText(JSON.stringify(payload)) });
+const openPayload = (stored: { enc?: string } & Record<string, unknown>) => (typeof stored.enc === 'string' ? JSON.parse(openText(stored.enc)) : stored);
+
 const ATTEMPTS = 6;
 const DISABLE_AFTER = 50; // consecutive failed deliveries
 const TIMEOUT_MS = 10_000;
@@ -30,7 +35,7 @@ export async function emit(workspaceId: string, event: WebhookEvent, data: Recor
     const hooks = await q<{ id: string }>(`SELECT id FROM webhooks WHERE workspace_id = $1 AND active AND $2 = ANY(events)`, [workspaceId, event]);
     for (const h of hooks) {
       const payload = { event, created_at: new Date().toISOString(), data };
-      const d = await one<{ id: string }>(`INSERT INTO webhook_deliveries (webhook_id, workspace_id, event, payload) VALUES ($1, $2, $3, $4) RETURNING id`, [h.id, workspaceId, event, payload]);
+      const d = await one<{ id: string }>(`INSERT INTO webhook_deliveries (webhook_id, workspace_id, event, payload) VALUES ($1, $2, $3, $4) RETURNING id`, [h.id, workspaceId, event, sealPayload(payload)]);
       await queue.add('webhook', { kind: 'webhook', deliveryId: d!.id }, { jobId: `wh-${d!.id}`, attempts: ATTEMPTS, backoff: { type: 'exponential', delay: 30_000 } });
     }
   } catch {
@@ -112,7 +117,7 @@ export async function deliverWebhook(deliveryId: string, attempt: number, final:
     [deliveryId],
   );
   if (!d || d.status !== 'pending' || !d.active) return;
-  const body = JSON.stringify({ id: d.id, ...d.payload });
+  const body = JSON.stringify({ id: d.id, ...openPayload(d.payload) });
   const ts = String(Math.floor(Date.now() / 1000));
   let code = 0;
   let error = '';
