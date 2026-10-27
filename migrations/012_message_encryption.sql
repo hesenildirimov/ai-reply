@@ -7,5 +7,10 @@ DROP INDEX IF EXISTS messages_body_trgm;
 -- Legacy plaintext rows are sealed in batches by maintenance.
 CREATE INDEX messages_plain ON messages (id) WHERE NOT enc;
 
+-- Staff notes are stored encrypted too ("v1:" ciphertext, see sealText): the 2000-character limit is checked by the
+-- app before encryption, the column only bounds the ciphertext.
+ALTER TABLE conversation_notes DROP CONSTRAINT conversation_notes_body_check;
+ALTER TABLE conversation_notes ADD CONSTRAINT conversation_notes_body_check CHECK (length(body) BETWEEN 1 AND 12000);
+
 -- Stranded-reply sweep (src/jobs.ts) looks at recently active conversations only.
 CREATE INDEX conversations_last_inbound ON conversations (last_inbound_at);

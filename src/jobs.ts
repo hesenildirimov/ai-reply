@@ -50,6 +50,10 @@ async function refreshTokens() {
 }
 
 const BATCH = 1000;
+const FREE_TEXT = [
+  ['conversations', 'summary'],
+  ['conversation_notes', 'body'],
+] as const;
 type Resealed = { id: string; body: string; tokens: string[] };
 /** One statement for a whole batch of message rows. */
 const writeSealed = (rows: Resealed[]) =>
@@ -69,10 +73,11 @@ export async function sealLegacyMessages(budgetMs = 60_000): Promise<number> {
     total += rows.length;
     if (rows.length < BATCH) break;
   }
-  for (const c of await q<{ id: string; summary: string }>(
-    `SELECT id, summary FROM conversations WHERE summary <> '' AND summary NOT LIKE 'v1:%' LIMIT 5000`,
-  )) {
-    await q(`UPDATE conversations SET summary = $2 WHERE id = $1 AND summary = $3`, [c.id, sealText(c.summary), c.summary]);
+  // Free text without a flag column: AI summaries and staff notes ("v1:" = already encrypted).
+  for (const [table, col] of FREE_TEXT) {
+    for (const r of await q<{ id: string; v: string }>(`SELECT id, ${col} AS v FROM ${table} WHERE ${col} <> '' AND ${col} NOT LIKE 'v1:%' LIMIT 5000`)) {
+      await q(`UPDATE ${table} SET ${col} = $2 WHERE id = $1 AND ${col} = $3`, [r.id, sealText(r.v), r.v]);
+    }
   }
   return total;
 }
@@ -121,10 +126,12 @@ export async function reencryptSecrets() {
       if (stale) await q(`UPDATE ${table} SET ${col} = $2 WHERE id = $1 AND ${col} = $3`, [row.id, encrypt(plain), row.v]);
     }
   }
-  // Encrypted free text (no flag column): conversation summaries, pending webhook payloads.
-  for (const c of await q<{ id: string; summary: string }>(`SELECT id, summary FROM conversations WHERE summary LIKE 'v1:%'`)) {
-    const { plain, stale } = decryptWithInfo(c.summary);
-    if (stale) await q(`UPDATE conversations SET summary = $2 WHERE id = $1 AND summary = $3`, [c.id, encrypt(plain), c.summary]);
+  // Encrypted free text (no flag column): summaries, staff notes, pending webhook payloads.
+  for (const [table, col] of FREE_TEXT) {
+    for (const r of await q<{ id: string; v: string }>(`SELECT id, ${col} AS v FROM ${table} WHERE ${col} LIKE 'v1:%'`)) {
+      const { plain, stale } = decryptWithInfo(r.v);
+      if (stale) await q(`UPDATE ${table} SET ${col} = $2 WHERE id = $1 AND ${col} = $3`, [r.id, encrypt(plain), r.v]);
+    }
   }
   for (const d of await q<{ id: string; enc: string }>(`SELECT id, payload->>'enc' AS enc FROM webhook_deliveries WHERE payload ? 'enc'`)) {
     const { plain, stale } = decryptWithInfo(d.enc);

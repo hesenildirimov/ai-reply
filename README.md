@@ -203,8 +203,8 @@ Addım-addım: [`docs/DEPLOY.md`](docs/DEPLOY.md) (Caddy/HTTPS, 2FA, backup, `EN
 
 - Webhook-lar `X-Hub-Signature-256` HMAC ilə raw body üzərindən yoxlanır (timing-safe müqayisə).
 - Meta access token-ları AES-256-GCM ilə şifrələnir. Loglara token, cookie və query string yazılmır.
-- Müştəri mesajlarının mətni də DB-də AES-256-GCM ilə şifrələnir (`messages.body`, AI xülasələri, saxlanılan webhook
-  payload-ları, Redis-dəki iş məlumatları). Axtarış üçün sözlərin HMAC "kor" indeksi saxlanır (`src/messages.ts`).
+- Müştəri mesajlarının mətni də DB-də AES-256-GCM ilə şifrələnir (`messages.body`, AI xülasələri, daxili qeydlər, saxlanılan
+  webhook payload-ları, Redis-dəki iş məlumatları). Axtarış üçün sözlərin HMAC "kor" indeksi saxlanır (`src/messages.ts`).
   DB dump-ı və ya backup sızsa belə mesaj mətni oxunmur.
 - Şifrələr Argon2id ilə hash-lənir. Login cəhdləri IP və e-poçt üzrə məhdudlaşdırılır (15 dəqiqəlik bloklama). Hesab mövcudluğu (enumeration) gizlədilir. Açıq qeydiyyat yoxdur, hesabları yalnız admin yaradır.
 - Sessiyalar DB-də yalnız SHA-256 hash kimi saxlanır. Cookie `__Host-` prefiksli, `HttpOnly`, `Secure`, `SameSite`. Şifrə dəyişəndə bütün sessiyalar silinir.

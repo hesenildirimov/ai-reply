@@ -83,6 +83,11 @@ Bir neçə addım geri getmək üçün down fayllarını tərs ardıcıllıqla i
 | `DB_POOL_MAX` | `20` | Proses başına Postgres bağlantısı. Cəmi (web + worker-lər) Postgres `max_connections`-dan az olmalıdır |
 | `LOG_LEVEL` | `info` (prod) | `warn` / `error` ilə log həcmini azaltmaq olar |
 
+### Bu versiyaya keçid (mesaj şifrələməsi)
+Yeni worker mesajları şifrəli yazır. Köhnə worker şifrəli sətri oxuya bilmir. Ona görə də yeni worker başlamazdan əvvəl
+köhnəsini dayandırın (`docker compose up -d` bunu özü edir; Railway-də worker xidmətində deploy overlap olmamalıdır).
+Köhnə açıq mətnli sətirləri worker hər saat paketlərlə şifrələyir (`messages WHERE NOT enc` sayı 0-a enir).
+
 ### Miqyaslama
 - Worker-i bir neçə nüsxədə işə salmaq təhlükəsizdir (BullMQ işi bir worker-ə verir, söhbət kilidi Redis-dədir). 500
   biznesə qədər 2 nüsxə kifayətdir (README → "Tutum və yük testi").

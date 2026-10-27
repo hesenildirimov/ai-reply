@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { one, q } from '../db.js';
-import { openBody, openRows, queryTokens } from '../messages.js';
+import { openBody, openRows, openText, queryTokens, sealText } from '../messages.js';
 import { limitsOf } from '../plans.js';
 
 /** Inbox data access: every query behind the inbox screens. Rows come back with message text decrypted. */
@@ -121,7 +121,7 @@ export async function threadItems(conversationId: string) {
     q(
       `SELECT n.body, n.created_at, u.email FROM conversation_notes n LEFT JOIN users u ON u.id = n.user_id WHERE n.conversation_id = $1 ORDER BY n.created_at DESC LIMIT 50`,
       [conversationId],
-    ),
+    ).then((rows) => rows.map((n) => ({ ...n, body: openText(n.body) }))),
   ]);
   return [...msgs.map((m) => ({ t: new Date(m.created_at).getTime(), m })), ...notes.map((n) => ({ t: new Date(n.created_at).getTime(), n }))].sort(
     (a, b) => a.t - b.t,
@@ -177,7 +177,12 @@ export const ownedContact = (workspaceId: string, id: string) =>
 export const clearWaiting = (conversationId: string) => q('UPDATE conversations SET needs_human = false WHERE id = $1', [conversationId]);
 
 export const addNote = (workspaceId: string, conversationId: string, userId: string, body: string) =>
-  q(`INSERT INTO conversation_notes (workspace_id, conversation_id, user_id, body) VALUES ($1, $2, $3, $4)`, [workspaceId, conversationId, userId, body]);
+  q(`INSERT INTO conversation_notes (workspace_id, conversation_id, user_id, body) VALUES ($1, $2, $3, $4)`, [
+    workspaceId,
+    conversationId,
+    userId,
+    sealText(body),
+  ]);
 
 /** Closing also clears "waiting for staff". */
 export const setStatus = (conversationId: string, status: 'open' | 'closed') =>

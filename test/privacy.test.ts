@@ -54,17 +54,26 @@ describe.skipIf(!enabled)('message encryption at rest (integration)', () => {
     const { conversationId, messageId } = await inbound(MARK);
     await pipeline.processReply(conversationId, messageId);
     await db.q(`UPDATE conversations SET summary = $2 WHERE id = $1`, [conversationId, (await import('../src/messages.js')).sealText(`Müştəri: ${MARK}`)]);
+    await app.inject({
+      method: 'POST',
+      url: `/app/inbox/${conversationId}/note`,
+      headers: owner.headers,
+      payload: { _csrf: owner.csrf, body: `Qeyd: ${MARK}` },
+    });
     const leaks = await db.one(
       `SELECT (SELECT count(*) FROM messages WHERE body ILIKE '%0501234567%' OR body ILIKE '%Salam!%')::int AS messages,
+              (SELECT count(*) FROM conversation_notes WHERE body ILIKE '%0501234567%')::int AS notes,
               (SELECT count(*) FROM conversations WHERE summary ILIKE '%0501234567%')::int AS summaries,
               (SELECT count(*) FROM webhook_deliveries WHERE payload::text ILIKE '%0501234567%')::int AS payloads,
               (SELECT count(*) FROM messages WHERE NOT enc)::int AS plaintext_rows`,
     );
-    expect(leaks).toEqual({ messages: 0, summaries: 0, payloads: 0, plaintext_rows: 0 });
+    expect(leaks).toEqual({ messages: 0, notes: 0, summaries: 0, payloads: 0, plaintext_rows: 0 });
+    expect((await db.one(`SELECT count(*)::int AS n FROM conversation_notes`)).n).toBe(1);
     // ...yet staff, the AI and integrations see the text.
     const page = (await app.inject({ url: `/app/inbox/${conversationId}`, headers: owner.headers })).body;
     expect(page).toContain('0501234567');
     expect(page).toContain('Salam! Bəli, var.');
+    expect(page).toContain('Qeyd: Gizli');
     expect(JSON.stringify(fake.aiCalls()[0]!.body)).toContain('0501234567');
   });
 
@@ -84,6 +93,7 @@ describe.skipIf(!enabled)('message encryption at rest (integration)', () => {
       [ws.workspaceId, conversationId],
     );
     await db.q(`UPDATE conversations SET summary = 'köhnə xülasə' WHERE id = $1`, [conversationId]);
+    await db.q(`INSERT INTO conversation_notes (workspace_id, conversation_id, body) VALUES ($1, $2, 'köhnə qeyd')`, [ws.workspaceId, conversationId]);
     expect((await app.inject({ url: `/app/inbox/${conversationId}`, headers: owner.headers })).body).toContain('köhnə mesaj Sumqayıt');
     const { sealLegacyMessages } = await import('../src/jobs.js');
     expect(await sealLegacyMessages()).toBe(1);
@@ -92,6 +102,7 @@ describe.skipIf(!enabled)('message encryption at rest (integration)', () => {
     expect(row.body).toMatch(/^v1:/);
     expect(row.t).toBeGreaterThan(0);
     expect((await db.one(`SELECT summary FROM conversations WHERE id = $1`, [conversationId])).summary).toMatch(/^v1:/);
+    expect((await db.one(`SELECT body FROM conversation_notes WHERE body NOT LIKE 'v1:%'`)) ?? null).toBeNull();
     expect((await app.inject({ url: `/app/inbox/${conversationId}`, headers: owner.headers })).body).toContain('köhnə mesaj Sumqayıt');
     expect(await search('sumqay')).toContain(conversationId);
   });
