@@ -92,6 +92,9 @@ describe.skipIf(!enabled)('webhook intake and echoes (integration)', () => {
       expect(Date.now() - t).toBeLessThan(1000);
       expect(fake.calls).toHaveLength(0); // no Graph call inside the request
       expect((await db.one(`SELECT count(*)::int AS n FROM messages WHERE external_id = 'wamid.fast1'`)).n).toBe(0); // not yet: queued
+      const queued = (await queues.inboundQueue.getJobs(['waiting'])).filter((j) => j.data.kind === 'inbound');
+      expect(queued).toHaveLength(1);
+      expect(JSON.stringify(queued[0]!.data)).not.toMatch(/Salam|Aysel|99450/); // customer content is encrypted in Redis
 
       await drainInbound();
       const msg = await db.one(`SELECT id FROM messages WHERE external_id = 'wamid.fast1'`);
@@ -125,6 +128,7 @@ describe.skipIf(!enabled)('webhook intake and echoes (integration)', () => {
         queues.inboundQueue.addBulk = real;
       }
       expect((await db.one(`SELECT count(*)::int AS n FROM inbound_outbox`)).n).toBe(2);
+      expect((await db.one(`SELECT count(*)::int AS n FROM inbound_outbox WHERE data::text ~ 'Redis yoxdur|Aysel'`)).n).toBe(0); // encrypted
       expect(await intake.drainOutbox()).toBe(2);
       expect((await db.one(`SELECT count(*)::int AS n FROM inbound_outbox`)).n).toBe(0);
       await drainInbound();

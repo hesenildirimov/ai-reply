@@ -1,5 +1,5 @@
 import type { InboundEvent } from './channels/types.js';
-import { sha256 } from './crypto.js';
+import { encrypt, sha256 } from './crypto.js';
 import { q, tx } from './db.js';
 import { inboundQueue, type JobData } from './queue.js';
 
@@ -26,7 +26,10 @@ const stableId = (prefix: string, key: string) => `${prefix}-${sha256(key).toStr
 
 export function eventJob(ev: InboundEvent): IntakeJob {
   const ref = ev.type === 'comment' ? ev.commentId : ev.mid;
-  return { jobId: stableId('in', `${ev.type}|${ev.channelType}|${ev.channelExternalId}|${ref}`), data: { kind: 'inbound', event: ev } };
+  return {
+    jobId: stableId('in', `${ev.type}|${ev.channelType}|${ev.channelExternalId}|${ref}`),
+    data: { kind: 'inbound', sealed: encrypt(JSON.stringify(ev)) },
+  };
 }
 
 export const keyedJob = (key: string, data: JobData): IntakeJob => ({ jobId: stableId('in', key), data });

@@ -205,7 +205,7 @@ export async function runJob(job: Job<Data>, token?: string): Promise<void> {
   try {
     switch (d.kind) {
       case 'inbound':
-        return await ingest(d.event);
+        return await ingest(JSON.parse(decrypt(d.sealed)));
       case 'reply': {
         const final = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
         const r = await processReply(d.conversationId, d.messageId, final);
@@ -215,7 +215,8 @@ export async function runJob(job: Job<Data>, token?: string): Promise<void> {
       }
       case 'ig_echo': {
         const tries = d.tries ?? 0;
-        if ((await processEcho(d.channelId, d.userId, d.mid, d.text, tries >= ECHO_CHECKS)) === 'wait') {
+        const text = d.sealed ? decrypt(d.sealed) : (d.text ?? '');
+        if ((await processEcho(d.channelId, d.userId, d.mid, text, tries >= ECHO_CHECKS)) === 'wait') {
           await job.updateData({ ...d, tries: tries + 1 });
           await later(job, token, 2000);
         }
@@ -232,7 +233,7 @@ export async function runJob(job: Job<Data>, token?: string): Promise<void> {
       case 'learn_style':
         return void (await learnStyle(d.workspaceId));
       case 'comment':
-        return await processComment(d.event);
+        return await processComment(d.sealed ? JSON.parse(decrypt(d.sealed)) : d.event!);
       case 'automation_step':
         return await resumeRun(d.runId, d.step);
       case 'summarize':

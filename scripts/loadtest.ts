@@ -278,6 +278,8 @@ const sampler = (async () => {
 
 await Promise.race([Promise.all(ws.flatMap((b) => Array.from({ length: C }, (_, c) => customer(b, c)))), sleep(Number(a.timeout) * 1000)]);
 await sleep(3000); // late echoes
+// Let sends still waiting for (slow) Meta settle before reading the database.
+for (let i = 0; i < 40 && (await q(`SELECT 1 FROM messages WHERE status = 'pending' LIMIT 1`)).length; i++) await sleep(500);
 running = false;
 await sampler;
 const elapsed = (Date.now() - t0) / 1000;

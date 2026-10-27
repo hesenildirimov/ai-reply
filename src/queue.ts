@@ -17,13 +17,15 @@ export const INBOUND_QUEUE = 'inbound';
 
 export type JobData =
   | { kind: 'reply'; conversationId: string; messageId: string }
-  | { kind: 'ig_echo'; channelId: string; userId: string; mid: string; text: string; tries?: number }
+  // Customer content in job data is encrypted (`sealed`: encrypt(JSON)): Redis and the intake outbox hold no message text.
+  // The plain `text` / `event` forms are only read for jobs queued before this change.
+  | { kind: 'ig_echo'; channelId: string; userId: string; mid: string; sealed?: string; text?: string; tries?: number }
   | { kind: 'learn_style'; workspaceId: string }
-  | { kind: 'comment'; event: Extract<InboundEvent, { type: 'comment' }> }
+  | { kind: 'comment'; sealed?: string; event?: Extract<InboundEvent, { type: 'comment' }> }
   | { kind: 'automation_step'; runId: string; step: number }
   | { kind: 'summarize'; conversationId: string; workspaceId: string }
   | { kind: 'webhook'; deliveryId: string }
-  | { kind: 'inbound'; event: InboundEvent }
+  | { kind: 'inbound'; sealed: string }
   | { kind: 'wa_read'; channelId: string; mid: string }
   | { kind: 'ig_profile'; conversationId: string }
   | { kind: 'wa_partner_removed'; wabaId: string }

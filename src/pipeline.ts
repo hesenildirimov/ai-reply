@@ -11,7 +11,7 @@ import { config } from './config.js';
 import { type ContactRow, upsertContact } from './contacts.js';
 import { buildContext } from './context.js';
 import { deliver, failedBody, handoff, inWindow, loadConv } from './conversation.js';
-import { decrypt, sha256 } from './crypto.js';
+import { decrypt, encrypt, sha256 } from './crypto.js';
 import { one, q } from './db.js';
 import { audit, recordEvent } from './events.js';
 import { checkReply } from './guard.js';
@@ -32,7 +32,7 @@ const MEDIA_PLACEHOLDER = '[Customer sent an attachment (photo/voice/video/stick
 export async function ingest(ev: InboundEvent): Promise<void> {
   if (ev.type === 'comment') {
     // Comments are processed by the worker (one job per comment id: duplicate webhooks collapse).
-    await queue.add('comment', { kind: 'comment', event: ev }, { jobId: `comment-${ev.commentId}` });
+    await queue.add('comment', { kind: 'comment', sealed: encrypt(JSON.stringify(ev)) }, { jobId: `comment-${ev.commentId}` });
     return;
   }
   const ch = await one<ChannelRow>(`SELECT * FROM channels WHERE type = $1 AND external_id = $2 AND status = 'active'`, [ev.channelType, ev.channelExternalId]);
@@ -42,7 +42,7 @@ export async function ingest(ev: InboundEvent): Promise<void> {
     // No fixed delay: processEcho identifies our own sends by state, not by timing.
     await inboundQueue.add(
       'ig_echo',
-      { kind: 'ig_echo', channelId: ch.id, userId: ev.userId, mid: ev.mid, text: ev.text },
+      { kind: 'ig_echo', channelId: ch.id, userId: ev.userId, mid: ev.mid, sealed: encrypt(ev.text) },
       { jobId: `echo-${ch.id}-${sha256(ev.mid).toString('hex').slice(0, 32)}` },
     );
     return;
