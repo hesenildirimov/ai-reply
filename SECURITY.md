@@ -44,9 +44,9 @@ Qiymətləndirmə: ✅ yoxlanıldı/qaydasındadır · 🔧 auditdə düzəldild
 
 ## 6. Data protection
 - ✅ Mesajlar 90 gündən sonra avtomatik silinir. Kanal ayrılanda və ya hesab silinəndə bütün məlumatlar dərhal silinir. JSON export var. Meta data-deletion callback-ləri işləyir.
-- 🔧 Queue job-ları (mesaj mətni daşıyır) artıq Redis-də 1 saatdan çox saxlanmır (uğursuzlar 7 gün).
+- 🔧 Queue job-ları Redis-də 1 saatdan çox saxlanmır (uğursuzlar 7 gün). Müştəri məzmunu daşıyan job-ların (webhook qəbulu, şərh, echo) məlumatı şifrəlidir.
 - 🔧 Privacy Policy-yə üslub öyrənmə və Telegram bildirişləri əlavə olundu.
-- ⚠️ Mesaj mətnləri DB-də açıq mətndir. Disk şifrələməsi olan managed DB istifadə edin.
+- ✅ Mesaj mətnləri DB-də AES-256-GCM ilə şifrəlidir (`messages.enc`, `012_message_encryption.sql`). AI xülasələri, saxlanılan webhook payload-ları və Redis outbox-u da şifrəlidir. İnbox axtarışı açar ilə HMAC-lanmış söz/söz başlanğıcı indeksi ilə işləyir (`search_tokens`). Bu indeks söz bərabərliyini (tezliyi) açar olmadan da göstərə bilər, mətnin özünü göstərmir. Köhnə açıq sətirləri maintenance paketlərlə şifrələyir. Açar rotasiyası mesajları da yenidən şifrələyir (kursorla, bir neçə maintenance-ə bölünə bilər). Disk şifrələməsi olan managed DB yenə də tövsiyə olunur.
 
 ## 7. Dependencies
 - ✅ `npm audit`: 0 zəiflik. `package-lock.json` commit olunub. Docker-də `npm ci` istifadə olunur. Şübhəli paket yoxdur.
@@ -80,7 +80,7 @@ Qiymətləndirmə: ✅ yoxlanıldı/qaydasındadır · 🔧 auditdə düzəldild
 
 ## 13. Testing
 - 🔧 Əlavə olunan inteqrasiya testləri (`test/integration.test.ts`): giriş tələbi, CSRF və yanlış Origin, IDOR (oxuma/silmə/cavab), admin girişi, webhook imzası, deduplikasiya, XSS escape, Telegram secret, ödəniş tarixi və limit.
-- ⚠️ Çatışmayan testlər: şifrə linkinin təkrar istifadəsi və vaxtının bitməsi, login bloklanması, OAuth `state` replay-i, data-deletion callback-i, Instagram echo ilə AI-nin dayanması, prompt injection üçün qiymətləndirmə (eval) dəsti.
+- ⚠️ Çatışmayan testlər: şifrə linkinin təkrar istifadəsi və vaxtının bitməsi, login bloklanması, OAuth `state` replay-i, data-deletion callback-i, prompt injection üçün qiymətləndirmə (eval) dəsti.
 
 ## 14. P0–P4 əlavələri (2026-10)
 - 🔧 **Rollar** (`owner`, `admin`, `agent`, `analyst`): icazə matrisi `src/web/auth.ts` (`PERMS`) serverdə hər marşrutda yoxlanılır (`requirePerm`). Menyuda gizlətmək yalnız kosmetikdir. Admin başqa admin yarada və ya dəyişə bilmir, sahibi heç kim dəyişə bilmir. Üzv çıxarılanda bütün sessiyaları silinir.

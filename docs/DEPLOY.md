@@ -76,8 +76,19 @@ Bir neçə addım geri getmək üçün down fayllarını tərs ardıcıllıqla i
 | `AI_WORKSPACE_RPM` | `30` | Bir biznes üçün dəqiqədə maksimum AI çağırışı |
 | `AI_MODEL`, `AI_MODEL_FAST` | config-dən | Modelləri env ilə dəyişmək (istəyə görə) |
 | `AI_MODELS_FILE` | `config/ai-models.json` | Model qiymətləri, routing, token büdcələri |
-| `ENCRYPTION_KEY_PREVIOUS` | — | Yalnız açar rotasiyası zamanı: köhnə açar. Worker məlumatları yeni açarla yenidən şifrələyir. Bitdikdən sonra silin |
+| `ENCRYPTION_KEY_PREVIOUS` | — | Yalnız açar rotasiyası zamanı: köhnə açar. Worker məlumatları (mesajlar da daxil, saatda bir hissə) yeni açarla yenidən şifrələyir. `app_meta`-da `encryption_key_fp` yeni açara keçəndə (və `msg_rotation_cursor` silinəndə) rotasiya bitib. Bundan sonra silin |
 | `WEBHOOK_ALLOW_PRIVATE` | — | **Yalnız lokal test**: lokal IP-yə webhook. Production-da nəzərə alınmır |
+| `WORKER_CONCURRENCY` | `100` | Bir worker prosesində eyni anda AI cavabı/göndəriş sayı (ölçmə: README → "Tutum") |
+| `INBOUND_CONCURRENCY` | `50` | Bir worker prosesində eyni anda webhook qəbulu işi (qısa DB işləri) |
+| `DB_POOL_MAX` | `20` | Proses başına Postgres bağlantısı. Cəmi (web + worker-lər) Postgres `max_connections`-dan az olmalıdır |
+| `LOG_LEVEL` | `info` (prod) | `warn` / `error` ilə log həcmini azaltmaq olar |
+
+### Miqyaslama
+- Worker-i bir neçə nüsxədə işə salmaq təhlükəsizdir (BullMQ işi bir worker-ə verir, söhbət kilidi Redis-dədir). 500
+  biznesə qədər 2 nüsxə kifayətdir (README → "Tutum və yük testi").
+- Redis üçün AOF və `maxmemory-policy noeviction` (BullMQ tələbi). Railway/managed Redis-də bu ayarı yoxlayın.
+- Redis dayananda webhook-lar Postgres `inbound_outbox`-a yazılır. Worker onları özü növbəyə qaytarır, əl ilə iş
+  lazım deyil.
 
 ## 9. Tarif limitləri
 Tariflər `plans` cədvəlindədir (Start / Biznes / Pro, `migrations/007`). Admin panelində müştəri səhifəsindən tarif seçilir və istənilən limit fərdi olaraq dəyişdirilir ("limitsiz" və ya rəqəm). Limitlər serverdə yoxlanılır: kanallar, komanda üzvləri, aktiv avtomatlaşdırmalar, aktiv kontaktlar (30 gün), aylıq avtomatik mesaj sayı, AI büdcəsi (gün/ay), analitika tarixçəsi. Limit dolanda avtomatik cavablar dayanır, gələn mesajlar saxlanılır və əl ilə cavab vermək mümkün qalır. Hadisə audit jurnalına `plan.limit_reached` kimi yazılır.
