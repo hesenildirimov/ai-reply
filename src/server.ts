@@ -7,7 +7,7 @@ import staticFiles from '@fastify/static';
 import Fastify from 'fastify';
 import { config } from './config.js';
 import { pool } from './db.js';
-import { queue, redis } from './queue.js';
+import { closeQueues, redis } from './queue.js';
 import { assertEncryptionKey } from './keycheck.js';
 import { registerTelegramWebhook } from './telegram.js';
 import { adminRoutes } from './web/admin.js';
@@ -121,7 +121,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const app = await buildServer();
   const close = async () => {
     await app.close();
-    await Promise.allSettled([queue.close(), pool.end()]);
+    await Promise.allSettled([closeQueues(), pool.end()]);
     redis.disconnect();
     process.exit(0);
   };

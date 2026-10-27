@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { readdirSync, readFileSync } from 'node:fs';
 
 /** Programmable stand-in for Meta Graph + Anthropic APIs (both point at FAKE_PORT in vitest.config.ts). */
-type Reply = { status?: number; json?: unknown; hang?: boolean };
+type Reply = { status?: number; json?: unknown; hang?: boolean; delayMs?: number; drop?: boolean };
 type Handler = (body: any, path: string) => Reply | undefined;
 
 export const fake = {
@@ -44,9 +44,14 @@ export async function startFake(port = Number(process.env.FAKE_PORT ?? 4011)) {
       } catch {}
       fake.calls.push({ path, body, raw, headers: req.headers });
       const r = fake.handler(body, path) ?? defaults(path, body);
-      if (r.hang) return; // simulate a timeout / dropped connection
-      res.writeHead(r.status ?? 200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(r.json ?? {}));
+      if (r.hang) return; // simulate a timeout
+      if (r.drop) return void req.socket.destroy(); // connection lost after the request left: outcome unknown
+      const send = () => {
+        res.writeHead(r.status ?? 200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(r.json ?? {}));
+      };
+      if (r.delayMs) setTimeout(send, r.delayMs); // slow Meta / Claude
+      else send();
     });
   });
   await new Promise<void>((ok) => server!.listen(port, '127.0.0.1', ok));
@@ -105,4 +110,18 @@ export async function loginAs(app: import('fastify').FastifyInstance, email: str
   const cookie = `sid=${res.cookies.find((c) => c.name === 'sid')!.value}`;
   const csrf = /name="_csrf" value="([^"]+)"/.exec((await app.inject({ url: '/app/settings', headers: { cookie } })).body)![1]!;
   return { cookie, csrf, headers: { cookie, origin: 'http://localhost:3000' } };
+}
+
+/** Runs the webhook-intake jobs now (the worker does this in production): webhooks only enqueue. */
+export async function drainInbound() {
+  const { inboundQueue } = await import('../src/queue.js');
+  const { runJob } = await import('../src/jobs.js');
+  for (;;) {
+    const jobs = (await inboundQueue.getJobs(['waiting', 'prioritized'])).filter((j) => j.data.kind === 'inbound');
+    if (!jobs.length) return;
+    for (const j of jobs.reverse()) {
+      await runJob(j as never);
+      await j.remove();
+    }
+  }
 }

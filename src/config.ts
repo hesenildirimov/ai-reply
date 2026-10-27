@@ -59,6 +59,13 @@ const schema = z.object({
   CONTACT_PHONE: z.string().default(''),
 
   RETENTION_DAYS: z.coerce.number().int().min(1).default(90),
+
+  // Capacity (defaults measured with scripts/loadtest.ts, see README "Capacity"). Per process.
+  DB_POOL_MAX: z.coerce.number().int().min(2).max(200).default(20),
+  // Parallel AI replies / sends per worker process (I/O-bound: mostly waiting for Claude and Meta).
+  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(500).default(25),
+  // Parallel webhook-intake jobs per worker process (short DB work).
+  INBOUND_CONCURRENCY: z.coerce.number().int().min(1).max(500).default(50),
   DEFAULT_REPLY_LIMIT: z.coerce.number().int().min(0).default(1000),
 });
 

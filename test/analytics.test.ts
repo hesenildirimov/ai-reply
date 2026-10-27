@@ -57,8 +57,8 @@ describe.skipIf(!enabled)('P3 analytics & AI cost controls (integration)', () =>
   beforeEach(() => fake.reset());
   afterAll(async () => {
     await stopFake();
-    const { queue, redis } = await import('../src/queue.js');
-    await queue.close();
+    const { closeQueues, redis } = await import('../src/queue.js');
+    await closeQueues();
     redis.disconnect();
     await db.pool.end();
   });

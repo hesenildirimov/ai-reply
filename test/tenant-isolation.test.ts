@@ -61,9 +61,9 @@ describe.skipIf(!enabled)('multi-tenant isolation (every route)', () => {
   afterAll(async () => {
     await app.close();
     await stopFake();
-    const { queue, redis } = await import('../src/queue.js');
+    const { closeQueues, redis } = await import('../src/queue.js');
     (await import('../src/realtime.js')).closeRealtime();
-    await queue.close();
+    await closeQueues();
     redis.disconnect();
     await db.pool.end();
   });

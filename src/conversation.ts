@@ -68,10 +68,21 @@ export async function deliver(c: Pick<ConvCtx, 'id' | 'workspace_id' | 'external
     mid = await sendText(c.channel, c.external_user_id, claimed.body, opts);
   } catch (e) {
     const se = e instanceof SendError ? e : new SendError('network', false, false);
-    await q(`UPDATE messages SET status = $2, error = $3 WHERE id = $1`, [claimed.id, se.definite ? 'failed' : 'unknown', se.reason]);
+    // An echo that already carried this message's id (processEcho) proves it was delivered despite the error.
+    await q(`UPDATE messages SET status = CASE WHEN external_id IS NOT NULL THEN 'sent' ELSE $2 END, error = CASE WHEN external_id IS NOT NULL THEN NULL ELSE $3 END WHERE id = $1`, [
+      claimed.id,
+      se.definite ? 'failed' : 'unknown',
+      se.reason,
+    ]);
     throw se;
   }
-  await q(`UPDATE messages SET status = 'sent', external_id = $2, created_at = now() WHERE id = $1`, [claimed.id, mid]);
+  // The send API's id is authoritative (an echo may have attached one first, see processEcho); never steal another row's id.
+  await q(
+    `UPDATE messages SET status = 'sent', error = NULL, created_at = now(),
+       external_id = CASE WHEN EXISTS (SELECT 1 FROM messages x WHERE x.conversation_id = messages.conversation_id AND x.external_id = $2 AND x.id <> messages.id) THEN external_id ELSE $2 END
+     WHERE id = $1`,
+    [claimed.id, mid],
+  );
   await q('UPDATE conversations SET last_message_at = now() WHERE id = $1', [c.id]);
   await publish(c.workspace_id, { type: 'message', conversationId: c.id });
   return 'sent';

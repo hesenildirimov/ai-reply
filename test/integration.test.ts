@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { hash } from '@node-rs/argon2';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { drainInbound } from './helpers.js';
 
 const enabled = !!process.env.TEST_DATABASE_URL && !!process.env.TEST_REDIS_URL;
 
@@ -48,8 +49,8 @@ describe.skipIf(!enabled)('security (integration)', () => {
 
   afterAll(async () => {
     await app?.close();
-    const { queue, redis } = await import('../src/queue.js');
-    await queue.close();
+    const { closeQueues, redis } = await import('../src/queue.js');
+    await closeQueues();
     redis.disconnect();
     await db?.pool.end();
   });
@@ -84,6 +85,7 @@ describe.skipIf(!enabled)('security (integration)', () => {
     expect((await post('sha256=' + '0'.repeat(64))).statusCode).toBe(401);
     expect((await post(sig)).statusCode).toBe(200);
     expect((await post(sig)).statusCode).toBe(200);
+    await drainInbound();
     expect((await db.one(`SELECT count(*)::int AS n FROM messages WHERE external_id = 'wamid.T1'`)).n).toBe(1);
     const { cookie } = await login('a@test.az');
     const page = (await app.inject({ url: `/app/inbox/${ids.conv_a}`, headers: { cookie } })).body;

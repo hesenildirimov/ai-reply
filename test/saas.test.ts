@@ -62,10 +62,10 @@ describe.skipIf(!enabled)('P4 SaaS features (integration)', () => {
     delete process.env.WEBHOOK_ALLOW_PRIVATE;
     await app.close();
     await stopFake();
-    const { queue, redis } = await import('../src/queue.js');
+    const { closeQueues, redis } = await import('../src/queue.js');
     const { closeRealtime } = await import('../src/realtime.js');
     closeRealtime();
-    await queue.close();
+    await closeQueues();
     redis.disconnect();
     await db.pool.end();
   });

@@ -1,7 +1,7 @@
 // Security regression tests from the 2026-10 production audit (finding ids F-xx in SECURITY.md).
 import { createHmac } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { aiText, fake, igMessage, loginAs, resetDb, seedWorkspace, startFake, stopFake } from './helpers.js';
+import { aiText, drainInbound, fake, igMessage, loginAs, resetDb, seedWorkspace, startFake, stopFake } from './helpers.js';
 
 const sign = (body: string, secret = 'test-meta-secret') => `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
 
@@ -40,9 +40,9 @@ describe.skipIf(!enabled)('security audit regressions', () => {
   afterAll(async () => {
     await app.close();
     await stopFake();
-    const { queue, redis } = await import('../src/queue.js');
+    const { closeQueues, redis } = await import('../src/queue.js');
     (await import('../src/realtime.js')).closeRealtime();
-    await queue.close();
+    await closeQueues();
     redis.disconnect();
     await db.pool.end();
   });
@@ -134,6 +134,7 @@ describe.skipIf(!enabled)('security audit regressions', () => {
     it('accepts a correctly signed body and stores a replayed / duplicate event once', async () => {
       for (let i = 0; i < 3; i++) expect((await igPost(body, { 'x-hub-signature-256': sign(body) })).statusCode).toBe(200);
       await Promise.all([1, 2, 3].map(() => igPost(body, { 'x-hub-signature-256': sign(body) })));
+      await drainInbound();
       expect((await db.one(`SELECT count(*)::int AS n FROM messages WHERE external_id = 'wh.1'`)).n).toBe(1);
     });
     it('WhatsApp endpoint: unsigned 401; Instagram-app secret is not accepted for WhatsApp', async () => {

@@ -9,9 +9,8 @@ import { aiBudgetExceeded, automationBlocked, limitAlert, LIMIT_LABELS } from '.
 import { deliver, failedBody, handoff, inWindow, loadConv, WINDOW_MS } from './conversation.js';
 import { instagramUsername } from './channels/instagram.js';
 import type { ChannelRow, InboundEvent } from './channels/types.js';
-import { markWhatsAppRead } from './channels/whatsapp.js';
 import { config } from './config.js';
-import { decrypt } from './crypto.js';
+import { decrypt, sha256 } from './crypto.js';
 import { one, q } from './db.js';
 import { notifyWaiting } from './notify.js';
 import { runMessageAutomations } from './automations/engine.js';
@@ -19,7 +18,7 @@ import { upsertContact, type ContactRow } from './contacts.js';
 import { audit, recordEvent } from './events.js';
 import { publish } from './realtime.js';
 import { withLock } from './locks.js';
-import { queue, redis } from './queue.js';
+import { inboundQueue, queue, redis } from './queue.js';
 
 const HUMAN_PAUSE = "interval '12 hours'";
 const HUMAN_KEYWORDS = /(?<!\p{L})(operator|human|agent|insan|canl[ıi]|menecer|оператор|менеджер|человек)(?!\p{L})/iu;
@@ -37,8 +36,8 @@ export async function ingest(ev: InboundEvent): Promise<void> {
   if (!ch) return;
 
   if (ev.type === 'echo') {
-    // Delay so our own outbound record (written after the send API returns) exists before we compare.
-    await queue.add('ig_echo', { kind: 'ig_echo', channelId: ch.id, userId: ev.userId, mid: ev.mid, text: ev.text }, { delay: 5000 });
+    // No fixed delay: processEcho identifies our own sends by state, not by timing.
+    await inboundQueue.add('ig_echo', { kind: 'ig_echo', channelId: ch.id, userId: ev.userId, mid: ev.mid, text: ev.text }, { jobId: `echo-${ch.id}-${sha256(ev.mid).toString('hex').slice(0, 32)}` });
     return;
   }
 
@@ -71,8 +70,8 @@ export async function ingest(ev: InboundEvent): Promise<void> {
     contact: { username: contact.username, name: contact.display_name },
   });
 
-  // Read receipt is cosmetic: it must never block storing the message.
-  if (ch.type === 'whatsapp') await Promise.resolve().then(() => markWhatsAppRead(decrypt(ch.access_token_enc), ch.external_id, ev.mid)).catch(() => {});
+  // Read receipt + typing indicator: cosmetic, its own job (one try), so a slow Graph call never delays anything.
+  if (ch.type === 'whatsapp') await inboundQueue.add('wa_read', { kind: 'wa_read', channelId: ch.id, mid: ev.mid }, { attempts: 1, jobId: `read-${msg.id}` }).catch(() => {});
   // Debounce: customers often send several short messages; only the latest job replies.
   await queue.add('reply', { kind: 'reply', conversationId: conv!.id, messageId: msg.id }, { delay: config.AI_DEBOUNCE_MS, jobId: `reply-${msg.id}` });
 }
@@ -222,19 +221,43 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
   }
 }
 
-/** Instagram echo of a message we did not send through the API = staff replied in the Instagram app. */
-export async function processEcho(channelId: string, userId: string, mid: string, text: string): Promise<void> {
-  const conv = await one<{ id: string; workspace_id: string }>(
-    'SELECT id, workspace_id FROM conversations WHERE channel_id = $1 AND external_user_id = $2',
-    [channelId, userId],
+const sameText = (a: string, b: string) => a.replace(/\s+/g, ' ').trim() === b.replace(/\s+/g, ' ').trim();
+
+/**
+ * Instagram echoes every message the account sends, ours included. An echo is staff writing in the Instagram app
+ * only when it matches none of our own sends. Identification does not depend on timing:
+ * 1. a row of ours already carries this Meta message id;
+ * 2. a row of ours without a Meta id yet (claimed before the send API was called, see deliver) has the same text:
+ *    it is that send, so the id is attached now ('unknown' sends become 'sent': the echo proves delivery);
+ * 3. otherwise, while one of our sends in this conversation is still in flight its id is not known yet, so the
+ *    caller re-checks shortly ('wait'). `final` (re-check budget spent) decides with what is known.
+ * Only then is it a human message: stored and the AI paused for this conversation.
+ */
+export async function processEcho(channelId: string, userId: string, mid: string, text: string, final = true): Promise<'done' | 'wait'> {
+  const conv = await one<{ id: string; workspace_id: string }>('SELECT id, workspace_id FROM conversations WHERE channel_id = $1 AND external_user_id = $2', [channelId, userId]);
+  if (!conv) return 'done';
+  const unmatched = await q<{ id: string; body: string; status: string }>(
+    `SELECT id, body, status FROM messages WHERE conversation_id = $1 AND direction = 'out' AND external_id IS NULL AND status IN ('pending', 'unknown')
+       AND created_at > now() - interval '1 day' ORDER BY created_at`,
+    [conv.id],
   );
-  if (!conv) return;
+  const mine = unmatched.find((m) => sameText(m.body, text));
+  if (mine) {
+    await q(`UPDATE messages SET external_id = $2, status = CASE WHEN status = 'unknown' THEN 'sent' ELSE status END, error = CASE WHEN status = 'unknown' THEN NULL ELSE error END WHERE id = $1 AND external_id IS NULL`, [mine.id, mid]);
+    return 'done';
+  }
+  if (await one(`SELECT 1 FROM messages WHERE conversation_id = $1 AND external_id = $2`, [conv.id, mid])) return 'done';
+  if (!final && unmatched.some((m) => m.status === 'pending')) return 'wait';
   const inserted = await one(
     `INSERT INTO messages (workspace_id, conversation_id, direction, sender, external_id, body) VALUES ($1, $2, 'out', 'human', $3, $4)
      ON CONFLICT DO NOTHING RETURNING id`,
     [conv.workspace_id, conv.id, mid, text.slice(0, 8000)],
   );
-  if (inserted) await q(`UPDATE conversations SET ai_paused_until = now() + ${HUMAN_PAUSE}, last_message_at = now() WHERE id = $1`, [conv.id]);
+  if (inserted) {
+    await q(`UPDATE conversations SET ai_paused_until = now() + ${HUMAN_PAUSE}, last_message_at = now() WHERE id = $1`, [conv.id]);
+    await publish(conv.workspace_id, { type: 'message', conversationId: conv.id });
+  }
+  return 'done';
 }
 
 export type ManualResult = 'sent' | 'window_closed' | 'not_found';

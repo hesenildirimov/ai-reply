@@ -1,7 +1,7 @@
-import { sendWhatsAppTemplate } from './channels/whatsapp.js';
+import { sendWhatsAppTemplate, sendWhatsAppText } from './channels/whatsapp.js';
 import { config } from './config.js';
 import { decrypt } from './crypto.js';
-import { q } from './db.js';
+import { one, q } from './db.js';
 import { sendMail } from './mailer.js';
 import { redis } from './queue.js';
 import { telegramEnabled, tgSend } from './telegram.js';
@@ -55,4 +55,16 @@ export async function notifyChannelProblem(ch: { workspace_id: string; type: str
     for (const o of owners) jobs.push(sendMail(o.email, `${where} bağlantısı yenilənməlidir`, text));
   }
   for (const r of await Promise.allSettled(jobs)) if (r.status === 'rejected') console.error('alert failed:', (r.reason as Error).message);
+}
+
+/** A message to the platform's own WhatsApp number: "AIREPLY <code>" links that number to a workspace's alerts. */
+export async function linkWhatsAppAlerts(waId: string, text: string): Promise<void> {
+  const say = (t: string) => sendWhatsAppText(config.PLATFORM_WA_TOKEN!, config.PLATFORM_WA_PHONE_NUMBER_ID!, waId, t).catch(() => {});
+  const code = /AIREPLY\s+([A-Z0-9]{8})/i.exec(text)?.[1]?.toUpperCase();
+  const raw = code ? await redis.getdel(`walink:${code}`) : null;
+  if (!raw) return void (await say('Bildirişləri qoşmaq üçün paneldə Ayarlar → Bildirişlər → "WhatsApp-ı qoş" düyməsini basın.'));
+  const link = JSON.parse(raw) as { workspaceId: string; userId: string };
+  await q(`INSERT INTO notify_targets (workspace_id, user_id, kind, chat_id, label) VALUES ($1, $2, 'whatsapp', $3, $3) ON CONFLICT DO NOTHING`, [link.workspaceId, link.userId, waId]);
+  const ws = await one('SELECT name FROM workspaces WHERE id = $1', [link.workspaceId]);
+  await say(`✅ Bildirişlər qoşuldu: ${ws?.name ?? ''}. Müştəri cavabınızı gözləyəndə buraya yazacağıq.`);
 }
