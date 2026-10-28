@@ -78,7 +78,7 @@ export function commentRoutes(app: FastifyInstance) {
         html`${pageHead('Şərhlər', 'AI Instagram şərhlərini oxuyur: suallara DM-də cavab yazır, şərhin altına qısa cavab qoyur, şikayətləri sizə ötürür.')}
         ${
           manage
-            ? html`<form method="post" action="/app/comments/settings" class="card">${csrfField(req.csrfToken)}
+            ? html`<form method="post" action="/app/comments/settings" class="card comment-settings">${csrfField(req.csrfToken)}
             <label class="switch-row"><span><b>Şərhlərə AI cavab versin</b><small>Açar sözlü avtomatlaşdırmalar üstündür: onların tutmadığı şərhlərə AI cavab yazır.
               ${a?.enabled ? '' : 'Diqqət: AI köməkçi söndürülüb, əvvəlcə onu aktiv edin.'}</small></span>
               <input type="checkbox" class="switch" name="comment_ai" value="1" ${a?.comment_ai ? raw('checked') : ''}></label>
@@ -119,11 +119,11 @@ export function commentRoutes(app: FastifyInstance) {
         <section class="card"><div class="card-head"><h2>${icon('chat')}Son şərhlər</h2></div>
           ${
             recent.length
-              ? html`<table class="table"><thead><tr><th>Kim</th><th>Şərh</th><th>Vəziyyət</th><th>Vaxt</th></tr></thead><tbody>${recent.map((c) => {
+              ? html`<div class="table-wrap"><table><thead><tr><th>Kim</th><th>Şərh</th><th>Vəziyyət</th><th>Vaxt</th></tr></thead><tbody>${recent.map((c) => {
                   const [tone, label] = STATUS[c.ai_status ?? ''] ?? ['neutral', c.ai_status ?? ''];
                   return html`<tr><td>${c.conversation_id ? html`<a href="/app/inbox/${c.conversation_id}">${who(c)}</a>` : who(c)}</td>
                     <td>${c.body.slice(0, 160)}</td><td>${chip(tone, label)}</td><td>${fmt(c.received_at)}</td></tr>`;
-                })}</tbody></table>`
+                })}</tbody></table></div>`
               : empty('chat', 'Hələ AI-nin baxdığı şərh yoxdur.')
           }</section>`,
       );
