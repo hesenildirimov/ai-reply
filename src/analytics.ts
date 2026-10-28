@@ -5,11 +5,27 @@ import { limitsOf } from './plans.js';
 /** Analytics filters shared by the page, CSV exports and tests. Times are [from, to) in UTC; days are Asia/Baku. */
 export const filterSchema = z.object({
   range: z.enum(['today', '7d', '30d', 'custom']).catch('7d').default('7d'),
-  from: z.string().regex(/^\d{4}-\d\d-\d\d$/).or(z.literal('')).catch('').default(''),
-  to: z.string().regex(/^\d{4}-\d\d-\d\d$/).or(z.literal('')).catch('').default(''),
+  from: z
+    .string()
+    .regex(/^\d{4}-\d\d-\d\d$/)
+    .or(z.literal(''))
+    .catch('')
+    .default(''),
+  to: z
+    .string()
+    .regex(/^\d{4}-\d\d-\d\d$/)
+    .or(z.literal(''))
+    .catch('')
+    .default(''),
   ch: z.enum(['', 'instagram', 'whatsapp']).catch('').default(''),
-  automation: z.union([z.literal(''), z.uuid()]).catch('').default(''),
-  tag: z.union([z.literal(''), z.uuid()]).catch('').default(''),
+  automation: z
+    .union([z.literal(''), z.uuid()])
+    .catch('')
+    .default(''),
+  tag: z
+    .union([z.literal(''), z.uuid()])
+    .catch('')
+    .default(''),
 });
 export type AnalyticsFilters = z.infer<typeof filterSchema>;
 
@@ -53,8 +69,12 @@ function scope(workspaceId: string, f: AnalyticsFilters, w: Window) {
   if (f.ch) where.push(`ch.type = ${p(f.ch)}`);
   if (f.tag) where.push(`EXISTS (SELECT 1 FROM contact_tags x WHERE x.contact_id = c.contact_id AND x.tag_id = ${p(f.tag)})`);
   if (f.automation) where.push(`EXISTS (SELECT 1 FROM automation_runs r WHERE r.conversation_id = c.id AND r.automation_id = ${p(f.automation)})`);
-  return { params, p, cte: `scope AS (SELECT c.id, c.contact_id, c.unread_count, c.channel_id FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE ${where.join(' AND ')}),
-    m AS (SELECT m.* FROM messages m JOIN scope s ON s.id = m.conversation_id WHERE m.created_at >= $2 AND m.created_at < $3)` };
+  return {
+    params,
+    p,
+    cte: `scope AS (SELECT c.id, c.contact_id, c.unread_count, c.channel_id FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE ${where.join(' AND ')}),
+    m AS (SELECT m.* FROM messages m JOIN scope s ON s.id = m.conversation_id WHERE m.created_at >= $2 AND m.created_at < $3)`,
+  };
 }
 
 export async function overview(workspaceId: string, f: AnalyticsFilters, w: Window) {

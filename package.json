@@ -11,9 +11,13 @@
     "start:worker": "node dist/worker.js",
     "migrate:prod": "node dist/migrate.js",
     "typecheck": "tsc --noEmit",
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "check": "biome ci .",
     "test": "vitest run",
     "create-admin": "tsx --env-file=.env src/create-admin.ts",
-    "create-admin:prod": "node dist/create-admin.js"
+    "create-admin:prod": "node dist/create-admin.js",
+    "loadtest": "tsx scripts/loadtest.ts"
   },
   "license": "ISC",
   "dependencies": {
@@ -34,6 +38,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.15",
     "@types/node": "^26.6.5",
     "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.23.1",

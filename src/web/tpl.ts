@@ -9,6 +9,7 @@ export class Safe {
 export const raw = (s: string) => new Safe(s);
 
 const ESC: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' };
+// biome-ignore lint/suspicious/noShadowRestrictedNames: module export, the deprecated global escape() is never used
 export const escape = (s: string) => s.replace(/[&<>"'`]/g, (c) => ESC[c]!);
 
 function render(v: unknown): string {
@@ -20,6 +21,6 @@ function render(v: unknown): string {
 
 export function html(strings: TemplateStringsArray, ...values: unknown[]): Safe {
   let out = strings[0]!;
-  values.forEach((v, i) => (out += render(v) + strings[i + 1]));
+  for (const [i, v] of values.entries()) out += render(v) + strings[i + 1];
   return new Safe(out);
 }

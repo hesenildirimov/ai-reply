@@ -46,7 +46,10 @@ const tagIds = async (workspaceId: string, names: string[], create: boolean) => 
   const ids: string[] = [];
   for (const name of names.map((n) => n.trim()).filter(Boolean)) {
     const row = create
-      ? await one(`INSERT INTO tags (workspace_id, name) VALUES ($1, $2) ON CONFLICT (workspace_id, lower(name)) DO UPDATE SET name = tags.name RETURNING id`, [workspaceId, name.slice(0, 40)])
+      ? await one(`INSERT INTO tags (workspace_id, name) VALUES ($1, $2) ON CONFLICT (workspace_id, lower(name)) DO UPDATE SET name = tags.name RETURNING id`, [
+          workspaceId,
+          name.slice(0, 40),
+        ])
       : await one(`SELECT id FROM tags WHERE workspace_id = $1 AND lower(name) = lower($2)`, [workspaceId, name]);
     if (row) ids.push(row.id);
   }
@@ -55,7 +58,10 @@ const tagIds = async (workspaceId: string, names: string[], create: boolean) => 
 
 export async function addTags(c: Pick<ContactRow, 'id' | 'workspace_id'>, names: string[]) {
   for (const id of await tagIds(c.workspace_id, names, true)) {
-    const added = await one(`INSERT INTO contact_tags (contact_id, tag_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING (SELECT name FROM tags WHERE id = $2) AS name`, [c.id, id]);
+    const added = await one(
+      `INSERT INTO contact_tags (contact_id, tag_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING (SELECT name FROM tags WHERE id = $2) AS name`,
+      [c.id, id],
+    );
     if (added) await emit(c.workspace_id, 'contact.tag_added', { contact_id: c.id, tag: added.name });
   }
 }
@@ -66,7 +72,10 @@ export async function removeTags(c: Pick<ContactRow, 'id' | 'workspace_id'>, nam
 }
 
 export async function hasTag(contactId: string, name: string): Promise<boolean> {
-  return !!(await one(`SELECT 1 FROM contact_tags ct JOIN tags t ON t.id = ct.tag_id WHERE ct.contact_id = $1 AND lower(t.name) = lower($2)`, [contactId, name]));
+  return !!(await one(`SELECT 1 FROM contact_tags ct JOIN tags t ON t.id = ct.tag_id WHERE ct.contact_id = $1 AND lower(t.name) = lower($2)`, [
+    contactId,
+    name,
+  ]));
 }
 
 export const FIELD_KEY = /^[a-z][a-z0-9_]{0,39}$/;
@@ -74,7 +83,10 @@ export const FIELD_KEY = /^[a-z][a-z0-9_]{0,39}$/;
 export async function setField(contactId: string, key: string, value: string) {
   if (!FIELD_KEY.test(key)) throw new Error('invalid field key');
   // Cap the number of custom fields per contact.
-  await q(`UPDATE contacts SET fields = fields || jsonb_build_object($2::text, $3::text) WHERE id = $1 AND (fields ? $2 OR (SELECT count(*) FROM jsonb_object_keys(fields)) < 50)`, [contactId, key, value.slice(0, 500)]);
+  await q(
+    `UPDATE contacts SET fields = fields || jsonb_build_object($2::text, $3::text) WHERE id = $1 AND (fields ? $2 OR (SELECT count(*) FROM jsonb_object_keys(fields)) < 50)`,
+    [contactId, key, value.slice(0, 500)],
+  );
 }
 
 /**
@@ -85,7 +97,9 @@ export async function setField(contactId: string, key: string, value: string) {
 export async function mergeContacts(workspaceId: string, sourceId: string, targetId: string): Promise<boolean> {
   if (sourceId === targetId) return false;
   return tx(async (c) => {
-    const rows = (await c.query(`SELECT * FROM contacts WHERE id = ANY($1) AND workspace_id = $2 AND merged_into IS NULL FOR UPDATE`, [[sourceId, targetId], workspaceId])).rows;
+    const rows = (
+      await c.query(`SELECT * FROM contacts WHERE id = ANY($1) AND workspace_id = $2 AND merged_into IS NULL FOR UPDATE`, [[sourceId, targetId], workspaceId])
+    ).rows;
     if (rows.length !== 2) return false;
     const src = rows.find((r) => r.id === sourceId)!;
     await c.query(
@@ -95,7 +109,10 @@ export async function mergeContacts(workspaceId: string, sourceId: string, targe
        WHERE id = $1`,
       [targetId, src.fields, src.opted_out, src.blocked, src.first_seen_at, src.last_seen_at, src.display_name, src.username],
     );
-    await c.query(`INSERT INTO contact_tags (contact_id, tag_id) SELECT $2, tag_id FROM contact_tags WHERE contact_id = $1 ON CONFLICT DO NOTHING`, [sourceId, targetId]);
+    await c.query(`INSERT INTO contact_tags (contact_id, tag_id) SELECT $2, tag_id FROM contact_tags WHERE contact_id = $1 ON CONFLICT DO NOTHING`, [
+      sourceId,
+      targetId,
+    ]);
     await c.query(`DELETE FROM contact_tags WHERE contact_id = $1`, [sourceId]);
     await c.query(`UPDATE conversations SET contact_id = $2 WHERE contact_id = $1`, [sourceId, targetId]);
     await c.query(`UPDATE automation_runs SET contact_id = $2 WHERE contact_id = $1`, [sourceId, targetId]);

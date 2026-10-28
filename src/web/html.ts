@@ -25,10 +25,10 @@ const NAV: [string, string, string, Permission?][] = [
   ['/app', 'Panel', 'grid'],
   ['/app/inbox', 'Söhbətlər', 'chat', 'inbox.reply'],
   ['/app/contacts', 'Kontaktlar', 'contact', 'contacts.write'],
-  ['/app/automations', 'Avtomatlaşdırma', 'zap', 'automations.write'],
+  ['/app/automations', 'Avtomatlaşdırma', 'zap', 'automations.view'],
   ['/app/analytics', 'Analitika', 'chart', 'analytics.view'],
   ['/app/assistant', 'AI köməkçi', 'bot', 'assistant.write'],
-  ['/app/knowledge', 'Bilik bazası', 'book', 'assistant.write'],
+  ['/app/knowledge', 'Bilik bazası', 'book', 'knowledge.view'],
   ['/app/channels', 'Kanallar', 'plug', 'channels.manage'],
   ['/app/integrations', 'İnteqrasiyalar', 'share', 'integrations.manage'],
   ['/app/team', 'Komanda', 'users', 'team.manage'],
@@ -39,7 +39,9 @@ const NAV: [string, string, string, Permission?][] = [
 export function page(title: string, body: Safe, o: PageOpts): string {
   const path = o.path ?? '';
   const active = (href: string) => (href === '/app' ? path === '/app' : path === href || path.startsWith(`${href}/`));
-  const flash = o.flash ? html`<p class="flash ${o.flash.type}" role="status">${icon(o.flash.type === 'ok' ? 'check' : 'alert')}<span>${o.flash.text}</span></p>` : '';
+  const flash = o.flash
+    ? html`<p class="flash ${o.flash.type}" role="status">${icon(o.flash.type === 'ok' ? 'check' : 'alert')}<span>${o.flash.text}</span></p>`
+    : '';
   const footer = html`<footer><a href="/privacy">Privacy Policy</a><a href="/terms">Terms</a><a href="/data-deletion">Data deletion</a></footer>`;
   const shell = o.user
     ? html`<div class="shell">

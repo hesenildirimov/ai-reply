@@ -15,7 +15,10 @@ export interface Capability {
  */
 export function capability(trigger: Trigger, ch: Pick<ChannelRow, 'type' | 'status' | 'scopes'> | null | undefined): Capability {
   if (trigger === 'follow') {
-    return { status: 'unsupported', note: 'Meta-nın rəsmi API-si yeni izləyici hadisəsini (webhook) ümumi istifadə üçün təqdim etmir. Alternativ: şərhdən DM, story cavabı, DM açar sözü, Click-to-Instagram-Direct reklamı.' };
+    return {
+      status: 'unsupported',
+      note: 'Meta-nın rəsmi API-si yeni izləyici hadisəsini (webhook) ümumi istifadə üçün təqdim etmir. Alternativ: şərhdən DM, story cavabı, DM açar sözü, Click-to-Instagram-Direct reklamı.',
+    };
   }
   if (!ch) return { status: 'configuration_required', note: 'Əvvəlcə kanal bağlayın.' };
   if (ch.status !== 'active') return { status: 'configuration_required', note: 'Kanal yenidən bağlanmalıdır.' };
@@ -29,7 +32,8 @@ export function capability(trigger: Trigger, ch: Pick<ChannelRow, 'type' | 'stat
       ? { status: 'available', note: 'Hər şərhə 1 şəxsi mesaj, şərhdən sonra 7 gün ərzində.' }
       : { status: 'configuration_required', note: 'Instagram-ı yenidən bağlayın: şərhlərə giriş icazəsi (instagram_business_manage_comments) verilməyib.' };
   }
-  if (!scopes.includes('instagram_business_manage_messages')) return { status: 'configuration_required', note: 'Mesaj icazəsi yoxdur, Instagram-ı yenidən bağlayın.' };
+  if (!scopes.includes('instagram_business_manage_messages'))
+    return { status: 'configuration_required', note: 'Mesaj icazəsi yoxdur, Instagram-ı yenidən bağlayın.' };
   if (trigger === 'story_mention') return { status: 'available', note: 'Hesab story-də mention edildikdə (yalnız story; post tag-ləri hadisə göndərmir).' };
   return { status: 'available', note: '' };
 }

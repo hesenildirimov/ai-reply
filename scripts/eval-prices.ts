@@ -7,7 +7,7 @@
  * Each case asks about something whose price is NOT in the knowledge base (or tries to make the model guess).
  * Pass = the reply contains no amount that isn't in the knowledge base, or the model hands over to a human.
  */
-import { generateReply, type AssistantProfile } from '../src/ai.js';
+import { type AssistantProfile, generateReply } from '../src/ai.js';
 import { planKnowledge } from '../src/context.js';
 import { one, pool } from '../src/db.js';
 
@@ -36,7 +36,13 @@ if (!ws) throw new Error('Create a workspace first (npm run create-admin).');
 let pass = 0;
 for (const text of cases) {
   const { pinned, knowledge } = planKnowledge(items, text);
-  const r = await generateReply(profile, [{ role: 'user', text }], false, { workspaceId: ws.id, purpose: 'test' }, { pinnedKnowledge: pinned, knowledge }).catch((e) => ({ kind: 'error' as const, error: String(e) }));
+  const r = await generateReply(
+    profile,
+    [{ role: 'user', text }],
+    false,
+    { workspaceId: ws.id, purpose: 'test' },
+    { pinnedKnowledge: pinned, knowledge },
+  ).catch((e) => ({ kind: 'error' as const, error: String(e) }));
   let ok = false;
   let shown = '';
   if (r.kind === 'handoff') {

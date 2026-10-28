@@ -1,14 +1,14 @@
 {
   "_comment": "Prices in USD per 1M tokens (Anthropic list prices, 2026-10). Update here only; costs shown in the app are estimates from this file.",
   "models": {
-    "claude-opus-5-5":   { "input": 4.0,  "output": 20.0, "cache_read": 0.20, "cache_write": 5.0 },
-    "claude-sonnet-5-5": { "input": 2.0,  "output": 10.0, "cache_read": 0.20, "cache_write": 2.5 },
-    "claude-haiku-5-5":  { "input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125 }
+    "claude-opus-5-5": { "input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0 },
+    "claude-sonnet-5-5": { "input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5 },
+    "claude-haiku-5-5": { "input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125 }
   },
   "routing": {
     "_comment": "fast = short, simple messages and summaries; smart = everything else. Override with AI_MODEL_FAST / AI_MODEL.",
     "fast": "claude-haiku-5-5",
-    "smart": "claude-opus-5-5"
+    "smart": "claude-sonnet-5-5"
   },
   "limits": {
     "max_output_tokens": 2000,

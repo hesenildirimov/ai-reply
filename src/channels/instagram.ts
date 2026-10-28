@@ -7,6 +7,17 @@ export const IG_TEXT_LIMIT = 1000;
 export const IG_SCOPES = ['instagram_business_basic', 'instagram_business_manage_messages', 'instagram_business_manage_comments'];
 const IG = () => config.IG_GRAPH_BASE;
 
+/** Only https URLs from the webhook are kept: they are rendered later in the operator's browser. */
+const httpsUrl = (v: unknown) => (typeof v === 'string' && URL.parse(v)?.protocol === 'https:' ? v : undefined);
+
+// Meta's media CDNs. Images/videos from anywhere else are shown as plain links: an <img> from a customer-chosen
+// host would hand the operator's IP and timing to a third party.
+const META_CDN = /(^|\.)(cdninstagram\.com|fbcdn\.net|fbsbx\.com)$/i;
+export const onMetaCdn = (u: string) => {
+  const x = URL.parse(u);
+  return !!x && x.protocol === 'https:' && META_CDN.test(x.hostname);
+};
+
 export const igRedirectUri = () => `${config.APP_URL}/oauth/instagram/callback`;
 
 export function instagramAuthorizeUrl(state: string): string {
@@ -37,7 +48,13 @@ export async function exchangeInstagramCode(code: string) {
   });
   // `user_id` is the professional account id used in webhooks (`id` is app-scoped).
   const me = await graph<{ user_id: string; username: string }>(IG(), fbPath('me'), { token: long.access_token, query: { fields: 'user_id,username' } });
-  return { token: long.access_token, expiresAt: new Date(Date.now() + long.expires_in * 1000), igId: String(me.user_id), username: me.username, scopes: granted };
+  return {
+    token: long.access_token,
+    expiresAt: new Date(Date.now() + long.expires_in * 1000),
+    igId: String(me.user_id),
+    username: me.username,
+    scopes: granted,
+  };
 }
 
 export async function refreshInstagramToken(token: string) {
@@ -52,10 +69,19 @@ export const subscribeInstagram = (token: string) =>
 
 export const unsubscribeInstagram = (token: string) => graph(IG(), fbPath('me/subscribed_apps'), { method: 'DELETE', token });
 
-export async function sendInstagramText(token: string, igId: string, to: string, text: string, opts: { commentId?: string; quickReplies?: { title: string; payload: string }[] } = {}): Promise<string> {
+export async function sendInstagramText(
+  token: string,
+  igId: string,
+  to: string,
+  text: string,
+  opts: { commentId?: string; quickReplies?: { title: string; payload: string }[] } = {},
+): Promise<string> {
   const message: Record<string, unknown> = { text: text.slice(0, IG_TEXT_LIMIT) };
   // Quick replies: max 13, title max 20 chars, text only (Meta limits).
-  if (opts.quickReplies?.length) message.quick_replies = opts.quickReplies.slice(0, 13).map((q) => ({ content_type: 'text', title: q.title.slice(0, 20), payload: q.payload.slice(0, 1000) }));
+  if (opts.quickReplies?.length)
+    message.quick_replies = opts.quickReplies
+      .slice(0, 13)
+      .map((q) => ({ content_type: 'text', title: q.title.slice(0, 20), payload: q.payload.slice(0, 1000) }));
   const r = await graph<{ message_id: string }>(IG(), fbPath(`${igId}/messages`), {
     token,
     json: { recipient: opts.commentId ? { comment_id: opts.commentId } : { id: to }, message },
@@ -81,7 +107,17 @@ export function parseInstagramWebhook(body: any): InboundEvent[] {
       // Buttons / ice breakers arrive as postbacks: treat like a quick reply tap.
       if (ev?.postback && sender && sender !== igId) {
         const pb = ev.postback;
-        out.push({ type: 'message', channelType: 'instagram', channelExternalId: igId, userId: sender, userName: '', mid: String(pb.mid ?? `pb.${ev.timestamp}.${sender}`), text: typeof pb.title === 'string' ? pb.title : null, kind: 'quick_reply', payload: typeof pb.payload === 'string' ? pb.payload : undefined });
+        out.push({
+          type: 'message',
+          channelType: 'instagram',
+          channelExternalId: igId,
+          userId: sender,
+          userName: '',
+          mid: String(pb.mid ?? `pb.${ev.timestamp}.${sender}`),
+          text: typeof pb.title === 'string' ? pb.title : null,
+          kind: 'quick_reply',
+          payload: typeof pb.payload === 'string' ? pb.payload : undefined,
+        });
         continue;
       }
       const m = ev?.message;
@@ -92,22 +128,46 @@ export function parseInstagramWebhook(body: any): InboundEvent[] {
       }
       if (!sender || sender === igId) continue;
       const attachments: any[] = Array.isArray(m.attachments) ? m.attachments : [];
-      const media = attachments.map((a) => ({ type: String(a?.type ?? 'file'), url: typeof a?.payload?.url === 'string' ? a.payload.url : undefined }));
+      const media = attachments.map((a) => ({ type: String(a?.type ?? 'file'), url: httpsUrl(a?.payload?.url) }));
       const text = typeof m.text === 'string' && m.text.trim() && !m.is_unsupported ? m.text : null;
-      const kind = m.quick_reply?.payload ? 'quick_reply'
-        : media.some((x) => x.type === 'story_mention') ? 'story_mention'
-        : m.reply_to?.story ? 'story_reply'
-        : !text && media.length ? 'media'
-        : 'text';
-      if (m.reply_to?.story?.url) media.push({ type: 'story', url: String(m.reply_to.story.url) });
-      out.push({ type: 'message', channelType: 'instagram', channelExternalId: igId, userId: sender, userName: '', mid: m.mid, text, kind, media: media.length ? media : undefined, payload: m.quick_reply?.payload });
+      const kind = m.quick_reply?.payload
+        ? 'quick_reply'
+        : media.some((x) => x.type === 'story_mention')
+          ? 'story_mention'
+          : m.reply_to?.story
+            ? 'story_reply'
+            : !text && media.length
+              ? 'media'
+              : 'text';
+      const storyUrl = httpsUrl(m.reply_to?.story?.url);
+      if (storyUrl) media.push({ type: 'story', url: storyUrl });
+      out.push({
+        type: 'message',
+        channelType: 'instagram',
+        channelExternalId: igId,
+        userId: sender,
+        userName: '',
+        mid: m.mid,
+        text,
+        kind,
+        media: media.length ? media : undefined,
+        payload: m.quick_reply?.payload,
+      });
     }
     for (const ch of entry?.changes ?? []) {
       const v = ch?.value;
       if (ch?.field !== 'comments' || typeof v?.id !== 'string' || typeof v?.from?.id !== 'string') continue;
       out.push({
-        type: 'comment', channelType: 'instagram', channelExternalId: igId, commentId: v.id, parentId: v.parent_id, mediaId: String(v.media?.id ?? ''),
-        fromId: v.from.id, fromUsername: String(v.from.username ?? ''), text: String(v.text ?? ''), time: Number(entry.time) > 1e12 ? Number(entry.time) : Number(entry.time ?? 0) * 1000 || Date.now(),
+        type: 'comment',
+        channelType: 'instagram',
+        channelExternalId: igId,
+        commentId: v.id,
+        parentId: v.parent_id,
+        mediaId: String(v.media?.id ?? ''),
+        fromId: v.from.id,
+        fromUsername: String(v.from.username ?? ''),
+        text: String(v.text ?? ''),
+        time: Number(entry.time) > 1e12 ? Number(entry.time) : Number(entry.time ?? 0) * 1000 || Date.now(),
       });
     }
   }
@@ -122,10 +182,17 @@ export async function replyToComment(token: string, commentId: string, text: str
 
 /** Recent posts/reels for the automation post picker. */
 export async function recentMedia(token: string) {
-  const r = await graph<{ data?: { id: string; caption?: string; media_type?: string; thumbnail_url?: string; media_url?: string; timestamp?: string; permalink?: string }[] }>(
-    IG(), fbPath('me/media'), { token, query: { fields: 'id,caption,media_type,thumbnail_url,media_url,timestamp,permalink', limit: '24' } },
-  );
-  return (r.data ?? []).map((m) => ({ id: m.id, caption: (m.caption ?? '').slice(0, 120), type: m.media_type ?? '', thumb: m.thumbnail_url ?? m.media_url ?? '', permalink: m.permalink ?? '', timestamp: m.timestamp ?? '' }));
+  const r = await graph<{
+    data?: { id: string; caption?: string; media_type?: string; thumbnail_url?: string; media_url?: string; timestamp?: string; permalink?: string }[];
+  }>(IG(), fbPath('me/media'), { token, query: { fields: 'id,caption,media_type,thumbnail_url,media_url,timestamp,permalink', limit: '24' } });
+  return (r.data ?? []).map((m) => ({
+    id: m.id,
+    caption: (m.caption ?? '').slice(0, 120),
+    type: m.media_type ?? '',
+    thumb: [m.thumbnail_url, m.media_url].find((u) => u && onMetaCdn(u)) ?? '',
+    permalink: m.permalink ?? '',
+    timestamp: m.timestamp ?? '',
+  }));
 }
 
 /** Texts the business itself sent in its most recent DM threads (for style learning). Best effort. */

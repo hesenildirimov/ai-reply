@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 import { randomDigits } from '../crypto.js';
-import { fbPath, graph, GraphError } from './graph.js';
+import { fbPath, GraphError, graph } from './graph.js';
 import type { InboundEvent } from './types.js';
 
 export const WA_TEXT_LIMIT = 4096;
@@ -20,11 +20,15 @@ export function parseWhatsAppWebhook(body: any): InboundEvent[] {
         if (typeof m?.from !== 'string' || typeof m?.id !== 'string') continue;
         const reply = m.interactive?.button_reply ?? m.interactive?.list_reply;
         const text =
-          m.type === 'text' ? m.text?.body
-          : m.type === 'button' ? m.button?.text
-          : m.type === 'interactive' ? reply?.title
-          : typeof m[m.type]?.caption === 'string' ? m[m.type].caption
-          : null;
+          m.type === 'text'
+            ? m.text?.body
+            : m.type === 'button'
+              ? m.button?.text
+              : m.type === 'interactive'
+                ? reply?.title
+                : typeof m[m.type]?.caption === 'string'
+                  ? m[m.type].caption
+                  : null;
         const mediaObj = ['image', 'video', 'audio', 'document', 'sticker'].includes(m.type) ? m[m.type] : null;
         const payload = m.type === 'interactive' ? reply?.id : m.type === 'button' ? m.button?.payload : undefined;
         out.push({
@@ -53,9 +57,11 @@ export async function completeEmbeddedSignup(code: string, wabaId: string, phone
   const { access_token: token } = await graph<{ access_token: string }>(G(), fbPath('oauth/access_token'), {
     query: { client_id: config.META_APP_ID!, client_secret: config.META_APP_SECRET!, code },
   });
-  const phones = await graph<{ data: { id: string; display_phone_number?: string; verified_name?: string }[] }>(
-    G(), fbPath(`${wabaId}/phone_numbers`), { token, appSecretProof: true, query: { fields: 'id,display_phone_number,verified_name' } },
-  );
+  const phones = await graph<{ data: { id: string; display_phone_number?: string; verified_name?: string }[] }>(G(), fbPath(`${wabaId}/phone_numbers`), {
+    token,
+    appSecretProof: true,
+    query: { fields: 'id,display_phone_number,verified_name' },
+  });
   const phone = phones.data.find((p) => p.id === phoneNumberId);
   if (!phone) throw new Error('Phone number does not belong to the authorized WhatsApp Business Account');
 
@@ -77,10 +83,23 @@ export async function completeEmbeddedSignup(code: string, wabaId: string, phone
   };
 }
 
-export async function sendWhatsAppText(token: string, phoneNumberId: string, to: string, text: string, quickReplies?: { title: string; payload: string }[]): Promise<string> {
+export async function sendWhatsAppText(
+  token: string,
+  phoneNumberId: string,
+  to: string,
+  text: string,
+  quickReplies?: { title: string; payload: string }[],
+): Promise<string> {
   // Up to 3 reply buttons (title ≤ 20 chars) — WhatsApp's interactive "button" message.
   const message = quickReplies?.length
-    ? { type: 'interactive', interactive: { type: 'button', body: { text: text.slice(0, 1024) }, action: { buttons: quickReplies.slice(0, 3).map((q) => ({ type: 'reply', reply: { id: q.payload.slice(0, 256), title: q.title.slice(0, 20) } })) } } }
+    ? {
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: { text: text.slice(0, 1024) },
+          action: { buttons: quickReplies.slice(0, 3).map((q) => ({ type: 'reply', reply: { id: q.payload.slice(0, 256), title: q.title.slice(0, 20) } })) },
+        },
+      }
     : { type: 'text', text: { body: text.slice(0, WA_TEXT_LIMIT), preview_url: false } };
   const res = await graph<{ messages: { id: string }[] }>(G(), fbPath(`${phoneNumberId}/messages`), {
     token,
@@ -105,7 +124,12 @@ export async function unsubscribeWhatsApp(token: string, wabaId: string): Promis
 
 /** Template message (works outside the 24h window). Params can't contain newlines/tabs or long runs of spaces. */
 export async function sendWhatsAppTemplate(token: string, phoneNumberId: string, to: string, name: string, lang: string, params: string[]): Promise<string> {
-  const clean = (s: string) => s.replace(/[\n\t]+/g, ' ').replace(/ {4,}/g, ' ').trim().slice(0, 300) || '-';
+  const clean = (s: string) =>
+    s
+      .replace(/[\n\t]+/g, ' ')
+      .replace(/ {4,}/g, ' ')
+      .trim()
+      .slice(0, 300) || '-';
   const res = await graph<{ messages: { id: string }[] }>(G(), fbPath(`${phoneNumberId}/messages`), {
     token,
     appSecretProof: true,
@@ -120,9 +144,13 @@ export async function sendWhatsAppTemplate(token: string, phoneNumberId: string,
 }
 
 /** Downloads WhatsApp media (URL from Graph needs the same token; it expires after minutes). */
-export async function fetchWhatsAppMedia(token: string, mediaId: string): Promise<{ body: ArrayBuffer; mime: string }> {
-  const meta = await graph<{ url: string; mime_type: string }>(G(), fbPath(mediaId), { token, appSecretProof: true });
+export async function fetchWhatsAppMedia(token: string, mediaId: string, maxBytes = Infinity): Promise<{ body: ArrayBuffer; mime: string }> {
+  const meta = await graph<{ url: string; mime_type: string; file_size?: number }>(G(), fbPath(mediaId), { token, appSecretProof: true });
+  if ((meta.file_size ?? 0) > maxBytes) throw new Error('media too large');
   const res = await fetch(meta.url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) });
   if (!res.ok) throw new Error(`media download ${res.status}`);
-  return { body: await res.arrayBuffer(), mime: meta.mime_type || 'application/octet-stream' };
+  if (Number(res.headers.get('content-length') ?? 0) > maxBytes) throw new Error('media too large');
+  const body = await res.arrayBuffer();
+  if (body.byteLength > maxBytes) throw new Error('media too large');
+  return { body, mime: meta.mime_type || 'application/octet-stream' };
 }

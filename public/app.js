@@ -1,6 +1,6 @@
 // Small progressive enhancements (no inline JS: CSP blocks it).
 document.addEventListener('submit', (e) => {
-  const msg = e.target.dataset && e.target.dataset.confirm;
+  const msg = e.target.dataset?.confirm;
   if (msg && !window.confirm(msg)) e.preventDefault();
 });
 
@@ -8,8 +8,12 @@ document.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-copy]');
   if (!btn) return;
   const input = document.getElementById(btn.dataset.copy);
-  const done = () => { btn.lastChild.textContent = 'Kopyalandı'; };
-  navigator.clipboard?.writeText(input.value).then(done, () => { input.select(); });
+  const done = () => {
+    btn.lastChild.textContent = 'Kopyalandı';
+  };
+  navigator.clipboard?.writeText(input.value).then(done, () => {
+    input.select();
+  });
 });
 
 // Chat: start at the newest message; Enter sends, Shift+Enter makes a new line.
@@ -18,7 +22,10 @@ if (thread) thread.scrollTop = thread.scrollHeight;
 document.querySelectorAll('.composer textarea').forEach((t) => {
   if (t.closest('.inbox3')) return; // inbox.js handles its own composer
   t.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); t.form.requestSubmit(); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      t.form.requestSubmit();
+    }
   });
 });
 
@@ -31,4 +38,6 @@ if (box) {
   }, Number(box.dataset.autorefresh) * 1000);
 }
 // Selects marked data-autosubmit submit their form on change (filters, role pickers).
-document.addEventListener('change', (e) => { if (e.target.matches && e.target.matches('[data-autosubmit]')) e.target.form.requestSubmit(); });
+document.addEventListener('change', (e) => {
+  if (e.target.matches?.('[data-autosubmit]')) e.target.form.requestSubmit();
+});

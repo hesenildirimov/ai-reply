@@ -7,7 +7,20 @@ const enabled = !!process.env.TEST_DATABASE_URL && !!process.env.TEST_REDIS_URL;
 describe('P4 units', () => {
   it('blocks private, loopback, link-local and metadata addresses', async () => {
     const { isPrivateAddress, validateWebhookUrl } = await import('../src/webhooks.js');
-    for (const ip of ['10.1.2.3', '127.0.0.1', '169.254.169.254', '172.16.0.1', '192.168.1.1', '100.64.0.1', '0.0.0.0', '::1', 'fd00::1', 'fe80::1', '::ffff:10.0.0.1']) expect(isPrivateAddress(ip)).toBe(true);
+    for (const ip of [
+      '10.1.2.3',
+      '127.0.0.1',
+      '169.254.169.254',
+      '172.16.0.1',
+      '192.168.1.1',
+      '100.64.0.1',
+      '0.0.0.0',
+      '::1',
+      'fd00::1',
+      'fe80::1',
+      '::ffff:10.0.0.1',
+    ])
+      expect(isPrivateAddress(ip)).toBe(true);
     for (const ip of ['8.8.8.8', '172.32.0.1', '2a00:1450::1']) expect(isPrivateAddress(ip)).toBe(false);
     expect(validateWebhookUrl('http://example.com/x')).toBeNull(); // https only
     expect(validateWebhookUrl('https://169.254.169.254/latest')).toBeNull();
@@ -17,7 +30,10 @@ describe('P4 units', () => {
   });
   it('parses CSV with quotes and undoes the export injection guard', async () => {
     const { parseCsv, csvLine } = await import('../src/csv.js');
-    expect(parseCsv('a,b\n"x, ""y""",\'=1+1\r\n\n')).toEqual([['a', 'b'], ['x, "y"', '=1+1']]);
+    expect(parseCsv('a,b\n"x, ""y""",\'=1+1\r\n\n')).toEqual([
+      ['a', 'b'],
+      ['x, "y"', '=1+1'],
+    ]);
     expect(csvLine(['=HYPERLINK("x")', 'ok'])).toBe('"\'=HYPERLINK(""x"")",ok\n');
     expect(() => parseCsv('a\n1\n2\n3', 2)).toThrow(/too many rows/);
   });
@@ -35,12 +51,17 @@ describe.skipIf(!enabled)('P4 SaaS features (integration)', () => {
     const { parseInstagramWebhook } = await import('../src/channels/instagram.js');
     const mid = `p4.${++n}`;
     for (const ev of parseInstagramWebhook(igMessage(ig, from, mid, text))) await pipeline.ingest(ev);
-    return db.one(`SELECT m.id, m.conversation_id, c.contact_id FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE m.external_id = $1`, [mid]);
+    return db.one(`SELECT m.id, m.conversation_id, c.contact_id FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE m.external_id = $1`, [
+      mid,
+    ]);
   }
   /** Adds a member with a known password and returns a logged-in session for them. */
   async function memberSession(email: string, role: string, workspaceId = A.workspaceId) {
     const { hash } = await import('@node-rs/argon2');
-    const u = await db.one(`INSERT INTO users (email, password_hash, email_verified_at) VALUES ($1, $2, now()) RETURNING id`, [email, await hash('correct-horse-battery')]);
+    const u = await db.one(`INSERT INTO users (email, password_hash, email_verified_at) VALUES ($1, $2, now()) RETURNING id`, [
+      email,
+      await hash('correct-horse-battery'),
+    ]);
     await db.q(`INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, $3)`, [workspaceId, u.id, role]);
     return { id: u.id as string, ...(await loginAs(app, email)) };
   }
@@ -62,10 +83,10 @@ describe.skipIf(!enabled)('P4 SaaS features (integration)', () => {
     delete process.env.WEBHOOK_ALLOW_PRIVATE;
     await app.close();
     await stopFake();
-    const { queue, redis } = await import('../src/queue.js');
+    const { closeQueues, redis } = await import('../src/queue.js');
     const { closeRealtime } = await import('../src/realtime.js');
     closeRealtime();
-    await queue.close();
+    await closeQueues();
     redis.disconnect();
     await db.pool.end();
   });
@@ -148,7 +169,12 @@ describe.skipIf(!enabled)('P4 SaaS features (integration)', () => {
     expect(csv.body).not.toContain('IGPB');
     const b = await inbound('IGPB', 'U-bcsv', 'Salam');
     const body = `id,username,tags,olcu,opted_out\n${c.contact_id},,yeni;sorğu,L,1\n${b.contact_id},,hack,,\n,nobody,x,,\n`;
-    const res = await app.inject({ method: 'POST', url: '/app/contacts/import', headers: { ...owner.headers, 'content-type': 'text/csv', 'x-csrf-token': owner.csrf }, payload: body });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/app/contacts/import',
+      headers: { ...owner.headers, 'content-type': 'text/csv', 'x-csrf-token': owner.csrf },
+      payload: body,
+    });
     expect(res.json()).toMatchObject({ ok: true, rows: 3, updated: 1, not_found: 2 });
     const row = await db.one(`SELECT fields, opted_out FROM contacts WHERE id = $1`, [c.contact_id]);
     expect(row).toMatchObject({ fields: { olcu: 'L' }, opted_out: true });
@@ -164,7 +190,11 @@ describe.skipIf(!enabled)('P4 SaaS features (integration)', () => {
     await pipeline.processReply(m.conversation_id, m.id);
     expect(fake.aiCalls()).toHaveLength(0);
     expect(fake.sends()).toHaveLength(0);
-    expect(await db.one(`SELECT 1 FROM audit_log WHERE workspace_id = $1 AND action = 'plan.limit_reached' AND meta->>'limit' = 'bot_messages_month'`, [A.workspaceId])).toBeTruthy();
+    expect(
+      await db.one(`SELECT 1 FROM audit_log WHERE workspace_id = $1 AND action = 'plan.limit_reached' AND meta->>'limit' = 'bot_messages_month'`, [
+        A.workspaceId,
+      ]),
+    ).toBeTruthy();
     await db.q(`UPDATE workspaces SET limit_overrides = '{"contacts": 1}' WHERE id = $1`, [A.workspaceId]);
     const m2 = await inbound('IGPA', 'U-lim2', 'Salam');
     await pipeline.processReply(m2.conversation_id, m2.id);
@@ -176,12 +206,18 @@ describe.skipIf(!enabled)('P4 SaaS features (integration)', () => {
     const refused = await post(owner, '/app/integrations', { name: 'x', url: 'http://127.0.0.1:4011/hook', events: 'message.received' });
     expect(refused.headers.location).toContain('webhook_url');
     process.env.WEBHOOK_ALLOW_PRIVATE = '1'; // local fake server only (ignored in production)
-    const created = await post(owner, '/app/integrations', { name: 'CRM', url: 'http://127.0.0.1:4011/hook', events: ['message.received', 'contact.tag_added'] });
+    const created = await post(owner, '/app/integrations', {
+      name: 'CRM',
+      url: 'http://127.0.0.1:4011/hook',
+      events: ['message.received', 'contact.tag_added'],
+    });
     const secret = /value="(whsec_[^"]+)"/.exec(created.body)![1]!;
     const hook = await db.one(`SELECT id, secret_enc FROM webhooks WHERE workspace_id = $1`, [A.workspaceId]);
     expect(hook.secret_enc).not.toContain(secret); // stored encrypted
     const m = await inbound('IGPA', 'U-wh', 'Webhook test');
-    const d = await db.one(`SELECT id FROM webhook_deliveries WHERE webhook_id = $1 AND event = 'message.received' ORDER BY created_at DESC LIMIT 1`, [hook.id]);
+    const d = await db.one(`SELECT id FROM webhook_deliveries WHERE webhook_id = $1 AND event = 'message.received' ORDER BY created_at DESC LIMIT 1`, [
+      hook.id,
+    ]);
     const { deliverWebhook } = await import('../src/webhooks.js');
     await deliverWebhook(d.id, 1, false);
     const call = fake.calls.find((c) => c.path === '/hook')!;
@@ -198,10 +234,10 @@ describe.skipIf(!enabled)('P4 SaaS features (integration)', () => {
     const d2 = await db.one(`SELECT id FROM webhook_deliveries WHERE event = 'contact.tag_added' ORDER BY created_at DESC LIMIT 1`);
     fake.handler = (_b, p) => (p === '/hook' ? { status: 503 } : undefined);
     await expect(deliverWebhook(d2.id, 1, false)).rejects.toThrow('HTTP 503');
-    expect((await db.one(`SELECT status, attempts FROM webhook_deliveries WHERE id = $1`, [d2.id]))).toMatchObject({ status: 'pending', attempts: 1 });
+    expect(await db.one(`SELECT status, attempts FROM webhook_deliveries WHERE id = $1`, [d2.id])).toMatchObject({ status: 'pending', attempts: 1 });
     fake.handler = (_b, p) => (p === '/hook' ? { status: 400 } : undefined);
     await deliverWebhook(d2.id, 2, false);
-    expect((await db.one(`SELECT status, response_code FROM webhook_deliveries WHERE id = $1`, [d2.id]))).toMatchObject({ status: 'failed', response_code: 400 });
+    expect(await db.one(`SELECT status, response_code FROM webhook_deliveries WHERE id = $1`, [d2.id])).toMatchObject({ status: 'failed', response_code: 400 });
     expect((await db.one(`SELECT consecutive_failures FROM webhooks WHERE id = $1`, [hook.id])).consecutive_failures).toBe(1);
     // Another workspace can't manage this webhook.
     const bOwner = await loginAs(app, B.email);

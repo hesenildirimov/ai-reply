@@ -1,8 +1,10 @@
 import type { ReplyContext, Turn } from './ai.js';
 import { aiConfig, estimateTokens } from './aiconfig.js';
-import { normalize } from './text.js';
 import { config } from './config.js';
 import { one, q } from './db.js';
+import { isLatinRussian } from './language.js';
+import { openText, openTurns, sealText } from './messages.js';
+import { normalize } from './text.js';
 
 export interface BuiltContext {
   history: Turn[];
@@ -26,13 +28,22 @@ const MAX_ITEMS = 8;
  */
 export function selectKnowledge(items: { kind: string; title: string; body: string; keywords: string[] }[], query: string, budget: number): string {
   const nq = ` ${normalize(query)} `;
-  const qWords = [...new Set(nq.trim().split(' ').filter((w) => w.length > 2))];
+  const qWords = [
+    ...new Set(
+      nq
+        .trim()
+        .split(' ')
+        .filter((w) => w.length > 2),
+    ),
+  ];
   const docs = items.map((it) => new Set(normalize(`${it.title} ${it.body}`).split(' ')));
   const hit = (words: Set<string>, w: string) => words.has(w) || [...words].some((x) => x.length > 4 && w.length > 4 && (x.startsWith(w) || w.startsWith(x)));
-  const idf = new Map(qWords.map((w) => {
-    const df = docs.filter((d) => hit(d, w)).length;
-    return [w, df === 0 || df > Math.max(3, items.length * 0.3) ? 0 : Math.log(1 + items.length / df)];
-  }));
+  const idf = new Map(
+    qWords.map((w) => {
+      const df = docs.filter((d) => hit(d, w)).length;
+      return [w, df === 0 || df > Math.max(3, items.length * 0.3) ? 0 : Math.log(1 + items.length / df)];
+    }),
+  );
   const scored = items.map((it, i) => {
     const kw = it.keywords.map(normalize).filter((k) => k && nq.includes(` ${k} `)).length;
     let overlap = 0;
@@ -61,13 +72,17 @@ export function selectKnowledge(items: { kind: string; title: string; body: stri
  * Small knowledge bases go whole into the cached prefix (cheapest on cache hits, nothing can be missed); larger ones
  * fall back to per-message retrieval so the prompt stays bounded however big the catalogue grows.
  */
-export function planKnowledge(items: { kind: string; title: string; body: string; keywords: string[] }[], query: string): { pinned: string; knowledge: string } {
+export function planKnowledge(
+  items: { kind: string; title: string; body: string; keywords: string[] }[],
+  query: string,
+): { pinned: string; knowledge: string } {
   const all = items.map((it) => `[${it.kind}] ${it.title}: ${it.body}`).join('\n');
   if (estimateTokens(all) <= aiConfig.limits.pinned_knowledge_token_budget) return { pinned: all, knowledge: '' };
   return { pinned: '', knowledge: selectKnowledge(items, query, aiConfig.limits.knowledge_token_budget) };
 }
 
-const COMPLEX = /(şikayət|sikayet|problem|qaytar|geri|refund|zəmanət|zemanet|sifariş|sifaris|order|ödəniş|odenis|kart|endirim|razılaş|niyə|niye|почему|жалоб|заказ)/i;
+const COMPLEX =
+  /(şikayət|sikayet|problem|qaytar|geri|refund|zəmanət|zemanet|sifariş|sifaris|order|ödəniş|odenis|kart|endirim|razılaş|niyə|niye|почему|жалоб|заказ)/i;
 
 /** Simple, short questions go to the fast model; anything long, multi-part or sensitive to the smart one. */
 export function chooseRoute(latest: string, turns: number, knowledgeChars: number): 'fast' | 'smart' {
@@ -81,11 +96,13 @@ export function chooseRoute(latest: string, turns: number, knowledgeChars: numbe
  * of older turns, and only the knowledge items relevant to the latest messages.
  */
 export async function buildContext(conversationId: string, workspaceId: string): Promise<BuiltContext> {
-  const conv = await one<{ summary: string; summary_upto: Date | null }>(`SELECT summary, summary_upto FROM conversations WHERE id = $1`, [conversationId]);
-  const rows = await q<{ sender: string; body: string; created_at: Date }>(
-    `SELECT sender, body, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') AND created_at > coalesce($2, '-infinity'::timestamptz)
+  const conv = await loadSummary(conversationId);
+  const rows = openTurns(
+    await q<{ sender: string; body: string; enc: boolean; media_text: string | null; created_at: Date }>(
+      `SELECT sender, body, enc, media_text, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') AND created_at > coalesce($2, '-infinity'::timestamptz)
      ORDER BY created_at DESC LIMIT 60`,
-    [conversationId, conv?.summary_upto ?? null],
+      [conversationId, conv?.summary_upto ?? null],
+    ),
   );
   const budget = aiConfig.limits.history_token_budget;
   const recent: typeof rows = [];
@@ -98,30 +115,46 @@ export async function buildContext(conversationId: string, workspaceId: string):
   }
   recent.reverse();
   const history: Turn[] = recent.map((m) => ({ role: m.sender === 'customer' ? 'user' : 'assistant', text: m.body }));
-  const latestInbound = recent.filter((m) => m.sender === 'customer').slice(-3).map((m) => m.body).join(' ');
+  const latestInbound = recent
+    .filter((m) => m.sender === 'customer')
+    .slice(-3)
+    .map((m) => m.body)
+    .join(' ');
   // Stable order (by id) so the pinned block is byte-identical across conversations and stays cached.
   const items = await q(`SELECT kind, title, body, keywords FROM knowledge_items WHERE workspace_id = $1 AND active ORDER BY id LIMIT 500`, [workspaceId]);
   const { pinned, knowledge } = planKnowledge(items, latestInbound);
   const lastText = recent.at(-1)?.body ?? '';
   return {
     history,
-    extra: { pinnedKnowledge: pinned || undefined, knowledge, summary: conv?.summary || undefined },
+    extra: { pinnedKnowledge: pinned || undefined, knowledge, summary: conv?.summary || undefined, latinRussian: isLatinRussian(latestInbound) },
     route: chooseRoute(lastText, history.length, knowledge.length),
     unsummarized: rows.length - recent.length,
     estInputTokens: used + estimateTokens(pinned) + estimateTokens(knowledge) + estimateTokens(conv?.summary ?? ''),
   };
 }
 
+/** Rolling summary of older turns (stored encrypted: it is conversation content too). */
+async function loadSummary(conversationId: string) {
+  const row = await one<{ summary: string; summary_upto: Date | null }>(`SELECT summary, summary_upto FROM conversations WHERE id = $1`, [conversationId]);
+  return row && { ...row, summary: openText(row.summary) };
+}
+
 /** Folds turns older than the newest MIN_RECENT*2 into the rolling summary (run by the worker, off the reply path). */
 export async function updateSummary(conversationId: string, workspaceId: string): Promise<void> {
   const { summarizeTurns } = await import('./ai.js');
-  const conv = await one<{ summary: string; summary_upto: Date | null }>(`SELECT summary, summary_upto FROM conversations WHERE id = $1`, [conversationId]);
-  const rows = await q<{ sender: string; body: string; created_at: Date }>(
-    `SELECT sender, body, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') AND created_at > coalesce($2, '-infinity'::timestamptz) ORDER BY created_at`,
-    [conversationId, conv?.summary_upto ?? null],
+  const conv = await loadSummary(conversationId);
+  const rows = openTurns(
+    await q<{ sender: string; body: string; enc: boolean; media_text: string | null; created_at: Date }>(
+      `SELECT sender, body, enc, media_text, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') AND created_at > coalesce($2, '-infinity'::timestamptz) ORDER BY created_at`,
+      [conversationId, conv?.summary_upto ?? null],
+    ),
   );
   const older = rows.slice(0, Math.max(0, rows.length - MIN_RECENT * 2));
   if (older.length < aiConfig.limits.summary_after_messages / 2) return;
-  const summary = await summarizeTurns(conv?.summary ?? '', older.map((m) => ({ role: m.sender === 'customer' ? 'user' : 'assistant', text: m.body })), { workspaceId, conversationId, purpose: 'summary' });
-  if (summary) await q(`UPDATE conversations SET summary = $2, summary_upto = $3 WHERE id = $1`, [conversationId, summary, older.at(-1)!.created_at]);
+  const summary = await summarizeTurns(
+    conv?.summary ?? '',
+    older.map((m) => ({ role: m.sender === 'customer' ? 'user' : 'assistant', text: m.body })),
+    { workspaceId, conversationId, purpose: 'summary' },
+  );
+  if (summary) await q(`UPDATE conversations SET summary = $2, summary_upto = $3 WHERE id = $1`, [conversationId, sealText(summary), older.at(-1)!.created_at]);
 }

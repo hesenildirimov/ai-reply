@@ -1,6 +1,18 @@
 node_modules
 dist
+# Secrets: only the example file is committed
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+age-key.txt
+# Logs, local data and backups (backups hold customer data)
 *.log
 dump.rdb
 backups/
+*.dump
+*.dump.age
+*.sql.gz

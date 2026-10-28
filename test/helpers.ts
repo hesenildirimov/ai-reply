@@ -1,8 +1,8 @@
-import { createServer, type Server } from 'node:http';
 import { readdirSync, readFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
 
 /** Programmable stand-in for Meta Graph + Anthropic APIs (both point at FAKE_PORT in vitest.config.ts). */
-type Reply = { status?: number; json?: unknown; hang?: boolean };
+type Reply = { status?: number; json?: unknown; hang?: boolean; delayMs?: number; drop?: boolean; file?: { body: Buffer; type: string } };
 type Handler = (body: any, path: string) => Reply | undefined;
 
 export const fake = {
@@ -21,12 +21,21 @@ export const fake = {
 };
 
 export const aiText = (text: string) => ({
-  json: { id: 'msg_t', type: 'message', role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text }], usage: { input_tokens: 1200, output_tokens: 40, cache_read_input_tokens: 900, cache_creation_input_tokens: 0 } },
+  json: {
+    id: 'msg_t',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-opus-5-5',
+    stop_reason: 'end_turn',
+    content: [{ type: 'text', text }],
+    usage: { input_tokens: 1200, output_tokens: 40, cache_read_input_tokens: 900, cache_creation_input_tokens: 0 },
+  },
 });
 
 const defaults = (path: string, body: any): Reply => {
   if (path === '/v1/messages') return aiText('Salam! Bəli, var.');
-  if (/\/messages$/.test(path)) return { json: { recipient_id: body?.recipient?.id, message_id: `mid.${fake.calls.length}`, messages: [{ id: `wamid.${fake.calls.length}` }] } };
+  if (/\/messages$/.test(path))
+    return { json: { recipient_id: body?.recipient?.id, message_id: `mid.${fake.calls.length}`, messages: [{ id: `wamid.${fake.calls.length}` }] } };
   return { json: { success: true } };
 };
 
@@ -44,9 +53,19 @@ export async function startFake(port = Number(process.env.FAKE_PORT ?? 4011)) {
       } catch {}
       fake.calls.push({ path, body, raw, headers: req.headers });
       const r = fake.handler(body, path) ?? defaults(path, body);
-      if (r.hang) return; // simulate a timeout / dropped connection
-      res.writeHead(r.status ?? 200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(r.json ?? {}));
+      if (r.hang) return; // simulate a timeout
+      if (r.drop) return void req.socket.destroy(); // connection lost after the request left: outcome unknown
+      const send = () => {
+        if (r.file) {
+          res.writeHead(r.status ?? 200, { 'content-type': r.file.type, 'content-length': r.file.body.length });
+          return void res.end(r.file.body);
+        }
+        res.writeHead(r.status ?? 200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(r.json ?? {}));
+      };
+      if (r.delayMs)
+        setTimeout(send, r.delayMs); // slow Meta / Claude
+      else send();
     });
   });
   await new Promise<void>((ok) => server!.listen(port, '127.0.0.1', ok));
@@ -57,7 +76,10 @@ export const stopFake = () => new Promise<void>((ok) => (server ? server.close((
 export async function resetDb() {
   const { pool } = await import('../src/db.js');
   await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
-  for (const f of readdirSync('migrations').filter((x) => x.endsWith('.sql')).sort()) await pool.query(readFileSync(`migrations/${f}`, 'utf8'));
+  for (const f of readdirSync('migrations')
+    .filter((x) => x.endsWith('.sql'))
+    .sort())
+    await pool.query(readFileSync(`migrations/${f}`, 'utf8'));
   const { redis } = await import('../src/queue.js');
   await redis.flushdb();
 }
@@ -67,7 +89,10 @@ export async function seedWorkspace(name: string, igId: string) {
   const { one, q } = await import('../src/db.js');
   const { encrypt } = await import('../src/crypto.js');
   const { hash } = await import('@node-rs/argon2');
-  const u = await one(`INSERT INTO users (email, password_hash, email_verified_at) VALUES ($1, $2, now()) RETURNING id`, [`${name}@test.az`, await hash('correct-horse-battery')]);
+  const u = await one(`INSERT INTO users (email, password_hash, email_verified_at) VALUES ($1, $2, now()) RETURNING id`, [
+    `${name}@test.az`,
+    await hash('correct-horse-battery'),
+  ]);
   const w = await one(`INSERT INTO workspaces (name, monthly_reply_limit) VALUES ($1, 100) RETURNING id`, [name]);
   await q(`INSERT INTO memberships VALUES ($1, $2, 'owner')`, [w.id, u.id]);
   await q(`INSERT INTO assistants (workspace_id, enabled, business_name, knowledge) VALUES ($1, true, $2, 'Don: 45 AZN')`, [w.id, name]);
@@ -84,14 +109,23 @@ export const igMessage = (igId: string, from: string, mid: string, text: string)
 });
 
 /** Runs migrations dir listing for the test that checks it. */
-export const migrationFiles = () => readdirSync('migrations').filter((x) => x.endsWith('.sql')).sort();
+export const migrationFiles = () =>
+  readdirSync('migrations')
+    .filter((x) => x.endsWith('.sql'))
+    .sort();
 
 /** Inserts an automation (+ version row) directly. */
 export async function createAutomation(workspaceId: string, trigger: string, config: unknown, status = 'active', name = trigger) {
   const { one, q } = await import('../src/db.js');
   const { configSchema } = await import('../src/automations/schema.js');
   const cfg = configSchema.parse(config);
-  const a = await one(`INSERT INTO automations (workspace_id, name, trigger, status, config) VALUES ($1, $2, $3, $4, $5) RETURNING id`, [workspaceId, name, trigger, status, cfg]);
+  const a = await one(`INSERT INTO automations (workspace_id, name, trigger, status, config) VALUES ($1, $2, $3, $4, $5) RETURNING id`, [
+    workspaceId,
+    name,
+    trigger,
+    status,
+    cfg,
+  ]);
   await q(`INSERT INTO automation_versions (automation_id, version, config) VALUES ($1, 1, $2)`, [a.id, cfg]);
   return a.id as string;
 }
@@ -101,8 +135,27 @@ export async function loginAs(app: import('fastify').FastifyInstance, email: str
   const page = await app.inject({ url: '/login' });
   const pre = page.cookies.find((c) => c.name === 'pcsrf')!;
   const token = /name="_csrf" value="([^"]+)"/.exec(page.body)![1]!;
-  const res = await app.inject({ method: 'POST', url: '/login', headers: { origin: 'http://localhost:3000', cookie: `pcsrf=${pre.value}` }, payload: { _csrf: token, email, password: 'correct-horse-battery' } });
+  const res = await app.inject({
+    method: 'POST',
+    url: '/login',
+    headers: { origin: 'http://localhost:3000', cookie: `pcsrf=${pre.value}` },
+    payload: { _csrf: token, email, password: 'correct-horse-battery' },
+  });
   const cookie = `sid=${res.cookies.find((c) => c.name === 'sid')!.value}`;
   const csrf = /name="_csrf" value="([^"]+)"/.exec((await app.inject({ url: '/app/settings', headers: { cookie } })).body)![1]!;
   return { cookie, csrf, headers: { cookie, origin: 'http://localhost:3000' } };
+}
+
+/** Runs the webhook-intake jobs now (the worker does this in production): webhooks only enqueue. */
+export async function drainInbound() {
+  const { inboundQueue } = await import('../src/queue.js');
+  const { runJob } = await import('../src/jobs.js');
+  for (;;) {
+    const jobs = (await inboundQueue.getJobs(['waiting', 'prioritized'])).filter((j) => j.data.kind === 'inbound');
+    if (!jobs.length) return;
+    for (const j of jobs.reverse()) {
+      await runJob(j as never);
+      await j.remove();
+    }
+  }
 }

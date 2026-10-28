@@ -33,7 +33,13 @@ export interface Usage {
 export function estimateCost(model: string, u: Usage): number {
   const p = aiConfig.models[model];
   if (!p) return 0;
-  return (u.input_tokens * p.input + u.output_tokens * p.output + (u.cache_read_input_tokens ?? 0) * p.cache_read + (u.cache_creation_input_tokens ?? 0) * p.cache_write) / 1e6;
+  return (
+    (u.input_tokens * p.input +
+      u.output_tokens * p.output +
+      (u.cache_read_input_tokens ?? 0) * p.cache_read +
+      (u.cache_creation_input_tokens ?? 0) * p.cache_write) /
+    1e6
+  );
 }
 
 /** Rough token estimate (≈3.5 chars/token for Azerbaijani/Latin text). Used only for budgeting context, never for billing. */

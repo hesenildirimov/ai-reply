@@ -5,14 +5,19 @@
     const svg = wrap.querySelector('svg');
     if (!tip || !svg) return;
     const show = (g) => {
-      wrap.querySelectorAll('.col.on').forEach((x) => x.classList.remove('on'));
+      wrap.querySelectorAll('.col.on').forEach((x) => {
+        x.classList.remove('on');
+      });
       g.classList.add('on');
       tip.replaceChildren();
       const head = document.createElement('div');
       head.className = 'tip-head';
       head.textContent = g.dataset.day;
       tip.append(head);
-      for (const [cls, label, v] of [['s1', 'Gələn', g.dataset.a], ['s2', 'Gedən', g.dataset.b]]) {
+      for (const [cls, label, v] of [
+        ['s1', 'Gələn', g.dataset.a],
+        ['s2', 'Gedən', g.dataset.b],
+      ]) {
         const row = document.createElement('div');
         const key = document.createElement('i');
         key.className = `line-key ${cls}`;
@@ -30,7 +35,12 @@
       tip.style.left = `${left}px`;
       tip.style.top = '4px';
     };
-    const hide = () => { tip.hidden = true; wrap.querySelectorAll('.col.on').forEach((x) => x.classList.remove('on')); };
+    const hide = () => {
+      tip.hidden = true;
+      wrap.querySelectorAll('.col.on').forEach((x) => {
+        x.classList.remove('on');
+      });
+    };
     svg.querySelectorAll('.col').forEach((g) => {
       g.addEventListener('pointerenter', () => show(g));
       g.addEventListener('focus', () => show(g));

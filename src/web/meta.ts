@@ -1,49 +1,42 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { removeChannel } from '../channels/index.js';
 import { parseInstagramWebhook } from '../channels/instagram.js';
-import type { ChannelRow, InboundEvent } from '../channels/types.js';
-import { parseWhatsAppWebhook, sendWhatsAppText } from '../channels/whatsapp.js';
+import type { ChannelRow } from '../channels/types.js';
+import { parseWhatsAppWebhook } from '../channels/whatsapp.js';
 import { config } from '../config.js';
-import { parseSignedRequest, randomToken, safeEqual, verifyMetaSignature } from '../crypto.js';
+import { parseSignedRequest, randomToken, safeEqual, sha256, verifyMetaSignature } from '../crypto.js';
 import { one, q } from '../db.js';
-import { ingest } from '../pipeline.js';
+import { accept, eventJob, type IntakeJob, keyedJob } from '../inbound.js';
 import { redis } from '../queue.js';
-import { sha256 } from '../crypto.js';
 import { telegramEnabled, tgSend } from '../telegram.js';
 
-// Meta delivers in bursts from many IPs: a generous per-IP cap still stops floods of unsigned junk (audit F-14).
-const META = { csrf: false, rateLimit: { max: 1200, timeWindow: '1 minute' } } as const;
+// Meta delivers in bursts from a few IPs: the cap stops floods of unsigned junk (audit F-14) without throttling Meta
+// itself at 500+ businesses. A webhook now costs one HMAC and one queue write, so the cap can be generous.
+const META = { csrf: false, rateLimit: { max: 6000, timeWindow: '1 minute' } } as const;
 
 function verifyChallenge(req: FastifyRequest, reply: FastifyReply) {
   const qs = req.query as Record<string, string | undefined>;
   const token = qs['hub.verify_token'] ?? '';
   const challenge = qs['hub.challenge'] ?? '';
-  if (qs['hub.mode'] === 'subscribe' && config.META_WEBHOOK_VERIFY_TOKEN && safeEqual(token, config.META_WEBHOOK_VERIFY_TOKEN) && /^[\w-]{1,200}$/.test(challenge)) {
+  if (
+    qs['hub.mode'] === 'subscribe' &&
+    config.META_WEBHOOK_VERIFY_TOKEN &&
+    safeEqual(token, config.META_WEBHOOK_VERIFY_TOKEN) &&
+    /^[\w-]{1,200}$/.test(challenge)
+  ) {
     return reply.type('text/plain').send(challenge);
   }
   return reply.code(403).send();
 }
 
-async function handleEvents(req: FastifyRequest, events: InboundEvent[]) {
-  for (const ev of events) {
-    try {
-      await ingest(ev);
-    } catch (e) {
-      req.log.error({ err: e, channel: ev.channelType }, 'ingest failed');
-      throw e; // 500 -> Meta retries; duplicates are deduplicated by message id
-    }
+/** Turns Meta events into intake jobs; the worker stores them and replies. Nothing slow runs inside the webhook. */
+async function intake(req: FastifyRequest, jobs: IntakeJob[]) {
+  try {
+    await accept(jobs);
+  } catch (e) {
+    req.log.error({ err: e }, 'webhook intake failed');
+    throw e; // 500 -> Meta retries; duplicates collapse on the job id / message id
   }
-}
-
-async function linkWhatsAppAlerts(waId: string, text: string) {
-  const say = (t: string) => sendWhatsAppText(config.PLATFORM_WA_TOKEN!, config.PLATFORM_WA_PHONE_NUMBER_ID!, waId, t).catch(() => {});
-  const code = /AIREPLY\s+([A-Z0-9]{8})/i.exec(text)?.[1]?.toUpperCase();
-  const raw = code ? await redis.getdel(`walink:${code}`) : null;
-  if (!raw) return say('Bildirişləri qoşmaq üçün paneldə Ayarlar → Bildirişlər → "WhatsApp-ı qoş" düyməsini basın.');
-  const link = JSON.parse(raw) as { workspaceId: string; userId: string };
-  await q(`INSERT INTO notify_targets (workspace_id, user_id, kind, chat_id, label) VALUES ($1, $2, 'whatsapp', $3, $3) ON CONFLICT DO NOTHING`, [link.workspaceId, link.userId, waId]);
-  const ws = await one('SELECT name FROM workspaces WHERE id = $1', [link.workspaceId]);
-  await say(`✅ Bildirişlər qoşuldu: ${ws?.name ?? ''}. Müştəri cavabınızı gözləyəndə buraya yazacağıq.`);
 }
 
 async function deleteForPlatformUser(userId: string) {
@@ -58,25 +51,29 @@ export function metaRoutes(app: FastifyInstance) {
   app.post('/webhooks/whatsapp', { config: META }, async (req, reply) => {
     if (!verifyMetaSignature(req.rawBody, req.headers['x-hub-signature-256'] as string, [config.META_APP_SECRET])) return reply.code(401).send();
     const body: any = req.body;
-    // Customer removed our app from their WABA -> delete the channel and its data.
+    const jobs: IntakeJob[] = [];
+    // Customer removed our app from their WABA -> the worker deletes the channel and its data.
     for (const entry of body?.entry ?? []) {
       for (const change of entry?.changes ?? []) {
         if (change?.field === 'account_update' && change.value?.event === 'PARTNER_REMOVED' && typeof entry.id === 'string') {
-          for (const ch of await q<ChannelRow>(`SELECT * FROM channels WHERE type = 'whatsapp' AND waba_id = $1`, [entry.id])) await removeChannel(ch);
+          jobs.push(keyedJob(`partner_removed|${entry.id}|${entry.time ?? ''}`, { kind: 'wa_partner_removed', wabaId: entry.id }));
         }
       }
     }
-    const events = parseWhatsAppWebhook(body);
-    // Messages to the platform's own number are alert sign-ups, not customer chats.
-    const platform = config.waAlertsEnabled ? events.filter((e) => e.channelExternalId === config.PLATFORM_WA_PHONE_NUMBER_ID) : [];
-    for (const ev of platform) if (ev.type === 'message') await linkWhatsAppAlerts(ev.userId, ev.text ?? '');
-    await handleEvents(req, events.filter((e) => !platform.includes(e)));
+    for (const ev of parseWhatsAppWebhook(body)) {
+      // Messages to the platform's own number are alert sign-ups, not customer chats.
+      const platform = config.waAlertsEnabled && ev.channelExternalId === config.PLATFORM_WA_PHONE_NUMBER_ID;
+      if (!platform) jobs.push(eventJob(ev));
+      else if (ev.type === 'message') jobs.push(keyedJob(`alert_link|${ev.mid}`, { kind: 'wa_alert_link', waId: ev.userId, text: ev.text ?? '' }));
+    }
+    await intake(req, jobs);
     return reply.send('EVENT_RECEIVED');
   });
 
   app.post('/webhooks/instagram', { config: META }, async (req, reply) => {
-    if (!verifyMetaSignature(req.rawBody, req.headers['x-hub-signature-256'] as string, [config.IG_APP_SECRET, config.META_APP_SECRET])) return reply.code(401).send();
-    await handleEvents(req, parseInstagramWebhook(req.body));
+    if (!verifyMetaSignature(req.rawBody, req.headers['x-hub-signature-256'] as string, [config.IG_APP_SECRET, config.META_APP_SECRET]))
+      return reply.code(401).send();
+    await intake(req, parseInstagramWebhook(req.body).map(eventJob));
     return reply.send('EVENT_RECEIVED');
   });
 
@@ -97,7 +94,12 @@ export function metaRoutes(app: FastifyInstance) {
         await tgSend(chat, 'Link etibarsızdır və ya vaxtı keçib. Paneldə Ayarlar → Bildirişlər bölməsindən yenidən cəhd edin.');
       } else {
         const label = [msg.from?.first_name, msg.from?.username && `@${msg.from.username}`].filter(Boolean).join(' ').slice(0, 100);
-        await q(`INSERT INTO notify_targets (workspace_id, user_id, kind, chat_id, label) VALUES ($1, $2, 'telegram', $3, $4) ON CONFLICT DO NOTHING`, [link.workspaceId, link.userId, chat, label]);
+        await q(`INSERT INTO notify_targets (workspace_id, user_id, kind, chat_id, label) VALUES ($1, $2, 'telegram', $3, $4) ON CONFLICT DO NOTHING`, [
+          link.workspaceId,
+          link.userId,
+          chat,
+          label,
+        ]);
         const ws = await one('SELECT name FROM workspaces WHERE id = $1', [link.workspaceId]);
         await tgSend(chat, `✅ Bildirişlər qoşuldu: ${ws?.name ?? ''}. Müştəri cavabınızı gözləyəndə burada xəbər verəcəyəm. Dayandırmaq üçün /stop yazın.`);
       }

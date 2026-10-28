@@ -4,24 +4,33 @@ import { createHmac, randomBytes } from 'node:crypto';
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 
 export function base32Encode(buf: Buffer): string {
-  let bits = 0, value = 0, out = '';
+  let bits = 0,
+    value = 0,
+    out = '';
   for (const byte of buf) {
     value = (value << 8) | byte;
     bits += 8;
-    while (bits >= 5) { out += B32[(value >>> (bits - 5)) & 31]; bits -= 5; }
+    while (bits >= 5) {
+      out += B32[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
   }
   return bits > 0 ? out + B32[(value << (5 - bits)) & 31] : out;
 }
 
 export function base32Decode(s: string): Buffer {
-  let bits = 0, value = 0;
+  let bits = 0,
+    value = 0;
   const out: number[] = [];
   for (const c of s.replace(/=+$/, '').toUpperCase()) {
     const i = B32.indexOf(c);
     if (i < 0) throw new Error('bad base32');
     value = (value << 5) | i;
     bits += 5;
-    if (bits >= 8) { out.push((value >>> (bits - 8)) & 255); bits -= 8; }
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
   }
   return Buffer.from(out);
 }

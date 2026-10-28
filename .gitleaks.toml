@@ -1,0 +1,12 @@
+# Secret scanning in CI (gitleaks). Default rules, minus files that hold only fake keys for tests and examples.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures and examples contain fake keys only"
+paths = [
+  '''^test/''',
+  '''^vitest\.config\.ts$''',
+  '''^scripts/loadtest\.ts$''',
+  '''(^|/)\.env\.example$''',
+]

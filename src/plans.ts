@@ -2,7 +2,16 @@ import { one } from './db.js';
 import { audit } from './events.js';
 import { redis } from './queue.js';
 
-export const LIMIT_KEYS = ['contacts', 'channels', 'active_automations', 'members', 'bot_messages_month', 'ai_budget_usd_month', 'ai_budget_usd_day', 'history_days'] as const;
+export const LIMIT_KEYS = [
+  'contacts',
+  'channels',
+  'active_automations',
+  'members',
+  'bot_messages_month',
+  'ai_budget_usd_month',
+  'ai_budget_usd_day',
+  'history_days',
+] as const;
 export type LimitKey = (typeof LIMIT_KEYS)[number];
 export const LIMIT_LABELS: Record<LimitKey, string> = {
   contacts: 'Aktiv kontaktlar (30 gün)',
@@ -60,9 +69,9 @@ const botCounter = async (workspaceId: string) => {
  * allowance used up. Incoming messages are always stored and staff can still reply by hand. (Read-only check.)
  */
 export async function automationBlocked(workspaceId: string): Promise<LimitKey | null> {
-  if (!(await checkLimit(workspaceId, 'contacts', 0)).ok) return 'contacts';
-  const limit = (await limitsOf(workspaceId)).bot_messages_month;
-  if (limit !== null && Number(await redis.get(await botCounter(workspaceId))) >= limit) return 'bot_messages_month';
+  const limits = await limitsOf(workspaceId);
+  if (limits.contacts !== null && (await usageOf(workspaceId, 'contacts')) > limits.contacts) return 'contacts';
+  if (limits.bot_messages_month !== null && Number(await redis.get(await botCounter(workspaceId))) >= limits.bot_messages_month) return 'bot_messages_month';
   return null;
 }
 

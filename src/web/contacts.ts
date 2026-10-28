@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { addTags, FIELD_KEY, mergeContacts } from '../contacts.js';
 import { csvLine, parseCsv } from '../csv.js';
@@ -21,7 +21,11 @@ const filterSchema = z.object({
   tag: z.uuid().or(z.literal('')).catch(''),
   ch: z.enum(['', 'instagram', 'whatsapp']).catch(''),
   status: z.enum(['', 'opted_out', 'blocked']).catch(''),
-  before: z.string().regex(/^\d{13}_[0-9a-f-]{36}$/).or(z.literal('')).catch(''),
+  before: z
+    .string()
+    .regex(/^\d{13}_[0-9a-f-]{36}$/)
+    .or(z.literal(''))
+    .catch(''),
 });
 type Filters = z.infer<typeof filterSchema>;
 
@@ -69,7 +73,11 @@ export function contactRoutes(app: FastifyInstance) {
       const more = rows.length > PAGE;
       const page = rows.slice(0, PAGE);
       const exp = can(req.user, 'contacts.export');
-      return view(req, reply, 'Kontaktlar', html`${pageHead('Kontaktlar', `${total!.n} kontakt. Instagram və WhatsApp-da sizə yazan və ya şərh yazan insanlar.`)}
+      return view(
+        req,
+        reply,
+        'Kontaktlar',
+        html`${pageHead('Kontaktlar', `${total!.n} kontakt. Instagram və WhatsApp-da sizə yazan və ya şərh yazan insanlar.`)}
         <form class="filters" method="get" action="/app/contacts">
           <input type="search" name="q" value="${f.q}" placeholder="Ad və ya istifadəçi adı" aria-label="Axtar">
           <select name="ch" data-autosubmit aria-label="Kanal"><option value="">Bütün kanallar</option>${['instagram', 'whatsapp'].map((c) => html`<option value="${c}" ${f.ch === c ? raw('selected') : ''}>${typeLabel(c)}</option>`)}</select>
@@ -84,28 +92,62 @@ export function contactRoutes(app: FastifyInstance) {
           <b>opted_out</b> (1/0) imtinanı yazır, digər sütunlar (kiçik hərf, rəqəm, _) sahə kimi yazılır. Yeni kontakt yaradılmır: Instagram və WhatsApp-da insana ilk siz yaza bilməzsiniz. Maks. 5000 sətir, 1 MB.</p>
           <div class="copy-row"><input type="file" accept=".csv,text/csv" id="import-file"><button type="button" class="btn" id="import-go" data-csrf="${req.csrfToken}">İmport et</button></div>
           <p class="muted" id="import-result" role="status"></p></section>
-        <section class="card flush">${page.length ? html`<div class="table-wrap"><table class="contacts"><thead><tr><th>Kontakt</th><th>Tag-lər</th><th>Son aktivlik</th><th>Status</th></tr></thead><tbody>
-          ${page.map((c) => html`<tr><td><a class="who" href="/app/contacts/${c.id}">${avatar(nameOf(c), c.channel_type)}<span><b>${nameOf(c)}</b><small class="muted block">${c.username && c.display_name ? c.display_name : typeLabel(c.channel_type)}</small></span></a></td>
+        <section class="card flush">${
+          page.length
+            ? html`<div class="table-wrap"><table class="contacts"><thead><tr><th>Kontakt</th><th>Tag-lər</th><th>Son aktivlik</th><th>Status</th></tr></thead><tbody>
+          ${page.map(
+            (
+              c,
+            ) => html`<tr><td><a class="who" href="/app/contacts/${c.id}">${avatar(nameOf(c), c.channel_type)}<span><b>${nameOf(c)}</b><small class="muted block">${c.username && c.display_name ? c.display_name : typeLabel(c.channel_type)}</small></span></a></td>
             <td>${c.tags.length ? c.tags.slice(0, 4).map((t: string) => html`<span class="tag">${t}</span> `) : html`<span class="muted">—</span>`}${c.tags.length > 4 ? html`<span class="muted">+${c.tags.length - 4}</span>` : ''}</td>
             <td class="muted">${when(c.last_seen_at)}</td>
-            <td>${c.blocked ? chip('danger', 'Bloklanıb') : c.opted_out ? chip('warn', 'İmtina edib') : chip('ok', 'Aktiv')}</td></tr>`)}
+            <td>${c.blocked ? chip('danger', 'Bloklanıb') : c.opted_out ? chip('warn', 'İmtina edib') : chip('ok', 'Aktiv')}</td></tr>`,
+          )}
           </tbody></table></div>${more ? html`<div class="pad"><a class="btn sm secondary" href="/app/contacts${qs(f, { before: cursor(page.at(-1)) })}">Daha çox</a></div>` : ''}`
-          : empty('contact', f.q || f.tag || f.ch || f.status ? 'Filtrə uyğun kontakt yoxdur.' : 'Hələ kontakt yoxdur. Kanal bağlandıqdan sonra yazan hər kəs burada görünəcək.')}</section>`,
-        html`<script src="/public/contacts.js" defer></script>`);
+            : empty(
+                'contact',
+                f.q || f.tag || f.ch || f.status
+                  ? 'Filtrə uyğun kontakt yoxdur.'
+                  : 'Hələ kontakt yoxdur. Kanal bağlandıqdan sonra yazan hər kəs burada görünəcək.',
+              )
+        }</section>`,
+        html`<script src="/public/contacts.js" defer></script>`,
+      );
     });
 
     r.get('/app/contacts/export.csv', { preHandler: requirePerm('contacts.export') }, async (req, reply) => {
       const w0 = req.user!.workspaceId;
       const f = filterSchema.parse({ ...(req.query as object), before: '' });
       await audit(w0, req.user!.id, 'contact.export', 'workspace', w0, { filters: { ...f } });
-      const keys = (await q<{ k: string }>(`SELECT DISTINCT jsonb_object_keys(fields) AS k FROM contacts WHERE workspace_id = $1 AND merged_into IS NULL ORDER BY 1 LIMIT 50`, [w0])).map((x) => x.k);
+      const keys = (
+        await q<{ k: string }>(
+          `SELECT DISTINCT jsonb_object_keys(fields) AS k FROM contacts WHERE workspace_id = $1 AND merged_into IS NULL ORDER BY 1 LIMIT 50`,
+          [w0],
+        )
+      ).map((x) => x.k);
       reply.header('Content-Type', 'text/csv; charset=utf-8').header('Content-Disposition', 'attachment; filename="contacts.csv"');
-      const out: string[] = ['﻿' + csvLine(['id', 'channel', 'username', 'display_name', 'tags', 'opted_out', 'blocked', 'first_seen_at', 'last_seen_at', ...keys])];
+      const out: string[] = [
+        '﻿' + csvLine(['id', 'channel', 'username', 'display_name', 'tags', 'opted_out', 'blocked', 'first_seen_at', 'last_seen_at', ...keys]),
+      ];
       // Keyset batches keep memory flat for large lists.
       for (let cur = f, n = 0; n < 200; n++) {
         const rows = await listContacts(w0, cur, 1000);
         const batch = rows.slice(0, 1000);
-        for (const c of batch) out.push(csvLine([c.id, c.channel_type, c.username, c.display_name, c.tags.join(';'), c.opted_out ? 1 : 0, c.blocked ? 1 : 0, c.first_seen_at, c.last_seen_at, ...keys.map((k) => c.fields[k] ?? '')]));
+        for (const c of batch)
+          out.push(
+            csvLine([
+              c.id,
+              c.channel_type,
+              c.username,
+              c.display_name,
+              c.tags.join(';'),
+              c.opted_out ? 1 : 0,
+              c.blocked ? 1 : 0,
+              c.first_seen_at,
+              c.last_seen_at,
+              ...keys.map((k) => c.fields[k] ?? ''),
+            ]),
+          );
         if (rows.length <= 1000) break;
         cur = { ...cur, before: cursor(batch.at(-1)) };
       }
@@ -134,20 +176,34 @@ export function contactRoutes(app: FastifyInstance) {
         const ct = id
           ? await one(`SELECT id, workspace_id FROM contacts WHERE id = $1 AND workspace_id = $2 AND merged_into IS NULL`, [id, w0])
           : username
-            ? await one(`SELECT id, workspace_id FROM contacts WHERE workspace_id = $1 AND lower(username) = lower($2) AND merged_into IS NULL ORDER BY last_seen_at DESC LIMIT 1`, [w0, username])
+            ? await one(
+                `SELECT id, workspace_id FROM contacts WHERE workspace_id = $1 AND lower(username) = lower($2) AND merged_into IS NULL ORDER BY last_seen_at DESC LIMIT 1`,
+                [w0, username],
+              )
             : undefined;
         if (!ct) {
           notFound++;
           continue;
         }
-        const tags = col('tags') >= 0 ? (row[col('tags')] ?? '').split(/[;|]/).map((t) => t.trim()).filter((t) => t && t.length <= 40).slice(0, 20) : [];
+        const tags =
+          col('tags') >= 0
+            ? (row[col('tags')] ?? '')
+                .split(/[;|]/)
+                .map((t) => t.trim())
+                .filter((t) => t && t.length <= 40)
+                .slice(0, 20)
+            : [];
         if (tags.length) await addTags(ct, tags);
         const fields = Object.fromEntries(fieldCols.map(([k, i]) => [k, (row[i] ?? '').slice(0, 500)]).filter(([, v]) => v !== ''));
         if (Object.keys(fields).length) {
-          await q(`UPDATE contacts SET fields = fields || $2::jsonb WHERE id = $1 AND (SELECT count(*) FROM jsonb_object_keys(fields || $2::jsonb)) <= 50`, [ct.id, JSON.stringify(fields)]);
+          await q(`UPDATE contacts SET fields = fields || $2::jsonb WHERE id = $1 AND (SELECT count(*) FROM jsonb_object_keys(fields || $2::jsonb)) <= 50`, [
+            ct.id,
+            JSON.stringify(fields),
+          ]);
         }
         const opt = col('opted_out') >= 0 ? row[col('opted_out')]?.trim().toLowerCase() : '';
-        if (opt && ['1', '0', 'true', 'false', 'yes', 'no'].includes(opt)) await q(`UPDATE contacts SET opted_out = $2 WHERE id = $1`, [ct.id, ['1', 'true', 'yes'].includes(opt)]);
+        if (opt && ['1', '0', 'true', 'false', 'yes', 'no'].includes(opt))
+          await q(`UPDATE contacts SET opted_out = $2 WHERE id = $1`, [ct.id, ['1', 'true', 'yes'].includes(opt)]);
         updated++;
       }
       await audit(w0, req.user!.id, 'contact.import', 'workspace', w0, { rows: rows.length, updated, not_found: notFound });
@@ -157,16 +213,34 @@ export function contactRoutes(app: FastifyInstance) {
     r.get('/app/contacts/:id', async (req, reply) => {
       const id = idParam(req);
       const w0 = req.user!.workspaceId;
-      const c = id && (await one(`SELECT ct.*, ch.type AS channel_type FROM contacts ct JOIN channels ch ON ch.id = ct.channel_id WHERE ct.id = $1 AND ct.workspace_id = $2`, [id, w0]));
+      const c =
+        id &&
+        (await one(
+          `SELECT ct.*, ch.type AS channel_type FROM contacts ct JOIN channels ch ON ch.id = ct.channel_id WHERE ct.id = $1 AND ct.workspace_id = $2`,
+          [id, w0],
+        ));
       if (!c) return reply.code(404).send('Not found');
       if (c.merged_into) return reply.redirect(`/app/contacts/${c.merged_into}`);
-      const dq = z.string().trim().max(100).catch('').parse((req.query as any)?.dup_q);
+      const dq = z
+        .string()
+        .trim()
+        .max(100)
+        .catch('')
+        .parse((req.query as any)?.dup_q);
       const [tags, allTags, convs, runs, aliases, dups] = await Promise.all([
         q(`SELECT t.name FROM contact_tags x JOIN tags t ON t.id = x.tag_id WHERE x.contact_id = $1 ORDER BY t.name`, [c.id]),
         q(`SELECT name FROM tags WHERE workspace_id = $1 ORDER BY name LIMIT 200`, [w0]),
-        q(`SELECT c.id, c.status, c.last_message_at, ch.type FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE c.contact_id = $1 ORDER BY c.last_message_at DESC LIMIT 20`, [c.id]),
-        q(`SELECT a.name, a.id, r.status, r.matched_at FROM automation_runs r JOIN automations a ON a.id = r.automation_id WHERE r.contact_id = $1 ORDER BY r.matched_at DESC LIMIT 10`, [c.id]),
-        q(`SELECT ct.username, ct.display_name, ct.external_id, ch.type FROM contacts ct JOIN channels ch ON ch.id = ct.channel_id WHERE ct.merged_into = $1`, [c.id]),
+        q(
+          `SELECT c.id, c.status, c.last_message_at, ch.type FROM conversations c JOIN channels ch ON ch.id = c.channel_id WHERE c.contact_id = $1 ORDER BY c.last_message_at DESC LIMIT 20`,
+          [c.id],
+        ),
+        q(
+          `SELECT a.name, a.id, r.status, r.matched_at FROM automation_runs r JOIN automations a ON a.id = r.automation_id WHERE r.contact_id = $1 ORDER BY r.matched_at DESC LIMIT 10`,
+          [c.id],
+        ),
+        q(`SELECT ct.username, ct.display_name, ct.external_id, ch.type FROM contacts ct JOIN channels ch ON ch.id = ct.channel_id WHERE ct.merged_into = $1`, [
+          c.id,
+        ]),
         // Merge candidates: same username / name in this workspace, or a manual search.
         q(
           `SELECT ct.id, ct.username, ct.display_name, ct.external_id, ct.last_seen_at, ch.type FROM contacts ct JOIN channels ch ON ch.id = ct.channel_id
@@ -177,9 +251,14 @@ export function contactRoutes(app: FastifyInstance) {
         ),
       ]);
       const back = html`<input type="hidden" name="back" value="contact">`;
-      const f = (action: string, inner: unknown, cls = 'inline') => html`<form method="post" action="/app/contacts/${c.id}/${action}" class="${cls}">${csrfField(req.csrfToken)}${back}${inner}</form>`;
+      const f = (action: string, inner: unknown, cls = 'inline') =>
+        html`<form method="post" action="/app/contacts/${c.id}/${action}" class="${cls}">${csrfField(req.csrfToken)}${back}${inner}</form>`;
       const fields = Object.entries(c.fields as Record<string, string>);
-      return view(req, reply, nameOf(c), html`<p><a href="/app/contacts" class="more">${icon('back', 'i xs')} Kontaktlar</a></p>
+      return view(
+        req,
+        reply,
+        nameOf(c),
+        html`<p><a href="/app/contacts" class="more">${icon('back', 'i xs')} Kontaktlar</a></p>
         ${pageHead(nameOf(c), html`${typeLabel(c.channel_type)} · ilk: ${fmt(c.first_seen_at)} · son: ${fmt(c.last_seen_at)}`)}
         <div class="cols2">
           <section class="card"><h2>Tag-lər</h2>
@@ -203,10 +282,18 @@ export function contactRoutes(app: FastifyInstance) {
         <section class="card"><h2>${icon('merge')}Dublikatları birləşdir</h2>
           <p class="hint">Eyni insan həm Instagram, həm WhatsApp-dan yazıbsa, onu bu kontakta birləşdirin: söhbətlər, tag-lər və sahələr buraya keçir (ziddiyyətdə bu kontaktın dəyəri qalır). Geri qaytarılmır.</p>
           <form method="get" action="/app/contacts/${c.id}" class="copy-row mt"><input type="search" name="dup_q" value="${dq}" placeholder="Ad və ya istifadəçi adı ilə axtar"><button class="btn sm secondary">Axtar</button></form>
-          ${dups.length ? html`<div class="table-wrap"><table><tbody>${dups.map((d) => html`<tr><td>${avatar(nameOf(d), d.type)} <b>${nameOf(d)}</b> <span class="muted">${typeLabel(d.type)} · ${when(d.last_seen_at)}</span></td>
-            <td class="right">${postForm(`/app/contacts/${c.id}/merge`, req.csrfToken, html`${icon('merge')}Buna birləşdir`, 'btn sm secondary', { confirm: `${nameOf(d)} bu kontakta birləşdirilsin? Geri qaytarılmır.`, extra: html`<input type="hidden" name="source" value="${d.id}">` })}</td></tr>`)}</tbody></table></div>`
-            : html`<p class="muted">${dq ? 'Uyğun kontakt tapılmadı.' : 'Eyni adlı başqa kontakt yoxdur. Yuxarıdan axtarın.'}</p>`}
-        </section>`);
+          ${
+            dups.length
+              ? html`<div class="table-wrap"><table><tbody>${dups.map(
+                  (
+                    d,
+                  ) => html`<tr><td>${avatar(nameOf(d), d.type)} <b>${nameOf(d)}</b> <span class="muted">${typeLabel(d.type)} · ${when(d.last_seen_at)}</span></td>
+            <td class="right">${postForm(`/app/contacts/${c.id}/merge`, req.csrfToken, html`${icon('merge')}Buna birləşdir`, 'btn sm secondary', { confirm: `${nameOf(d)} bu kontakta birləşdirilsin? Geri qaytarılmır.`, extra: html`<input type="hidden" name="source" value="${d.id}">` })}</td></tr>`,
+                )}</tbody></table></div>`
+              : html`<p class="muted">${dq ? 'Uyğun kontakt tapılmadı.' : 'Eyni adlı başqa kontakt yoxdur. Yuxarıdan axtarın.'}</p>`
+          }
+        </section>`,
+      );
     });
 
     r.post('/app/contacts/:id/merge', async (req, reply) => {

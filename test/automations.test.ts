@@ -22,7 +22,16 @@ describe.skipIf(!enabled)('P1 automations (integration)', () => {
   let ws: Awaited<ReturnType<typeof seedWorkspace>>;
   let n = 0;
   const comment = (text: string, extra: Record<string, unknown> = {}) => ({
-    type: 'comment' as const, channelType: 'instagram' as const, channelExternalId: 'IG1', commentId: `c${++n}`, mediaId: '111', fromId: 'U5', fromUsername: 'aysel', text, time: Date.now(), ...extra,
+    type: 'comment' as const,
+    channelType: 'instagram' as const,
+    channelExternalId: 'IG1',
+    commentId: `c${++n}`,
+    mediaId: '111',
+    fromId: 'U5',
+    fromUsername: 'aysel',
+    text,
+    time: Date.now(),
+    ...extra,
   });
   async function dm(text: string, from = 'U7', extra: Record<string, unknown> = {}) {
     const { parseInstagramWebhook } = await import('../src/channels/instagram.js');
@@ -48,8 +57,8 @@ describe.skipIf(!enabled)('P1 automations (integration)', () => {
   });
   afterAll(async () => {
     await stopFake();
-    const { queue, redis } = await import('../src/queue.js');
-    await queue.close();
+    const { closeQueues, redis } = await import('../src/queue.js');
+    await closeQueues();
     redis.disconnect();
     await db.pool.end();
   });
@@ -58,7 +67,10 @@ describe.skipIf(!enabled)('P1 automations (integration)', () => {
     await createAutomation(ws.workspaceId, 'comment', {
       match: { mode: 'any', keywords: ['qiymət'] },
       public_reply: { enabled: true, texts: ['DM-ə yazdıq'] },
-      steps: [{ type: 'message', text: 'Qiymətlər: 45 AZN' }, { type: 'tag', add: ['lead'] }],
+      steps: [
+        { type: 'message', text: 'Qiymətlər: 45 AZN' },
+        { type: 'tag', add: ['lead'] },
+      ],
     });
     const ev = comment('Qiymet nedir?');
     await engine.processComment(ev);
@@ -85,8 +97,17 @@ describe.skipIf(!enabled)('P1 automations (integration)', () => {
   });
 
   it('DM keyword + quick reply branching runs without the AI', async () => {
-    const b = await createAutomation(ws.workspaceId, 'quick_reply', { match: { mode: 'anything' }, steps: [{ type: 'message', text: 'Qiymətlər: 45 AZN' }] }, 'active', 'qiymet');
-    await createAutomation(ws.workspaceId, 'dm_keyword', { match: { mode: 'any', keywords: ['menyu'] }, steps: [{ type: 'message', text: 'Nə maraqlıdır?', quick_replies: [{ title: 'Qiymətlər', goto: b }] }] });
+    const b = await createAutomation(
+      ws.workspaceId,
+      'quick_reply',
+      { match: { mode: 'anything' }, steps: [{ type: 'message', text: 'Qiymətlər: 45 AZN' }] },
+      'active',
+      'qiymet',
+    );
+    await createAutomation(ws.workspaceId, 'dm_keyword', {
+      match: { mode: 'any', keywords: ['menyu'] },
+      steps: [{ type: 'message', text: 'Nə maraqlıdır?', quick_replies: [{ title: 'Qiymətlər', goto: b }] }],
+    });
     const conv = await dm('MENYU');
     expect(fake.sends()[0]!.body.message.quick_replies[0]).toEqual({ content_type: 'text', title: 'Qiymətlər', payload: `qr:${b}` });
     await dm('Qiymətlər', 'U7', { quick_reply: { payload: `qr:${b}` } });
@@ -120,14 +141,21 @@ describe.skipIf(!enabled)('P1 automations (integration)', () => {
   });
 
   it('delay step resumes later and stops if the automation was paused meanwhile', async () => {
-    const id = await createAutomation(ws.workspaceId, 'dm_keyword', { match: { mode: 'any', keywords: ['salam'] }, steps: [{ type: 'message', text: 'bir' }, { type: 'delay', minutes: 5 }, { type: 'message', text: 'iki' }] });
+    const id = await createAutomation(ws.workspaceId, 'dm_keyword', {
+      match: { mode: 'any', keywords: ['salam'] },
+      steps: [
+        { type: 'message', text: 'bir' },
+        { type: 'delay', minutes: 5 },
+        { type: 'message', text: 'iki' },
+      ],
+    });
     await dm('salam', 'U4');
     const run = await db.one(`SELECT id FROM automation_runs`);
     await engine.resumeRun(run.id, 2);
     await engine.resumeRun(run.id, 2); // retried job: idempotent
     expect(fake.sends().map((s) => s.body.message.text)).toEqual(['bir', 'iki']);
     await db.q(`UPDATE automations SET status = 'paused' WHERE id = $1`, [id]);
-    await db.q(`DELETE FROM messages WHERE body = 'iki'`);
+    await db.q(`DELETE FROM messages WHERE idempotency_key = $1`, [`run:${run.id}:2`]); // forget the step-2 send so only the pause can stop it
     await engine.resumeRun(run.id, 2);
     expect(fake.sends()).toHaveLength(2);
   });

@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { config } from './config.js';
 
-export const pool = new pg.Pool({ connectionString: config.DATABASE_URL, max: 10 });
+export const pool = new pg.Pool({ connectionString: config.DATABASE_URL, max: config.DB_POOL_MAX });
 
 type Db = Pick<pg.Pool, 'query'>;
 

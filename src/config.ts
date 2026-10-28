@@ -3,8 +3,11 @@ import { z } from 'zod';
 const optional = z.string().trim().min(1).optional().catch(undefined);
 
 const schema = z.object({
-  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  // No default: a missing NODE_ENV must fail loudly, not silently run production as development (no Secure cookies,
+  // no trusted proxy, debug logs). .env.example sets development, the Dockerfile production, vitest test.
+  NODE_ENV: z.enum(['development', 'production', 'test']),
   PORT: z.coerce.number().int().default(3000),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug']).optional().catch(undefined),
   APP_URL: z.url(),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
@@ -18,11 +21,26 @@ const schema = z.object({
   AI_ROUTING: z.enum(['on', 'off']).default('on'),
   // Max AI calls per workspace per minute (protects against bursts / runaway cost)
   AI_WORKSPACE_RPM: z.coerce.number().int().min(1).default(30),
+  // Max AI replies per conversation per hour (stops one spammer from burning the monthly quota)
+  AI_CONV_HOURLY_CAP: z.coerce.number().int().min(1).default(30),
+  // Minutes the AI stays silent in a conversation after staff wrote in it (Instagram app or the inbox)
+  HUMAN_PAUSE_MINUTES: z.coerce.number().int().min(1).default(60),
+
+  // Photos / videos / voice messages: the AI looks at them before answering (off = the AI is told it can't open media)
+  MEDIA_ANALYSIS: z.enum(['on', 'off']).default('on'),
+  // Speech-to-text for voice messages and video sound (Claude does not take audio). Any OpenAI-compatible
+  // /audio/transcriptions endpoint, e.g. https://api.openai.com/v1/audio/transcriptions (whisper-1 / gpt-4o-transcribe).
+  STT_API_URL: z.url().optional().catch(undefined),
+  STT_API_KEY: optional,
+  STT_MODEL: z.string().default('whisper-1'),
 
   // Meta app (WhatsApp Cloud API + Embedded Signup)
   META_APP_ID: optional,
   META_APP_SECRET: optional,
-  META_GRAPH_VERSION: z.string().regex(/^v\d+\.\d+$/).default('v24.0'),
+  META_GRAPH_VERSION: z
+    .string()
+    .regex(/^v\d+\.\d+$/)
+    .default('v24.0'),
   META_WEBHOOK_VERIFY_TOKEN: optional,
   WA_EMBEDDED_SIGNUP_CONFIG_ID: optional,
   // Instagram API with Instagram Login (separate app id/secret shown in the Instagram product settings)
@@ -36,13 +54,21 @@ const schema = z.object({
   // Telegram alerts: create a bot with @BotFather
   TELEGRAM_BOT_TOKEN: optional,
   TELEGRAM_BOT_USERNAME: optional,
-  TELEGRAM_WEBHOOK_SECRET: z.string().regex(/^[A-Za-z0-9_-]{16,256}$/).optional().catch(undefined),
+  TELEGRAM_WEBHOOK_SECRET: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{16,256}$/)
+    .optional()
+    .catch(undefined),
   TELEGRAM_API_BASE: z.url().default('https://api.telegram.org'),
 
   // WhatsApp alerts from the platform's own WhatsApp Business number (approved utility template)
   PLATFORM_WA_PHONE_NUMBER_ID: optional,
   PLATFORM_WA_TOKEN: optional,
-  PLATFORM_WA_NUMBER: z.string().regex(/^\d{8,15}$/).optional().catch(undefined), // digits only, e.g. 994501234567
+  PLATFORM_WA_NUMBER: z
+    .string()
+    .regex(/^\d{8,15}$/)
+    .optional()
+    .catch(undefined), // digits only, e.g. 994501234567
   PLATFORM_WA_TEMPLATE: optional,
   PLATFORM_WA_TEMPLATE_LANG: z.string().default('az'),
   // Browser (Chrome) push: npx web-push generate-vapid-keys
@@ -59,6 +85,13 @@ const schema = z.object({
   CONTACT_PHONE: z.string().default(''),
 
   RETENTION_DAYS: z.coerce.number().int().min(1).default(90),
+
+  // Capacity (defaults measured with scripts/loadtest.ts, see README "Capacity"). Per process.
+  DB_POOL_MAX: z.coerce.number().int().min(2).max(200).default(20),
+  // Parallel AI replies / sends per worker process (I/O-bound: mostly waiting for Claude and Meta).
+  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(500).default(100),
+  // Parallel webhook-intake jobs per worker process (short DB work).
+  INBOUND_CONCURRENCY: z.coerce.number().int().min(1).max(500).default(50),
   DEFAULT_REPLY_LIMIT: z.coerce.number().int().min(0).default(1000),
 });
 

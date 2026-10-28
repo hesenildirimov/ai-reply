@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 
 let keys: Buffer[] | undefined;
 /** [current, previous?]. ENCRYPTION_KEY_PREVIOUS is only set during a key rotation. */
@@ -10,6 +10,13 @@ function getKeys(): Buffer[] {
   return keys;
 }
 const getKey = () => getKeys()[0]!;
+
+let indexKeys: Buffer[] | undefined;
+/** Keys for blind search indexes, derived from [current, previous?] encryption keys (never used for encryption). */
+export function searchKeys(): Buffer[] {
+  indexKeys ??= getKeys().map((k) => Buffer.from(hkdfSync('sha256', k, Buffer.alloc(0), 'ai-reply/search-index/v1', 32)));
+  return indexKeys;
+}
 
 /** AES-256-GCM. Format: v1:<iv>:<tag>:<ciphertext> (base64url). */
 export function encrypt(plain: string): string {
