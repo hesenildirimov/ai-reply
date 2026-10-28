@@ -29,6 +29,7 @@ const KIND_LABEL: Record<string, string> = {
   story_reply: 'Story-yə cavab',
   story_mention: 'Story-də qeyd etdi',
   private_reply: 'Şərhə şəxsi cavab',
+  comment: 'Postun altında şərh yazdı',
   quick_reply: 'Düymə seçdi',
 };
 const STATUS_ICON: Record<string, Safe> = {

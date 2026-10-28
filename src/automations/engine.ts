@@ -1,5 +1,6 @@
 import { replyToComment } from '../channels/instagram.js';
 import type { ChannelRow, InboundEvent } from '../channels/types.js';
+import { queueCommentAi } from '../comments.js';
 import { addTags, type ContactRow, ensureConversation, hasTag, removeTags, setField, upsertContact } from '../contacts.js';
 import { type ConvCtx, deliver, handoff, inWindow, loadConv } from '../conversation.js';
 import { decrypt } from '../crypto.js';
@@ -242,7 +243,8 @@ export async function processComment(ev: Extract<InboundEvent, { type: 'comment'
       matches(x.config.match, ev.text) &&
       capability('comment', ch).status === 'available',
   );
-  if (!a) return;
+  // No keyword automation took it: the AI may answer it (src/comments.ts; off unless the business switched it on).
+  if (!a) return queueCommentAi(ev.commentId);
   await q(`UPDATE ig_comments SET matched = true WHERE id = $1`, [ev.commentId]);
   const blocked = await automationBlocked(ch.workspace_id);
   if (blocked) return limitAlert(ch.workspace_id, blocked);

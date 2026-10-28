@@ -22,6 +22,7 @@ export type JobData =
   | { kind: 'ig_echo'; channelId: string; userId: string; mid: string; sealed?: string; text?: string; tries?: number }
   | { kind: 'learn_style'; workspaceId: string }
   | { kind: 'comment'; sealed?: string; event?: Extract<InboundEvent, { type: 'comment' }> }
+  | { kind: 'comment_ai'; commentId: string }
   | { kind: 'automation_step'; runId: string; step: number }
   | { kind: 'summarize'; conversationId: string; workspaceId: string }
   | { kind: 'webhook'; deliveryId: string }

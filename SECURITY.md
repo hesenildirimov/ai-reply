@@ -37,6 +37,7 @@ Qiymətləndirmə: ✅ yoxlanıldı/qaydasındadır · 🔧 auditdə düzəldild
 - 🔧 Instagram-dan gələn media linklərindən yalnız `https` saxlanılır. İnboxda şəkil/video yalnız Meta CDN-dən (`cdninstagram.com`, `fbcdn.net`, `fbsbx.com`) göstərilir, qalanları adi link kimi; CSP də `img-src`/`media-src`-i bu host-larla məhdudlaşdırır (operatorun IP-si üçüncü tərəfə getmir).
 - 🔧 Avtomatlaşdırma linkləri (`/r/<kod>`) birbaşa yönləndirmir: ara səhifə hədəf saytı göstərir ("bu sayt AI Reply-a aid deyil"). Platformanın domeni fişinq üçün yönləndirici kimi istifadə oluna bilmir.
 - 🔧 AI cavabındakı qiymət yoxlaması AZN-dən əlavə USD/$, EUR/€, TL/₺, RUB/₽/руб formatlarını tanıyır; biznes məlumatındakı uzun rəqəmlər (telefon, IBAN) "məlum qiymət" sayılmır.
+- 🔧 Instagram şərhlərinə AI cavabı (`src/comments.ts`): şərh mətni AI-yə "etibarsız müştəri mətni" kimi işarələnmiş gedir. Şərhin altına yazılan ictimai cavabda qiymət, məbləğ, link və telefon ola bilməz (`publicTextOk`, əməkdaşın düzəlişi də yoxlanır). DM cavabı adi qiymət və link yoxlamasından keçir. Şikayətlərə AI yazmır. Təsdiq qaralamaları DB-də şifrəlidir. Şərhlər səhifəsi `inbox.view`, təsdiq `inbox.reply`, ayarlar `assistant.write` tələb edir.
 - ✅ Bütün formalar zod ilə yoxlanır (uzunluq, format, enum). Command injection, fayl yükləmə və path traversal səthi yoxdur (statik fayllar sabit qovluqdan verilir).
 
 ## 5. API security

@@ -36,3 +36,15 @@ export function checkReply(text: string, facts: string): { ok: true } | { ok: fa
   }
   return { ok: true };
 }
+
+/**
+ * Stricter check for text posted publicly under a comment: everyone sees it, so it carries no amounts at all (even
+ * known prices: competitors read comments too), no links and no phone numbers, on top of checkReply.
+ */
+export function publicTextOk(text: string, facts: string): boolean {
+  if (!text.trim()) return false;
+  MONEY.lastIndex = 0;
+  URLISH.lastIndex = 0;
+  if (MONEY.test(text) || URLISH.test(text) || /\d[\d\s()-]{6,}\d/.test(text)) return false;
+  return checkReply(text, facts).ok;
+}

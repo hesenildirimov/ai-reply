@@ -5,6 +5,7 @@ import { removeChannel, SendError } from './channels/index.js';
 import { refreshInstagramToken } from './channels/instagram.js';
 import type { ChannelRow } from './channels/types.js';
 import { markWhatsAppRead } from './channels/whatsapp.js';
+import { handleCommentAi } from './comments.js';
 import { config } from './config.js';
 import { updateSummary } from './context.js';
 import { decrypt, decryptWithInfo, encrypt } from './crypto.js';
@@ -249,6 +250,10 @@ export async function runJob(job: Job<Data>, token?: string): Promise<void> {
         return void (await learnStyle(d.workspaceId));
       case 'comment':
         return await processComment(d.sealed ? JSON.parse(decrypt(d.sealed)) : d.event!);
+      case 'comment_ai':
+        // Throttled = workspace AI burst limit: retry later without using up an attempt.
+        if ((await handleCommentAi(d.commentId)) === 'throttled') await later(job, token, 15000);
+        return;
       case 'automation_step':
         return await resumeRun(d.runId, d.step);
       case 'summarize':

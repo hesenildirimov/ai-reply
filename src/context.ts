@@ -158,3 +158,9 @@ export async function updateSummary(conversationId: string, workspaceId: string)
   );
   if (summary) await q(`UPDATE conversations SET summary = $2, summary_upto = $3 WHERE id = $1`, [conversationId, sealText(summary), older.at(-1)!.created_at]);
 }
+
+/** Everything the business itself has stated (general info + active knowledge items): the reference for checkReply. */
+export async function businessFacts(workspaceId: string, general: string): Promise<string> {
+  const items = await q<{ t: string }>(`SELECT title || ' ' || body AS t FROM knowledge_items WHERE workspace_id = $1 AND active`, [workspaceId]);
+  return `${general}\n${items.map((i) => i.t).join('\n')}`;
+}

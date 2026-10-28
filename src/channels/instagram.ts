@@ -180,6 +180,12 @@ export async function replyToComment(token: string, commentId: string, text: str
   return r.id;
 }
 
+/** Caption of a post/reel (context for answering a comment under it). */
+export async function mediaCaption(token: string, mediaId: string): Promise<string> {
+  const r = await graph<{ caption?: string }>(IG(), fbPath(mediaId), { token, query: { fields: 'caption' } });
+  return (r.caption ?? '').slice(0, 1000);
+}
+
 /** Recent posts/reels for the automation post picker. */
 export async function recentMedia(token: string) {
   const r = await graph<{

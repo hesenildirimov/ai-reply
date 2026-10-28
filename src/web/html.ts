@@ -24,6 +24,7 @@ export interface PageOpts {
 const NAV: [string, string, string, Permission?][] = [
   ['/app', 'Panel', 'grid'],
   ['/app/inbox', 'Söhbətlər', 'chat', 'inbox.reply'],
+  ['/app/comments', 'Şərhlər', 'instagram', 'inbox.view'],
   ['/app/contacts', 'Kontaktlar', 'contact', 'contacts.write'],
   ['/app/automations', 'Avtomatlaşdırma', 'zap', 'automations.view'],
   ['/app/analytics', 'Analitika', 'chart', 'analytics.view'],

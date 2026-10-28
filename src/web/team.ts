@@ -41,6 +41,7 @@ const AUDIT_GROUPS: Record<string, string> = {
   'conversation.': 'Söhbətlər',
   'contact.': 'Kontaktlar',
   'automation.': 'Avtomatlaşdırma',
+  'comment.': 'Şərhlər',
   'knowledge.': 'Bilik bazası',
   'webhook.': 'İnteqrasiyalar',
   'channel.': 'Kanallar',
