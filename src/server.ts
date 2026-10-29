@@ -5,6 +5,7 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import staticFiles from '@fastify/static';
 import Fastify from 'fastify';
+import { healthSignal } from './alerts.js';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { assertEncryptionKey, assertLeastPrivilege } from './keycheck.js';
@@ -133,7 +134,10 @@ export async function buildServer() {
 
   app.setErrorHandler((err: any, req, reply) => {
     const status = err.statusCode && err.statusCode < 500 ? err.statusCode : 500;
-    if (status >= 500) req.log.error({ err }, 'request failed');
+    if (status >= 500) {
+      req.log.error({ err }, 'request failed');
+      void healthSignal('server_error', `${req.method} ${req.routeOptions.url ?? ''}`);
+    }
     reply
       .code(status)
       .type('text/plain; charset=utf-8')

@@ -177,7 +177,10 @@ describe.skipIf(!enabled)('P4 SaaS features (integration)', () => {
     });
     expect(res.json()).toMatchObject({ ok: true, rows: 3, updated: 1, not_found: 2 });
     const row = await db.one(`SELECT fields, opted_out FROM contacts WHERE id = $1`, [c.contact_id]);
-    expect(row).toMatchObject({ fields: { olcu: 'L' }, opted_out: true });
+    expect(row.opted_out).toBe(true);
+    // Custom field values are stored encrypted (audit M-5) and read back as written.
+    expect(row.fields.olcu).toMatch(/^v1:/);
+    expect((await import('../src/contacts.js')).openFields(row.fields)).toEqual({ olcu: 'L' });
     expect((await db.one(`SELECT count(*)::int AS n FROM contact_tags WHERE contact_id = $1`, [b.contact_id])).n).toBe(0);
     // CSRF header required.
     const noCsrf = await app.inject({ method: 'POST', url: '/app/contacts/import', headers: { ...owner.headers, 'content-type': 'text/csv' }, payload: body });

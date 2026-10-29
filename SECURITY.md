@@ -151,3 +151,18 @@ Regression tests: `test/security.test.ts`, `test/tenant-isolation.test.ts` (ever
 | M-4 | Raw webhook socket errors | ✅ coarse categories |
 
 Not verified: real model behaviour (`scripts/eval-prices.ts` needs a key), real Meta webhooks/data-deletion ids, IPv6 exploitation, production TLS.
+
+### Audit 2026-10-28 (high-level review of `main`)
+| Id | Finding | Status |
+|---|---|---|
+| H-1 | One `ENCRYPTION_KEY` opens everything | ✅ Credentials (Meta tokens, webhook/2FA secrets, push subscriptions) use a separate `SECRETS_ENCRYPTION_KEY` (`s1:` ciphertext), required in production and different from the content key; own fingerprint check and rotation; existing secrets move over automatically. Keys live only in the host's secret store (DEPLOY §3). Restore drill: `scripts/restore-test.sh` |
+| H-2 | Platform admin = every tenant | ✅ All admins are e-mailed on every admin login, password link, billing/plan change, customer create and delete (`src/alerts.ts`). Deleting a customer needs the business name and a fresh 2FA code; with 2+ admins a second admin must confirm within 24 h. ⚠️ Passkeys (WebAuthn) for admins: later |
+| M-1 | Rate limit fails open without Redis | ✅ Login, 2FA, password reset/set, 2FA and password settings, export and delete fail closed (`skipOnError: false`). Webhooks stay open on purpose: HMAC-signed, Postgres outbox fallback |
+| M-2 | ffmpeg on customer media | ✅ Demuxer whitelist (no playlists or exotic containers), local files only, 2 decoder threads, OS limits (60 s CPU, 2 GB, 200 MB output, `nice 19`). `MEDIA_ANALYSIS=off` turns it off entirely. ⚠️ Decoders themselves remain a C surface (container sandbox later if volume grows) |
+| M-3 | Tag-pinned images and actions | ✅ Docker images (Dockerfile, compose, backup, CI services) pinned by digest, GitHub Actions by commit SHA; bullmq 6.4.2; Dependabot keeps pins fresh and ignores Node/Postgres/Redis major bumps |
+| M-4 | Prompt injection, AI disclosure | ✅ Replies echoing our instructions are blocked (`prompt_leak` in `checkReply`). Workspace "market" (admin): EU = AI self-identification forced on (AI Act Art. 50). Weekly live evals for invented prices and prompt injection (`.github/workflows/ai-evals.yml`, needs the `ANTHROPIC_API_KEY` secret) |
+| M-5 | Contact data plaintext | ✅ Custom field values (phone, address...) encrypted; legacy values sealed by maintenance. ⚠️ Names and @usernames stay plaintext on purpose: inbox and contact search need them, and Instagram usernames are public |
+| L-1 | CSP `unsafe-inline` styles, Meta SDK script | ⚠️ Kept: needed by Meta Embedded Signup; no inline scripts |
+| L-2 | Backups on the same host | ✅ Optional rclone off-host copy, refuses to run if an age private key sits under `/backups`, monthly restore drill script |
+| L-3 | No license | ✅ Proprietary `LICENSE`, `package.json` `UNLICENSED`. ⚠️ Repository visibility and branch protection are GitHub settings for the owner |
+| L-4 | No alerting | ✅ Health alerts by e-mail (lockout bursts, 5xx bursts, dead jobs) plus `platform_alert` log lines for a log drain (DEPLOY §11) |

@@ -62,9 +62,12 @@ const download = async (ch: ChannelRow, m: Media, maxBytes: number) => {
 // ---------- ffmpeg ----------
 
 let ffmpegOk: Promise<boolean> | undefined;
+// ffmpeg is a large C decoder surface fed with customer files (audit M-2). Beyond the size caps and the 30 s wall
+// clock it runs with OS limits: 60 s CPU, 2 GB address space, 200 MB per written file, lowest CPU priority.
+const LIMITS = 'ulimit -t 60 -v 2097152 -f 409600 2>/dev/null; exec nice -n 19 "$0" "$@"';
 const run = (cmd: string, args: string[], timeoutMs = 30_000) =>
   new Promise<string>((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = spawn('/bin/sh', ['-c', LIMITS, cmd, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
     p.stdout.on('data', (d) => (out += d));
@@ -86,8 +89,10 @@ export const hasFfmpeg = () =>
     () => false,
   ));
 
-// Customer files are untrusted: a "video" may really be a playlist pointing at URLs (SSRF). ffmpeg reads local files only.
-const LOCAL_ONLY = ['-protocol_whitelist', 'file'];
+// Customer files are untrusted: a "video" may really be a playlist pointing at URLs (SSRF). ffmpeg reads local files
+// only, and only through the demuxers real photos, videos and voice notes need (no playlists, no exotic containers).
+const DEMUXERS = 'mov,matroska,ogg,mp3,wav,aac,flac,amr,jpeg_pipe,png_pipe,webp_pipe,gif,gif_pipe,image2,mjpeg';
+const LOCAL_ONLY = ['-protocol_whitelist', 'file', '-format_whitelist', DEMUXERS, '-threads', '2'];
 
 /** Fits within edge×edge, never upscales. */
 const scale = (edge: number) => `scale='min(${edge},iw)':'min(${edge},ih)':force_original_aspect_ratio=decrease`;
@@ -110,7 +115,8 @@ async function toJpeg(dir: string, input: string): Promise<Buffer> {
 
 async function videoFrames(dir: string, input: string): Promise<Buffer[]> {
   const duration = Math.min(
-    Number(await run('ffprobe', ['-v', 'error', ...LOCAL_ONLY, '-show_entries', 'format=duration', '-of', 'csv=p=0', input])) || 0,
+    // An unreadable file (or a refused format) is not an error of the job: no frames, and the note says so.
+    Number(await run('ffprobe', ['-v', 'error', ...LOCAL_ONLY, '-show_entries', 'format=duration', '-of', 'csv=p=0', input]).catch(() => '0')) || 0,
     MAX_SECONDS,
   );
   const n = duration < 4 ? 2 : FRAMES;

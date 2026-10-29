@@ -284,7 +284,11 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
     return handover(
       fresh,
       a.handoff_message,
-      verdict.reason === 'unverified_price' ? 'AI bazada olmayan qiymət yazdı (göndərilmədi)' : 'AI tanınmayan link yazdı (göndərilmədi)',
+      verdict.reason === 'unverified_price'
+        ? 'AI bazada olmayan qiymət yazdı (göndərilmədi)'
+        : verdict.reason === 'prompt_leak'
+          ? 'AI daxili təlimatlarını yazmağa çalışdı (göndərilmədi)'
+          : 'AI tanınmayan link yazdı (göndərilmədi)',
     );
   }
   // Approval mode for comments: staff check the answer first (/app/comments).

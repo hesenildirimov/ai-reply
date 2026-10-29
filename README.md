@@ -255,7 +255,9 @@ Addım-addım: [`docs/DEPLOY.md`](docs/DEPLOY.md) (Caddy/HTTPS, 2FA, backup, `EN
 ## Production yoxlama siyahısı
 
 - [ ] HTTPS domen, `NODE_ENV=production`, `APP_URL=https://...`
-- [ ] `ENCRYPTION_KEY`-in ehtiyat nüsxəsi (itsə, token-lar oxunmaz və bütün kanallar yenidən bağlanmalıdır)
+- [ ] `ENCRYPTION_KEY` və ayrıca `SECRETS_ENCRYPTION_KEY`-in ehtiyat nüsxəsi (itsə, mesajlar və ya tokenlər oxunmaz olur)
+- [ ] SMTP: admin və sağlamlıq xəbərdarlıqları e-poçtla gəlir; logları log drain-ə göndərin (`docs/DEPLOY.md` §11)
+- [ ] GitHub: repo-nu private edin, `main` üçün branch protection (məcburi CI, force-push qadağası)
 - [ ] `npm run create-admin:prod -- email` ilə admin yaradılması
 - [ ] (İstəyə görə) SMTP, domen üçün SPF/DKIM
 - [ ] Postgres üçün avtomatik **şifrəli** backup (`BACKUP_AGE_RECIPIENT`, gizli açar serverdən kənarda), Redis persistence (AOF)

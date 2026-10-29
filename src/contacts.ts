@@ -1,5 +1,6 @@
 import type { ChannelRow } from './channels/types.js';
 import { one, q, tx } from './db.js';
+import { openText, sealText } from './messages.js';
 import { emit } from './webhooks.js';
 
 export interface ContactRow {
@@ -80,12 +81,22 @@ export async function hasTag(contactId: string, name: string): Promise<boolean> 
 
 export const FIELD_KEY = /^[a-z][a-z0-9_]{0,39}$/;
 
+/**
+ * Custom field values (phone, address, order number...) are stored encrypted ("v1:..." strings inside the JSON);
+ * the keys stay readable because they are the column names. Legacy plaintext values are sealed by maintenance.
+ */
+export const sealField = (value: string) => sealText(value);
+export const openFields = (fields: Record<string, string> | null | undefined): Record<string, string> =>
+  Object.fromEntries(Object.entries(fields ?? {}).map(([k, v]) => [k, openText(v)]));
+export const sealFields = (fields: Record<string, string>): Record<string, string> =>
+  Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, sealField(v)]));
+
 export async function setField(contactId: string, key: string, value: string) {
   if (!FIELD_KEY.test(key)) throw new Error('invalid field key');
   // Cap the number of custom fields per contact.
   await q(
     `UPDATE contacts SET fields = fields || jsonb_build_object($2::text, $3::text) WHERE id = $1 AND (fields ? $2 OR (SELECT count(*) FROM jsonb_object_keys(fields)) < 50)`,
-    [contactId, key, value.slice(0, 500)],
+    [contactId, key, sealField(value.slice(0, 500))],
   );
 }
 

@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
+import { createServer as createTcpServer, type Server as TcpServer } from 'node:net';
 
 /** Programmable stand-in for Meta Graph + Anthropic APIs (both point at FAKE_PORT in vitest.config.ts). */
 type Reply = { status?: number; json?: unknown; hang?: boolean; delayMs?: number; drop?: boolean; file?: { body: Buffer; type: string } };
@@ -157,5 +158,52 @@ export async function drainInbound() {
       await runJob(j as never);
       await j.remove();
     }
+  }
+}
+
+/** Minimal SMTP server that records mails (to, raw data with soft line breaks joined). Set SMTP_URL before importing src. */
+export const mails: { to: string[]; data: string }[] = [];
+let smtp: TcpServer | undefined;
+export function startFakeSmtp(port: number) {
+  smtp = createTcpServer((s) => {
+    let buf = '';
+    let inData = false;
+    let to: string[] = [];
+    s.write('220 fake\r\n');
+    s.on('data', (d) => {
+      buf += d.toString();
+      for (;;) {
+        const end = inData ? buf.indexOf('\r\n.\r\n') : buf.indexOf('\r\n');
+        if (end < 0) return;
+        if (inData) {
+          mails.push({ to, data: buf.slice(0, end).replace(/=\r\n/g, '') });
+          buf = buf.slice(end + 5);
+          inData = false;
+          to = [];
+          s.write('250 ok\r\n');
+          continue;
+        }
+        const line = buf.slice(0, end);
+        buf = buf.slice(end + 2);
+        const cmd = line.slice(0, 4).toUpperCase();
+        if (cmd === 'RCPT') to.push(/<([^>]+)>/.exec(line)?.[1] ?? '');
+        if (cmd === 'DATA') {
+          inData = true;
+          s.write('354 go\r\n');
+        } else if (cmd === 'QUIT') s.end('221 bye\r\n');
+        else s.write('250 ok\r\n');
+      }
+    });
+  });
+  return new Promise<void>((ok) => smtp!.listen(port, '127.0.0.1', ok));
+}
+export const stopFakeSmtp = () => new Promise<void>((ok) => (smtp ? smtp.close(() => ok()) : ok()));
+
+/** Polls until cond() is true (async work such as background mails), or fails after ms. */
+export async function until(cond: () => boolean | Promise<boolean>, ms = 3000) {
+  const t = Date.now();
+  while (!(await cond())) {
+    if (Date.now() - t > ms) throw new Error('timed out');
+    await new Promise((r) => setTimeout(r, 25));
   }
 }

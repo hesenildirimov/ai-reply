@@ -5,7 +5,7 @@ import { exchangeInstagramCode, instagramAuthorizeUrl, subscribeInstagram } from
 import type { ChannelRow } from '../channels/types.js';
 import { completeEmbeddedSignup } from '../channels/whatsapp.js';
 import { config } from '../config.js';
-import { encrypt, randomToken, sha256 } from '../crypto.js';
+import { encryptSecret, randomToken, sha256 } from '../crypto.js';
 import { one, q } from '../db.js';
 import { audit } from '../events.js';
 import { checkLimit } from '../plans.js';
@@ -114,7 +114,7 @@ export function channelRoutes(app: FastifyInstance) {
           `INSERT INTO channels (workspace_id, type, external_id, display_name, access_token_enc, token_expires_at, scopes, token_refreshed_at) VALUES ($1, 'instagram', $2, $3, $4, $5, $6, now())
            ON CONFLICT (type, external_id) DO UPDATE SET display_name = EXCLUDED.display_name, access_token_enc = EXCLUDED.access_token_enc,
              token_expires_at = EXCLUDED.token_expires_at, scopes = EXCLUDED.scopes, token_refreshed_at = now(), status = 'active', status_reason = ''`,
-          [req.user!.workspaceId, ig.igId, `@${ig.username}`, encrypt(ig.token), ig.expiresAt, ig.scopes],
+          [req.user!.workspaceId, ig.igId, `@${ig.username}`, encryptSecret(ig.token), ig.expiresAt, ig.scopes],
         );
         await queue.add('learn_style', { kind: 'learn_style', workspaceId: req.user!.workspaceId }, { delay: 5000 });
         await audit(req.user!.workspaceId, req.user!.id, 'channel.connect', 'channel', ig.igId, { type: 'instagram', scopes: ig.scopes });
@@ -147,8 +147,8 @@ export function channelRoutes(app: FastifyInstance) {
               p.data.phone_number_id,
               p.data.waba_id,
               wa.displayName,
-              encrypt(wa.token),
-              wa.pin ? encrypt(JSON.stringify({ pin: wa.pin })) : null,
+              encryptSecret(wa.token),
+              wa.pin ? encryptSecret(JSON.stringify({ pin: wa.pin })) : null,
             ],
           );
           await audit(req.user!.workspaceId, req.user!.id, 'channel.connect', 'channel', p.data.phone_number_id, { type: 'whatsapp' });

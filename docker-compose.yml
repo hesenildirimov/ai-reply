@@ -2,14 +2,14 @@
 # Only Caddy (TLS) is published to the internet; web, db and redis stay on the internal network.
 services:
   db:
-    image: postgres:16
+    image: postgres:16@sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
     # Owner (superuser) only for migrations and backups; web/worker use the least-privilege role app_rw (docker/db-init.sh).
     environment: { POSTGRES_USER: aireply_owner, POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}", POSTGRES_DB: aireply, APP_DB_PASSWORD: "${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}" }
     volumes: [pgdata:/var/lib/postgresql/data, ./docker/db-init.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro]
     healthcheck: { test: ["CMD", "pg_isready", "-U", "aireply_owner", "-d", "aireply"], interval: 5s, timeout: 3s, retries: 20 }
     restart: unless-stopped
   redis:
-    image: redis:7
+    image: redis:7@sha256:b6b6e3dc0c0952737748e55d5d885272840c7e42ba41ab1d5489f693419882f5
     # BullMQ requires noeviction: an evicted job key is a lost customer message. AOF keeps queued jobs across restarts.
     command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"]
     volumes: [redisdata:/data]
@@ -49,7 +49,7 @@ services:
     restart: unless-stopped
     depends_on: { migrate: { condition: service_completed_successfully }, redis: { condition: service_started } }
   caddy:
-    image: caddy:2
+    image: caddy:2@sha256:5e5286cb37d44086d651a5363f05f43a692ce4d649d88fb1bd844579f45fa9e8
     ports: ["80:80", "443:443", "443:443/udp"]
     environment: { DOMAIN: "${DOMAIN:?set DOMAIN in .env, e.g. app.example.az}" }
     volumes: [./Caddyfile:/etc/caddy/Caddyfile:ro, caddy_data:/data, caddy_config:/config]
@@ -63,6 +63,16 @@ services:
       PGPASSWORD: "${POSTGRES_PASSWORD}"
       BACKUP_KEEP_DAYS: "${BACKUP_KEEP_DAYS:-14}"
       BACKUP_AGE_RECIPIENT: "${BACKUP_AGE_RECIPIENT:?set BACKUP_AGE_RECIPIENT in .env (age-keygen, docs/DEPLOY.md)}"
+      # Optional off-host copy (docs/DEPLOY.md §5): BACKUP_RCLONE_REMOTE=offsite:aireply-backups plus the "offsite"
+      # remote's settings. Only these variables reach this container, not the app's secrets.
+      BACKUP_RCLONE_REMOTE: "${BACKUP_RCLONE_REMOTE:-}"
+      RCLONE_CONFIG_OFFSITE_TYPE: "${RCLONE_CONFIG_OFFSITE_TYPE:-}"
+      RCLONE_CONFIG_OFFSITE_PROVIDER: "${RCLONE_CONFIG_OFFSITE_PROVIDER:-}"
+      RCLONE_CONFIG_OFFSITE_ACCOUNT: "${RCLONE_CONFIG_OFFSITE_ACCOUNT:-}"
+      RCLONE_CONFIG_OFFSITE_KEY: "${RCLONE_CONFIG_OFFSITE_KEY:-}"
+      RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: "${RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID:-}"
+      RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY: "${RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY:-}"
+      RCLONE_CONFIG_OFFSITE_ENDPOINT: "${RCLONE_CONFIG_OFFSITE_ENDPOINT:-}"
     volumes: [./backups:/backups, ./scripts/backup.sh:/backup.sh:ro]
     entrypoint: ["bash", "/backup.sh"]
     restart: unless-stopped

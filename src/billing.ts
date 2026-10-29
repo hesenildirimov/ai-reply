@@ -82,23 +82,28 @@ export interface SubscriptionTerms {
   /** YYYY-MM-DD, or null for no end date. */
   paidUntil: string | null;
   note: string;
+  /** Where the business sells: 'eu' turns AI self-identification on for good (EU AI Act, audit M-4). */
+  region?: Region;
 }
+export const REGIONS = { az: 'Azərbaycan', eu: 'Avropa İttifaqı', other: 'Digər' } as const;
+export type Region = keyof typeof REGIONS;
 
 export const updateSubscription = (workspaceId: string, t: SubscriptionTerms) =>
-  q('UPDATE workspaces SET name = $2, monthly_reply_limit = $3, paid_until = $4, note = $5 WHERE id = $1', [
+  q('UPDATE workspaces SET name = $2, monthly_reply_limit = $3, paid_until = $4, note = $5, region = coalesce($6, region) WHERE id = $1', [
     workspaceId,
     t.name,
     t.replyLimit,
     t.paidUntil,
     t.note,
+    t.region ?? null,
   ]);
 
 /** New customer workspace (inside the caller's transaction). Unknown plan id -> the default "Biznes" plan. */
 export async function createSubscription(c: pg.PoolClient, t: SubscriptionTerms & { planId?: string | null }): Promise<string> {
   const r = await c.query(
-    `INSERT INTO workspaces (name, monthly_reply_limit, paid_until, note, plan_id)
-     VALUES ($1, $2, $3, $4, coalesce((SELECT id FROM plans WHERE id = $5), (SELECT id FROM plans WHERE name = 'Biznes'))) RETURNING id`,
-    [t.name, t.replyLimit, t.paidUntil, t.note, t.planId ?? null],
+    `INSERT INTO workspaces (name, monthly_reply_limit, paid_until, note, plan_id, region)
+     VALUES ($1, $2, $3, $4, coalesce((SELECT id FROM plans WHERE id = $5), (SELECT id FROM plans WHERE name = 'Biznes')), $6) RETURNING id`,
+    [t.name, t.replyLimit, t.paidUntil, t.note, t.planId ?? null, t.region ?? 'az'],
   );
   return r.rows[0].id;
 }

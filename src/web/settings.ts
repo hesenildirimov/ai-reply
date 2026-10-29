@@ -6,7 +6,7 @@ import { subscriptionOf } from '../billing.js';
 import { removeChannel } from '../channels/index.js';
 import type { ChannelRow } from '../channels/types.js';
 import { config } from '../config.js';
-import { decrypt, encrypt, randomToken, sha256 } from '../crypto.js';
+import { decrypt, encryptSecret, randomToken, sha256 } from '../crypto.js';
 import { one, q, tx } from '../db.js';
 import { audit } from '../events.js';
 import { openRows } from '../messages.js';
@@ -151,7 +151,7 @@ export function settingsRoutes(app: FastifyInstance) {
     r.get('/app/2fa', async (req, reply) => {
       if (req.user!.mfa) return reply.redirect('/app/settings?m=mfa_on');
       const secret = newTotpSecret();
-      await redis.set(`mfa-setup:${req.user!.id}`, encrypt(secret), 'EX', 600);
+      await redis.set(`mfa-setup:${req.user!.id}`, encryptSecret(secret), 'EX', 600);
       const qr = await QRCode.toString(otpauthUrl(req.user!.email, secret), { type: 'svg', margin: 1, width: 200 });
       return view(
         req,
@@ -169,7 +169,7 @@ export function settingsRoutes(app: FastifyInstance) {
       );
     });
 
-    r.post('/app/2fa', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+    r.post('/app/2fa', { config: { rateLimit: { max: 10, timeWindow: '1 minute', skipOnError: false } } }, async (req, reply) => {
       // Re-authentication: a stolen session cookie alone must not be able to register the attacker's authenticator (A-3).
       if (!(await reauth(req, reply, (req.body as any)?.password))) return reply;
       const pending = await redis.get(`mfa-setup:${req.user!.id}`);
@@ -180,14 +180,14 @@ export function settingsRoutes(app: FastifyInstance) {
         await redis.expire(`mfa-setup:${req.user!.id}`, 600);
         return reply.redirect('/app/settings?m=bad_code');
       }
-      await q('UPDATE users SET totp_secret_enc = $2, totp_enabled_at = now(), totp_last_step = $3 WHERE id = $1', [req.user!.id, encrypt(secret), step]);
+      await q('UPDATE users SET totp_secret_enc = $2, totp_enabled_at = now(), totp_last_step = $3 WHERE id = $1', [req.user!.id, encryptSecret(secret), step]);
       await redis.del(`mfa-setup:${req.user!.id}`);
       await endOtherSessions(req, req.user!.id); // a parallel session of an intruder ends here
       req.log.info({ event: 'mfa_enabled', user: req.user!.id }, 'security');
       return reply.redirect('/app/settings?m=mfa_on');
     });
 
-    r.post('/app/2fa/disable', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
+    r.post('/app/2fa/disable', { config: { rateLimit: { max: 5, timeWindow: '1 minute', skipOnError: false } } }, async (req, reply) => {
       if (req.user!.isAdmin) return reply.redirect('/app/settings?m=mfa_required');
       if (!(await reauth(req, reply, (req.body as any)?.password))) return reply;
       const u = await one('SELECT totp_secret_enc, totp_last_step FROM users WHERE id = $1', [req.user!.id]);
@@ -200,7 +200,7 @@ export function settingsRoutes(app: FastifyInstance) {
 
     // ---------- Alert channels ----------
     // WhatsApp: the owner sends a one-time code to the platform number (proves ownership, opens the chat).
-    r.post('/app/notifications/whatsapp', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+    r.post('/app/notifications/whatsapp', { config: { rateLimit: { max: 10, timeWindow: '1 minute', skipOnError: false } } }, async (req, reply) => {
       if (!config.waAlertsEnabled) return reply.redirect('/app/settings');
       const code = randomToken(6)
         .replace(/[^A-Za-z0-9]/g, 'X')
@@ -210,7 +210,7 @@ export function settingsRoutes(app: FastifyInstance) {
       return reply.redirect(`https://wa.me/${config.PLATFORM_WA_NUMBER}?text=${encodeURIComponent(`AIREPLY ${code}`)}`);
     });
 
-    r.post('/app/notifications/push', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+    r.post('/app/notifications/push', { config: { rateLimit: { max: 10, timeWindow: '1 minute', skipOnError: false } } }, async (req, reply) => {
       const p = subscriptionSchema.safeParse(req.body);
       if (!config.pushEnabled || !p.success) return reply.code(400).send({ ok: false });
       const ua = String(req.headers['user-agent'] ?? '');
@@ -218,13 +218,13 @@ export function settingsRoutes(app: FastifyInstance) {
       await q(
         `INSERT INTO notify_targets (workspace_id, user_id, kind, chat_id, label, data_enc) VALUES ($1, $2, 'webpush', $3, $4, $5)
          ON CONFLICT (workspace_id, kind, chat_id) DO UPDATE SET data_enc = EXCLUDED.data_enc`,
-        [req.user!.workspaceId, req.user!.id, sha256(p.data.endpoint).toString('hex'), label, encrypt(JSON.stringify(p.data))],
+        [req.user!.workspaceId, req.user!.id, sha256(p.data.endpoint).toString('hex'), label, encryptSecret(JSON.stringify(p.data))],
       );
       return reply.send({ ok: true });
     });
 
     // Telegram linking: one-time code (hash in Redis, 15 min) passed via the bot's /start deep link.
-    r.post('/app/notifications/telegram', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+    r.post('/app/notifications/telegram', { config: { rateLimit: { max: 10, timeWindow: '1 minute', skipOnError: false } } }, async (req, reply) => {
       if (!telegramEnabled()) return reply.redirect('/app/settings');
       const code = randomToken(18);
       await redis.set(`tglink:${sha256(code).toString('hex')}`, JSON.stringify({ workspaceId: req.user!.workspaceId, userId: req.user!.id }), 'EX', 900);
@@ -236,7 +236,7 @@ export function settingsRoutes(app: FastifyInstance) {
       return reply.redirect('/app/settings?m=tg_removed');
     });
 
-    r.post('/app/settings/password', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
+    r.post('/app/settings/password', { config: { rateLimit: { max: 5, timeWindow: '1 minute', skipOnError: false } } }, async (req, reply) => {
       const p = z.object({ current: z.string().max(200), password: passwordSchema }).safeParse(req.body);
       if (!p.success) return reply.redirect('/app/settings?m=invalid');
       if (!(await reauth(req, reply, p.data.current))) return reply;
@@ -245,42 +245,50 @@ export function settingsRoutes(app: FastifyInstance) {
       return reply.redirect('/login?m=password_set');
     });
 
-    r.get('/app/settings/export', { preHandler: requirePerm('data.export'), config: { rateLimit: { max: 3, timeWindow: '1 hour' } } }, async (req, reply) => {
-      const w = req.user!.workspaceId;
-      await audit(w, req.user!.id, 'workspace.export', 'workspace', w);
-      const data = {
-        exported_at: new Date().toISOString(),
-        user: { email: req.user!.email },
-        workspace: await subscriptionOf(w).then(
-          (s) => s && { name: s.name, monthly_reply_limit: s.replyLimit, paid_until: s.paidUntil, created_at: s.createdAt },
-        ),
-        assistant: await one(
-          'SELECT business_name, knowledge, style_preset, style_guide, handoff_message, enabled, ai_disclosure FROM assistants WHERE workspace_id = $1',
-          [w],
-        ),
-        channels: await q('SELECT type, external_id, display_name, status, created_at FROM channels WHERE workspace_id = $1', [w]),
-        conversations: await exportConversations(w),
-      };
-      return reply
-        .header('Content-Disposition', 'attachment; filename="ai-reply-export.json"')
-        .type('application/json')
-        .send(JSON.stringify(data, null, 2));
-    });
+    r.get(
+      '/app/settings/export',
+      { preHandler: requirePerm('data.export'), config: { rateLimit: { max: 3, timeWindow: '1 hour', skipOnError: false } } },
+      async (req, reply) => {
+        const w = req.user!.workspaceId;
+        await audit(w, req.user!.id, 'workspace.export', 'workspace', w);
+        const data = {
+          exported_at: new Date().toISOString(),
+          user: { email: req.user!.email },
+          workspace: await subscriptionOf(w).then(
+            (s) => s && { name: s.name, monthly_reply_limit: s.replyLimit, paid_until: s.paidUntil, created_at: s.createdAt },
+          ),
+          assistant: await one(
+            'SELECT business_name, knowledge, style_preset, style_guide, handoff_message, enabled, ai_disclosure FROM assistants WHERE workspace_id = $1',
+            [w],
+          ),
+          channels: await q('SELECT type, external_id, display_name, status, created_at FROM channels WHERE workspace_id = $1', [w]),
+          conversations: await exportConversations(w),
+        };
+        return reply
+          .header('Content-Disposition', 'attachment; filename="ai-reply-export.json"')
+          .type('application/json')
+          .send(JSON.stringify(data, null, 2));
+      },
+    );
 
-    r.post('/app/settings/delete', { preHandler: requireOwner, config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
-      if (!(await reauth(req, reply, (req.body as any)?.password))) return reply;
-      for (const ch of await q<ChannelRow>('SELECT * FROM channels WHERE workspace_id = $1', [req.user!.workspaceId])) await removeChannel(ch);
-      await destroySession(req, reply);
-      await tx(async (c) => {
-        const members = (await c.query('SELECT user_id FROM memberships WHERE workspace_id = $1', [req.user!.workspaceId])).rows.map((x) => x.user_id);
-        await c.query('DELETE FROM workspaces WHERE id = $1', [req.user!.workspaceId]);
-        // Every member goes too (a user belongs to one business only): no orphaned e-mails, password hashes or 2FA secrets (A-5).
-        // Platform admins are kept.
-        await c.query('DELETE FROM users WHERE id = ANY($1) AND NOT is_admin AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = users.id)', [
-          members,
-        ]);
-      });
-      return reply.redirect('/login?m=account_deleted');
-    });
+    r.post(
+      '/app/settings/delete',
+      { preHandler: requireOwner, config: { rateLimit: { max: 5, timeWindow: '1 minute', skipOnError: false } } },
+      async (req, reply) => {
+        if (!(await reauth(req, reply, (req.body as any)?.password))) return reply;
+        for (const ch of await q<ChannelRow>('SELECT * FROM channels WHERE workspace_id = $1', [req.user!.workspaceId])) await removeChannel(ch);
+        await destroySession(req, reply);
+        await tx(async (c) => {
+          const members = (await c.query('SELECT user_id FROM memberships WHERE workspace_id = $1', [req.user!.workspaceId])).rows.map((x) => x.user_id);
+          await c.query('DELETE FROM workspaces WHERE id = $1', [req.user!.workspaceId]);
+          // Every member goes too (a user belongs to one business only): no orphaned e-mails, password hashes or 2FA secrets (A-5).
+          // Platform admins are kept.
+          await c.query('DELETE FROM users WHERE id = ANY($1) AND NOT is_admin AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = users.id)', [
+            members,
+          ]);
+        });
+        return reply.redirect('/login?m=account_deleted');
+      },
+    );
   });
 }

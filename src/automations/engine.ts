@@ -6,6 +6,7 @@ import { type ConvCtx, deliver, handoff, inWindow, loadConv } from '../conversat
 import { decrypt } from '../crypto.js';
 import { one, q } from '../db.js';
 import { trackLinks } from '../links.js';
+import { openText } from '../messages.js';
 import { automationBlocked, limitAlert } from '../plans.js';
 import { queue } from '../queue.js';
 import { emit } from '../webhooks.js';
@@ -146,7 +147,7 @@ export async function executeSteps(
             ? await hasTag(contact.id, step.tag)
             : step.check === 'not_tag'
               ? !(await hasTag(contact.id, step.tag))
-              : String((await one(`SELECT fields->>$2 AS v FROM contacts WHERE id = $1`, [contact.id, step.key]))?.v ?? '') === step.value;
+              : openText((await one(`SELECT fields->>$2 AS v FROM contacts WHERE id = $1`, [contact.id, step.key]))?.v) === step.value;
         await logStep(run.id, { i, type: 'condition', result: ok });
         if (!ok) {
           await finish(run.id, sent ? 'sent' : 'skipped', 'condition_not_met');

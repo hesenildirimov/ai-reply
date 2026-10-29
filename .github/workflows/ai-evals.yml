@@ -1,0 +1,44 @@
+name: AI evals
+# Weekly live check of model behaviour (audit M-4): invented prices and prompt injection. Uses the real Claude API,
+# so it only runs when the ANTHROPIC_API_KEY repository secret is set (costs a few cents per run).
+on:
+  schedule: [{ cron: "17 4 * * 1" }]
+  workflow_dispatch:
+permissions: { contents: read }
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16@sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
+        env: { POSTGRES_USER: app, POSTGRES_PASSWORD: app, POSTGRES_DB: aireply_eval }
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-retries 10
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      NODE_ENV: test
+      APP_URL: http://localhost:3000
+      DATABASE_URL: postgres://app:app@localhost:5432/aireply_eval
+      REDIS_URL: redis://localhost:6379
+      ENCRYPTION_KEY: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+    steps:
+      - name: Skip without an API key
+        if: env.ANTHROPIC_API_KEY == ''
+        run: echo "ANTHROPIC_API_KEY secret is not set; nothing to evaluate."
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: env.ANTHROPIC_API_KEY != ''
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: env.ANTHROPIC_API_KEY != ''
+        with: { node-version: 22, cache: npm }
+      - if: env.ANTHROPIC_API_KEY != ''
+        run: npm ci
+      - if: env.ANTHROPIC_API_KEY != ''
+        run: |
+          npx tsx src/migrate.ts
+          psql "$DATABASE_URL" -c "INSERT INTO workspaces (name, monthly_reply_limit) VALUES ('eval', 100)"
+      - name: Invented prices
+        if: env.ANTHROPIC_API_KEY != ''
+        run: npx tsx scripts/eval-prices.ts
+      - name: Prompt injection
+        if: env.ANTHROPIC_API_KEY != ''
+        run: npx tsx scripts/eval-injection.ts

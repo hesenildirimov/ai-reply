@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { encrypt, randomToken } from '../crypto.js';
+import { encryptSecret, randomToken } from '../crypto.js';
 import { one, q } from '../db.js';
 import { audit } from '../events.js';
 import { queue } from '../queue.js';
@@ -111,7 +111,7 @@ export function integrationRoutes(app: FastifyInstance) {
         w0,
         p.data.name,
         url,
-        encrypt(secret),
+        encryptSecret(secret),
         p.data.events,
       ]);
       await audit(w0, req.user!.id, 'webhook.create', 'webhook', h!.id, { host: new URL(url).host, events: p.data.events });
@@ -122,7 +122,7 @@ export function integrationRoutes(app: FastifyInstance) {
       const h = await owned(req);
       if (!h) return reply.code(404).send('Not found');
       const secret = `whsec_${randomToken(24)}`;
-      await q(`UPDATE webhooks SET secret_enc = $2 WHERE id = $1`, [h.id, encrypt(secret)]);
+      await q(`UPDATE webhooks SET secret_enc = $2 WHERE id = $1`, [h.id, encryptSecret(secret)]);
       await audit(h.workspace_id, req.user!.id, 'webhook.rotate_secret', 'webhook', h.id);
       return secretPage(req, reply, h.name, secret);
     });
