@@ -13,6 +13,11 @@ const schema = z.object({
   REDIS_URL: z.string().min(1),
   // 32 bytes, base64. Generate: openssl rand -base64 32
   ENCRYPTION_KEY: z.string().refine((v) => Buffer.from(v, 'base64').length === 32, 'ENCRYPTION_KEY must be 32 bytes base64'),
+  // Credentials (Meta tokens, webhook/2FA secrets) get their own key: one leaked key is not everything. Required in production.
+  SECRETS_ENCRYPTION_KEY: z
+    .string()
+    .refine((v) => Buffer.from(v, 'base64').length === 32, 'SECRETS_ENCRYPTION_KEY must be 32 bytes base64')
+    .optional(),
 
   ANTHROPIC_API_KEY: optional,
   AI_EFFORT: z.enum(['low', 'medium', 'high']).default('low'),
@@ -105,6 +110,8 @@ const env = parsed.data;
 if (env.NODE_ENV === 'production') {
   const missing: string[] = env.ANTHROPIC_API_KEY ? [] : ['ANTHROPIC_API_KEY'];
   if (!env.APP_URL.startsWith('https://')) missing.push('APP_URL(https)');
+  if (!env.SECRETS_ENCRYPTION_KEY) missing.push('SECRETS_ENCRYPTION_KEY');
+  else if (env.SECRETS_ENCRYPTION_KEY === env.ENCRYPTION_KEY) missing.push('SECRETS_ENCRYPTION_KEY(different from ENCRYPTION_KEY)');
   if (missing.length) {
     console.error(`Missing required production config: ${missing.join(', ')}`);
     process.exit(1);

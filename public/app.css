@@ -349,3 +349,7 @@ input:focus,select:focus,textarea:focus{outline:0;border-color:#16a085;box-shado
 .bubble{border-radius:18px}.msg.customer .bubble{background:#eef4f3}.msg.ai .bubble{background:var(--c-violet-soft);color:#0b3d33}.msg.human .bubble{background:var(--grad);color:#fff}
 .chart .s1{fill:#2a78d6}.chart .s2{fill:#eb6834}
 a{color:#0e7c66}
+.post-pick{display:grid;gap:4px;max-height:320px;overflow:auto;margin:8px 0 12px}
+.comment-draft{border-top:1px solid var(--border);padding-top:12px;margin-top:12px}.comment-draft:first-of-type{border-top:0;margin-top:0;padding-top:0}
+.comment-draft .row{display:flex;gap:8px;flex-wrap:wrap}
+.comment-settings{display:grid;gap:14px}.comment-settings h3{margin:6px 0 0}

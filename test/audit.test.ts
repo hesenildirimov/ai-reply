@@ -1,9 +1,8 @@
 // Regression tests for the 2026-10-27 security audit (O-1 … M-4, see SECURITY.md "Audit 2026-10-27").
 import { spawnSync } from 'node:child_process';
 import http from 'node:http';
-import { createServer, type Server } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createAutomation, igMessage, resetDb, seedWorkspace, startFake, stopFake } from './helpers.js';
+import { createAutomation, igMessage, mails, resetDb, seedWorkspace, startFake, startFakeSmtp, stopFake, stopFakeSmtp, until } from './helpers.js';
 
 const enabled = !!process.env.TEST_DATABASE_URL && !!process.env.TEST_REDIS_URL;
 const ORIGIN = 'http://localhost:3000';
@@ -11,48 +10,7 @@ const ORIGIN = 'http://localhost:3000';
 // Mail is on for this file (reset links, admin links and lock warnings are mailed): a minimal SMTP server records them.
 const SMTP_PORT = 4025;
 process.env.SMTP_URL = `smtp://127.0.0.1:${SMTP_PORT}`;
-const mails: { to: string[]; data: string }[] = [];
-let smtp: Server | undefined;
-function startSmtp() {
-  smtp = createServer((s) => {
-    let buf = '';
-    let inData = false;
-    let to: string[] = [];
-    s.write('220 fake\r\n');
-    s.on('data', (d) => {
-      buf += d.toString();
-      for (;;) {
-        const end = inData ? buf.indexOf('\r\n.\r\n') : buf.indexOf('\r\n');
-        if (end < 0) return;
-        if (inData) {
-          mails.push({ to, data: buf.slice(0, end).replace(/=\r\n/g, '') });
-          buf = buf.slice(end + 5);
-          inData = false;
-          to = [];
-          s.write('250 ok\r\n');
-          continue;
-        }
-        const line = buf.slice(0, end);
-        buf = buf.slice(end + 2);
-        const cmd = line.slice(0, 4).toUpperCase();
-        if (cmd === 'RCPT') to.push(/<([^>]+)>/.exec(line)?.[1] ?? '');
-        if (cmd === 'DATA') {
-          inData = true;
-          s.write('354 go\r\n');
-        } else if (cmd === 'QUIT') s.end('221 bye\r\n');
-        else s.write('250 ok\r\n');
-      }
-    });
-  });
-  return new Promise<void>((ok) => smtp!.listen(SMTP_PORT, '127.0.0.1', ok));
-}
-const until = async (cond: () => boolean | Promise<boolean>, ms = 3000) => {
-  const t = Date.now();
-  while (!(await cond())) {
-    if (Date.now() - t > ms) throw new Error('timed out');
-    await new Promise((r) => setTimeout(r, 25));
-  }
-};
+const startSmtp = () => startFakeSmtp(SMTP_PORT);
 
 describe.skipIf(!enabled)('security audit 2026-10-27', () => {
   let db: typeof import('../src/db.js');
@@ -125,7 +83,7 @@ describe.skipIf(!enabled)('security audit 2026-10-27', () => {
   afterAll(async () => {
     await app.close();
     await stopFake();
-    await new Promise<void>((ok) => (smtp ? smtp.close(() => ok()) : ok()));
+    await stopFakeSmtp();
     const { closeQueues, redis } = await import('../src/queue.js');
     (await import('../src/realtime.js')).closeRealtime();
     await closeQueues();

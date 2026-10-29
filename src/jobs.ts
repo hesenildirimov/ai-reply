@@ -5,12 +5,13 @@ import { removeChannel, SendError } from './channels/index.js';
 import { refreshInstagramToken } from './channels/instagram.js';
 import type { ChannelRow } from './channels/types.js';
 import { markWhatsAppRead } from './channels/whatsapp.js';
+import { handleCommentAi } from './comments.js';
 import { config } from './config.js';
 import { updateSummary } from './context.js';
-import { decrypt, decryptWithInfo, encrypt } from './crypto.js';
+import { decrypt, decryptSecretWithInfo, decryptWithInfo, encrypt, encryptSecret, secretsKeyConfigured } from './crypto.js';
 import { one, q } from './db.js';
 import { markReauth, recordEvent } from './events.js';
-import { finishKeyRotation } from './keycheck.js';
+import { finishKeyRotation, finishSecretsKeyRotation } from './keycheck.js';
 import { withLock } from './locks.js';
 import { openText, resealIfStale, sealBody, sealText, searchTokensOf } from './messages.js';
 import { linkWhatsAppAlerts, notifyChannelProblem } from './notify.js';
@@ -34,7 +35,7 @@ async function refreshTokens() {
         const r = await refreshInstagramToken(decryptWithInfo(ch.access_token_enc).plain);
         await q('UPDATE channels SET access_token_enc = $2, token_expires_at = $3, token_refreshed_at = now() WHERE id = $1', [
           ch.id,
-          encrypt(r.token),
+          encryptSecret(r.token),
           r.expiresAt,
         ]);
       } catch (e) {
@@ -81,7 +82,44 @@ export async function sealLegacyMessages(budgetMs = 60_000): Promise<number> {
       await q(`UPDATE ${table} SET ${col} = $2 WHERE id = $1 AND ${col} = $3`, [r.id, sealText(r.v), r.v]);
     }
   }
+  await sealContactFields(false);
   return total;
+}
+
+/**
+ * Contact custom field values: seals plaintext ones (stored before field encryption) and, during a key rotation
+ * (rotate = true), re-encrypts values still under the previous key.
+ */
+async function sealContactFields(rotate: boolean): Promise<void> {
+  // Rotation has to visit every row (a stale value looks like any other "v1:" value), in id order; sealing only rows
+  // that still hold plaintext. Either way the work is done before the old key may be removed.
+  let cursor = '00000000-0000-0000-0000-000000000000';
+  for (;;) {
+    const rows = await q<{ id: string; fields: Record<string, string> }>(
+      `SELECT id, fields FROM contacts WHERE id > $1 AND EXISTS (SELECT 1 FROM jsonb_each_text(fields) e WHERE e.value <> ''
+         AND ${rotate ? 'true' : `e.value NOT LIKE 'v1:%'`}) ORDER BY id LIMIT ${BATCH}`,
+      [cursor],
+    );
+    for (const r of rows) {
+      let changed = false;
+      const next = Object.fromEntries(
+        Object.entries(r.fields).map(([k, v]) => {
+          if (!v) return [k, v];
+          if (!v.startsWith('v1:')) {
+            changed = true;
+            return [k, sealText(v)];
+          }
+          const { plain, stale } = decryptWithInfo(v);
+          if (stale) changed = true;
+          return [k, stale ? sealText(plain) : v];
+        }),
+      );
+      // Only if nobody changed the fields meanwhile (a concurrent edit wins; the next run picks the row up again).
+      if (changed) await q(`UPDATE contacts SET fields = $2 WHERE id = $1 AND fields = $3::jsonb`, [r.id, JSON.stringify(next), JSON.stringify(r.fields)]);
+    }
+    if (rows.length < BATCH) return;
+    cursor = rows.at(-1)!.id;
+  }
 }
 const sealed = (text: string) => {
   const s = sealBody(text);
@@ -118,22 +156,36 @@ async function rotateMessages(budgetMs = 120_000): Promise<boolean> {
   return false;
 }
 
-/** During a key rotation (ENCRYPTION_KEY_PREVIOUS set) re-encrypts every secret and message with the current key. */
-export async function reencryptSecrets() {
-  if (!process.env.ENCRYPTION_KEY_PREVIOUS) return;
-  const cols: [string, string][] = [
-    ['channels', 'access_token_enc'],
-    ['channels', 'extra_enc'],
-    ['users', 'totp_secret_enc'],
-    ['notify_targets', 'data_enc'],
-    ['webhooks', 'secret_enc'],
-  ];
-  for (const [table, col] of cols) {
-    for (const row of await q(`SELECT id, ${col} AS v FROM ${table} WHERE ${col} IS NOT NULL`)) {
-      const { plain, stale } = decryptWithInfo(row.v);
-      if (stale) await q(`UPDATE ${table} SET ${col} = $2 WHERE id = $1 AND ${col} = $3`, [row.id, encrypt(plain), row.v]);
+// Columns holding credentials: encrypted with the secrets key (SECRETS_ENCRYPTION_KEY, "s1:"), never the content key.
+const SECRET_COLUMNS: [string, string][] = [
+  ['channels', 'access_token_enc'],
+  ['channels', 'extra_enc'],
+  ['users', 'totp_secret_enc'],
+  ['notify_targets', 'data_enc'],
+  ['webhooks', 'secret_enc'],
+];
+
+/**
+ * Secrets under a previous secrets key, or still under the content key once SECRETS_ENCRYPTION_KEY is set, are
+ * re-encrypted with the current secrets key. Throws on a row it cannot decrypt, so a rotation is never finished early.
+ */
+async function reencryptSecretColumns(): Promise<void> {
+  const rotating = !!(process.env.ENCRYPTION_KEY_PREVIOUS || process.env.SECRETS_ENCRYPTION_KEY_PREVIOUS);
+  if (!rotating && !secretsKeyConfigured()) return;
+  for (const [table, col] of SECRET_COLUMNS) {
+    // Outside a rotation only secrets still under the content key ("v1:") need moving.
+    for (const row of await q(`SELECT id, ${col} AS v FROM ${table} WHERE ${col} IS NOT NULL ${rotating ? '' : `AND ${col} LIKE 'v1:%'`}`)) {
+      const { plain, stale } = decryptSecretWithInfo(row.v);
+      if (stale) await q(`UPDATE ${table} SET ${col} = $2 WHERE id = $1 AND ${col} = $3`, [row.id, encryptSecret(plain), row.v]);
     }
   }
+}
+
+/** During a key rotation (ENCRYPTION_KEY_PREVIOUS / SECRETS_ENCRYPTION_KEY_PREVIOUS set) re-encrypts with the current keys. */
+export async function reencryptSecrets() {
+  await reencryptSecretColumns();
+  if (process.env.SECRETS_ENCRYPTION_KEY_PREVIOUS) await finishSecretsKeyRotation();
+  if (!process.env.ENCRYPTION_KEY_PREVIOUS) return;
   // Encrypted free text (no flag column): summaries, staff notes, pending webhook payloads.
   for (const [table, col] of FREE_TEXT) {
     for (const r of await q<{ id: string; v: string }>(`SELECT id, ${col} AS v FROM ${table} WHERE ${col} LIKE 'v1:%'`)) {
@@ -141,6 +193,7 @@ export async function reencryptSecrets() {
       if (stale) await q(`UPDATE ${table} SET ${col} = $2 WHERE id = $1 AND ${col} = $3`, [r.id, encrypt(plain), r.v]);
     }
   }
+  await sealContactFields(true);
   for (const d of await q<{ id: string; enc: string }>(`SELECT id, payload->>'enc' AS enc FROM webhook_deliveries WHERE payload ? 'enc'`)) {
     const { plain, stale } = decryptWithInfo(d.enc);
     if (stale) await q(`UPDATE webhook_deliveries SET payload = jsonb_build_object('enc', $2::text) WHERE id = $1`, [d.id, encrypt(plain)]);
@@ -249,6 +302,10 @@ export async function runJob(job: Job<Data>, token?: string): Promise<void> {
         return void (await learnStyle(d.workspaceId));
       case 'comment':
         return await processComment(d.sealed ? JSON.parse(decrypt(d.sealed)) : d.event!);
+      case 'comment_ai':
+        // Throttled = workspace AI burst limit: retry later without using up an attempt.
+        if ((await handleCommentAi(d.commentId)) === 'throttled') await later(job, token, 15000);
+        return;
       case 'automation_step':
         return await resumeRun(d.runId, d.step);
       case 'summarize':

@@ -25,7 +25,10 @@ export function assistantRoutes(app: FastifyInstance) {
 
     // ---------- Assistant ----------
     r.get('/app/assistant', { preHandler: requirePerm('assistant.write') }, async (req, reply) => {
-      const a = await one('SELECT * FROM assistants WHERE workspace_id = $1', [req.user!.workspaceId]);
+      const a = await one(`SELECT a.*, w.region FROM assistants a JOIN workspaces w ON w.id = a.workspace_id WHERE a.workspace_id = $1`, [
+        req.user!.workspaceId,
+      ]);
+      const eu = a.region === 'eu';
       return view(
         req,
         reply,
@@ -53,8 +56,12 @@ export function assistantRoutes(app: FastifyInstance) {
                 ['polite', 'Nəzakətli, "siz"'],
                 ['short', 'Çox qısa, tez'],
               ].map(([v, l]) => html`<option value="${v}" ${a.style_preset === v ? raw('selected') : ''}>${l}</option>`)}</select></label>
-            <label class="switch-row"><span><b>AI olduğunu bildir</b><small>Söndürülüb: AI özünü təqdim etmir. Müştəri ciddi şəkildə "bot-san?" soruşarsa, yalan danışmır.</small></span>
-              <input type="checkbox" class="switch" name="ai_disclosure" value="1" ${a.ai_disclosure ? raw('checked') : ''}></label></section>
+            <label class="switch-row"><span><b>AI olduğunu bildir</b><small>${
+              eu
+                ? 'Avropa İttifaqında satış edirsiniz: AI ilk cavabda özünü AI köməkçi kimi təqdim etməlidir (AI Act). Bu seçim söndürülə bilməz.'
+                : 'Söndürülüb: AI özünü təqdim etmir. Müştəri ciddi şəkildə "bot-san?" soruşarsa, yalan danışmır.'
+            }</small></span>
+              <input type="checkbox" class="switch" name="ai_disclosure" value="1" ${a.ai_disclosure || eu ? raw('checked') : ''} ${eu ? raw('disabled') : ''}></label></section>
           <section class="card span"><div class="card-head"><h2>${icon('headset')}Bilmədiyi suallar</h2></div>
             <p class="muted">AI cavabı bilməyəndə müştəriyə öz üslubunda qısa, təbii bir cavab yazır (operator və ya AI sözü işlətmədən) və sizə bildiriş göndərir.</p>
             <label>Ehtiyat gözləmə mesajı<input name="handoff_message" value="${a.handoff_message}" maxlength="500"></label>
@@ -78,8 +85,10 @@ export function assistantRoutes(app: FastifyInstance) {
         .safeParse(req.body);
       if (!p.success) return reply.redirect('/app/assistant?m=invalid');
       const d = p.data;
+      // EU market: disclosure stays on whatever the form sends (a disabled checkbox is not submitted).
       await q(
-        `UPDATE assistants SET business_name = $2, knowledge = $3, style_guide = $4, style_preset = $5, handoff_message = $6, enabled = $7, ai_disclosure = $8, updated_at = now() WHERE workspace_id = $1`,
+        `UPDATE assistants a SET business_name = $2, knowledge = $3, style_guide = $4, style_preset = $5, handoff_message = $6, enabled = $7,
+           ai_disclosure = $8 OR (SELECT region = 'eu' FROM workspaces w WHERE w.id = a.workspace_id), updated_at = now() WHERE workspace_id = $1`,
         [req.user!.workspaceId, d.business_name, d.knowledge, d.style_guide, d.style_preset, d.handoff_message, !!d.enabled, !!d.ai_disclosure],
       );
       await audit(req.user!.workspaceId, req.user!.id, 'assistant.update', 'workspace', req.user!.workspaceId, { enabled: !!d.enabled });

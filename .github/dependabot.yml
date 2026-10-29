@@ -1,4 +1,5 @@
-# Weekly update PRs for npm packages, GitHub Actions and the Docker base image (security fixes arrive as PRs).
+# Weekly update PRs for npm packages, GitHub Actions and the Docker images (security fixes arrive as PRs).
+# Images and actions are pinned by digest / commit SHA; Dependabot updates those pins too.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -11,5 +12,19 @@ updates:
     directory: "/"
     schedule: { interval: weekly }
   - package-ecosystem: docker
+    directories: ["/", "/docker"]
+    schedule: { interval: weekly }
+    ignore:
+      # Node, Postgres and Redis major versions are planned upgrades (runtime, data format), not weekly bumps.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: docker-compose
     directory: "/"
     schedule: { interval: weekly }
+    ignore:
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
+      - dependency-name: redis
+        update-types: ["version-update:semver-major"]

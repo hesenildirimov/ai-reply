@@ -7,9 +7,10 @@ import { reserveReply } from './billing.js';
 import { SendError } from './channels/index.js';
 import { instagramUsername } from './channels/instagram.js';
 import type { ChannelRow, InboundEvent, Media } from './channels/types.js';
+import { afterCommentDm, afterCommentDmRefused, commentOfMessage, holdForApproval, privateReplyOpen, setCommentStatus } from './comments.js';
 import { config } from './config.js';
 import { type ContactRow, upsertContact } from './contacts.js';
-import { buildContext } from './context.js';
+import { buildContext, businessFacts } from './context.js';
 import { type ConvCtx, deliver, failedBody, handoff, inWindow, loadConv } from './conversation.js';
 import { decrypt, encrypt, sha256 } from './crypto.js';
 import { one, q } from './db.js';
@@ -140,25 +141,41 @@ async function annotateMedia(c: ConvCtx, finalAttempt: boolean): Promise<void> {
   }
 }
 
-/** Everything the business itself has stated (general info + active knowledge items): the reference for checkReply. */
-async function businessFacts(workspaceId: string, general: string): Promise<string> {
-  const items = await q<{ t: string }>(`SELECT title || ' ' || body AS t FROM knowledge_items WHERE workspace_id = $1 AND active`, [workspaceId]);
-  return `${general}\n${items.map((i) => i.t).join('\n')}`;
-}
-
 async function replyLocked(conversationId: string, messageId: string, finalAttempt: boolean): Promise<void | 'throttled'> {
   const c = await loadConv(conversationId);
-  // Only the newest message's job acts (debounce); closed window or broken channel = nothing to do.
-  if (!c || c.latest_in !== messageId || c.channel.status !== 'active' || !inWindow(c)) return;
+  // Only the newest message's job acts (debounce); broken channel = nothing to do.
+  if (!c || c.latest_in !== messageId || c.channel.status !== 'active') return;
+  // A comment (src/comments.ts) outside the 24 h window is answered with Meta's one private reply to that comment.
+  const comment = await commentOfMessage(messageId);
+  const via = !inWindow(c) && comment && privateReplyOpen(comment) ? { opts: { commentId: comment.id }, kind: 'private_reply' as const } : undefined;
+  if (!inWindow(c) && !via) return; // closed window: nothing to do
   const key = `ai:${messageId}`;
+  const send = async (conv: ConvCtx, text: string) => {
+    try {
+      await deliver(conv, text, 'ai', key, via?.opts, via?.kind);
+    } catch (e) {
+      // Meta refused the private reply for good (e.g. the person accepts no messages): invite them publicly instead.
+      if (comment && e instanceof SendError && e.definite && !e.retryable && !['plan_limit', 'token_invalid'].includes(e.reason))
+        return afterCommentDmRefused(comment, c.channel);
+      throw e;
+    }
+    if (comment) await afterCommentDm(comment, c.channel);
+  };
+  const handover = async (conv: ConvCtx, hold: string, reason: string) => {
+    if (comment) await setCommentStatus(comment.id, 'handoff');
+    return handoff(conv, hold, reason, messageId, via);
+  };
   const earlier = await failedBody(c.workspace_id, key);
   if (earlier && earlier.status !== 'failed') return; // already answered (or possibly answered): never twice
-  if (earlier) return void (await deliver(c, earlier.body, 'ai', key)); // resend stored text, no new AI call
+  if (earlier) return void (await send(c, earlier.body)); // resend stored text, no new AI call
 
   const a = await one(`SELECT * FROM assistants WHERE workspace_id = $1`, [c.workspace_id]);
   const who = c.display_name || c.external_user_id;
   // Staff is handling this conversation (assigned / handed over / paused): no bot, just tell them.
-  if (c.needs_human || c.ai_paused || c.assignee_user_id) return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj');
+  if (c.needs_human || c.ai_paused || c.assignee_user_id) {
+    if (comment) await setCommentStatus(comment.id, 'handoff');
+    return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, comment ? 'yeni şərh' : 'yeni mesaj');
+  }
 
   const contact = await one<ContactRow>(`SELECT * FROM contacts WHERE id = $1`, [c.contact_id]);
   const latestRow = await one<{ id: string; kind: string; payload: string | null; body: string; enc: boolean }>(
@@ -179,31 +196,33 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
       await limitAlert(c.workspace_id, blocked);
       return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, `yeni mesaj (tarif limiti: ${LIMIT_LABELS[blocked]})`);
     }
-    // Rule-based flows first: they cost no AI tokens.
+    // Rule-based flows first: they cost no AI tokens. (A comment already went through the comment automations.)
     const since = openRows(
       await q<{ body: string; enc: boolean }>(
         `SELECT body, enc FROM messages WHERE conversation_id = $1 AND direction = 'in' AND created_at > coalesce((SELECT max(created_at) FROM messages WHERE conversation_id = $1 AND direction = 'out'), '-infinity') ORDER BY created_at`,
         [c.id],
       ),
     );
-    const auto = await runMessageAutomations(c, contact, {
-      id: latest.id,
-      kind: latest.kind,
-      payload: latest.payload,
-      text: since.map((m) => m.body).join(' ') || latest.body,
-    });
+    const auto = comment
+      ? 'none'
+      : await runMessageAutomations(c, contact, {
+          id: latest.id,
+          kind: latest.kind,
+          payload: latest.payload,
+          text: since.map((m) => m.body).join(' ') || latest.body,
+        });
     if (auto !== 'none' && auto !== 'ai') return;
   }
   if (!a?.enabled) return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'yeni mesaj');
 
   const lastText = latest?.body ?? '';
-  if (HUMAN_KEYWORDS.test(lastText)) return handoff(c, a.handoff_message, 'müştəri insanla danışmaq istəyir', messageId);
+  if (HUMAN_KEYWORDS.test(lastText)) return handover(c, a.handoff_message, 'müştəri insanla danışmaq istəyir');
 
   const hourly = await one<{ n: number }>(
     `SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1 AND sender = 'ai' AND created_at > now() - interval '1 hour'`,
     [c.id],
   );
-  if (hourly!.n >= config.AI_CONV_HOURLY_CAP) return handoff(c, '', 'çox sayda mesaj (spam ola bilər)', messageId);
+  if (hourly!.n >= config.AI_CONV_HOURLY_CAP) return handover(c, '', 'çox sayda mesaj (spam ola bilər)');
 
   // Cost guardrails: workspace AI budget (plan) and a per-minute burst limit.
   const spent = await aiBudgetExceeded(c.workspace_id);
@@ -211,7 +230,7 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
     if ((await redis.set(`budget-alert:${c.workspace_id}:${spent.key}:${new Date().toISOString().slice(0, 10)}`, '1', 'EX', 86400, 'NX')) === 'OK') {
       await audit(c.workspace_id, null, 'ai.budget_exceeded', 'workspace', c.workspace_id, { limit: spent.key, used: spent.used, max: spent.limit });
     }
-    return handoff(c, a.handoff_message, 'AI büdcəsi bitib', messageId);
+    return handover(c, a.handoff_message, 'AI büdcəsi bitib');
   }
   const minute = Math.floor(Date.now() / 60_000);
   const calls = await redis.incr(`airpm:${c.workspace_id}:${minute}`);
@@ -222,7 +241,7 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
   const firstTry = (await redis.set(`quota:${messageId}`, '1', 'EX', 86400, 'NX')) === 'OK';
   const quota = firstTry ? await reserveReply(c.workspace_id) : 'ok';
   if (quota === 'expired') return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, 'abunəlik bitib, AI cavab vermir');
-  if (quota === 'limit') return handoff(c, a.handoff_message, 'aylıq AI limiti bitib', messageId);
+  if (quota === 'limit') return handover(c, a.handoff_message, 'aylıq AI limiti bitib');
 
   // Token-efficient context: budgeted recent turns + rolling summary + only the relevant knowledge items.
   // Photos, videos and voice messages since our last answer: looked at / transcribed once, before the AI answers.
@@ -247,30 +266,35 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
   } catch (e) {
     await recordEvent(c.workspace_id, c.channel.id, aiRetryable(e) ? 'ai_timeout' : 'ai_error', (e as Error).name);
     if (aiRetryable(e) && !finalAttempt) throw e; // BullMQ retries with backoff
-    return handoff(c, a.handoff_message, 'AI cavab verə bilmədi', messageId); // never leave the customer silently unanswered
+    return handover(c, a.handoff_message, 'AI cavab verə bilmədi'); // never leave the customer silently unanswered
   }
 
   // Re-check: a newer message, a human takeover or a pause may have happened while the model ran.
   const fresh = await loadConv(conversationId);
-  if (!fresh || fresh.latest_in !== messageId || fresh.needs_human || fresh.ai_paused || !inWindow(fresh)) return;
+  if (!fresh || fresh.latest_in !== messageId || fresh.needs_human || fresh.ai_paused || (!inWindow(fresh) && !via)) return;
 
   const facts = await businessFacts(c.workspace_id, a.knowledge);
   if (result.kind === 'handoff') {
     const hold = result.holdingReply && checkReply(result.holdingReply, facts).ok ? result.holdingReply : a.handoff_message;
-    return handoff(fresh, hold, result.reason, messageId);
+    return handover(fresh, hold, result.reason);
   }
   const verdict = checkReply(result.text, facts);
   if (!verdict.ok) {
     await audit(c.workspace_id, null, 'ai.reply_blocked', 'conversation', c.id, { reason: verdict.reason, detail: verdict.detail.slice(0, 80) });
-    return handoff(
+    return handover(
       fresh,
       a.handoff_message,
-      verdict.reason === 'unverified_price' ? 'AI bazada olmayan qiymət yazdı (göndərilmədi)' : 'AI tanınmayan link yazdı (göndərilmədi)',
-      messageId,
+      verdict.reason === 'unverified_price'
+        ? 'AI bazada olmayan qiymət yazdı (göndərilmədi)'
+        : verdict.reason === 'prompt_leak'
+          ? 'AI daxili təlimatlarını yazmağa çalışdı (göndərilmədi)'
+          : 'AI tanınmayan link yazdı (göndərilmədi)',
     );
   }
+  // Approval mode for comments: staff check the answer first (/app/comments).
+  if (comment && a.comment_approval) return holdForApproval(comment, c.id, result.text, who);
   try {
-    await deliver(fresh, result.text, 'ai', key);
+    await send(fresh, result.text);
   } catch (e) {
     // Monthly automated-message allowance used up by concurrent replies: staff takes over, nothing was sent.
     if (e instanceof SendError && e.reason === 'plan_limit')

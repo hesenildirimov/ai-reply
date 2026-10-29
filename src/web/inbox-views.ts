@@ -1,5 +1,6 @@
 import type { FastifyRequest } from 'fastify';
 import { onMetaCdn } from '../channels/instagram.js';
+import { openFields } from '../contacts.js';
 import { inWindow } from '../conversation.js';
 import { randomToken } from '../crypto.js';
 import type { Filters, PaneData, ProfileData, ThreadItem } from '../data/inbox.js';
@@ -29,6 +30,7 @@ const KIND_LABEL: Record<string, string> = {
   story_reply: 'Story-yə cavab',
   story_mention: 'Story-də qeyd etdi',
   private_reply: 'Şərhə şəxsi cavab',
+  comment: 'Postun altında şərh yazdı',
   quick_reply: 'Düymə seçdi',
 };
 const STATUS_ICON: Record<string, Safe> = {
@@ -71,7 +73,7 @@ export function profileHtml(req: FastifyRequest, c: any, data: ProfileData | nul
   const { tags, allTags, runs, stats } = data;
   const w = can(req.user, 'contacts.write');
   const name = c.contact_name || c.display_name || c.external_user_id;
-  const fields = Object.entries((c.fields ?? {}) as Record<string, string>);
+  const fields = Object.entries(openFields(c.fields));
   const ajax = (action: string, inner: Safe, cls = 'inline-form') =>
     html`<form method="post" action="${action}" class="${cls}" data-ajax>${csrfField(req.csrfToken)}${inner}</form>`;
   return html`<div class="profile-head">${avatar(name, c.type)}<div><b>${name}</b>${c.username ? html`<small>@${c.username}</small>` : ''}<small>${typeLabel(c.type)} · ${c.channel_name}</small></div></div>

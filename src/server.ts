@@ -5,6 +5,7 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import staticFiles from '@fastify/static';
 import Fastify from 'fastify';
+import { healthSignal } from './alerts.js';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { assertEncryptionKey, assertLeastPrivilege } from './keycheck.js';
@@ -16,6 +17,7 @@ import { assistantRoutes } from './web/assistant.js';
 import { registerAuth } from './web/auth.js';
 import { automationRoutes } from './web/automations.js';
 import { channelRoutes } from './web/channels.js';
+import { commentRoutes } from './web/comments.js';
 import { contactRoutes } from './web/contacts.js';
 import { dashboardRoutes } from './web/dashboard.js';
 import { inboxRoutes } from './web/inbox.js';
@@ -122,6 +124,7 @@ export async function buildServer() {
   settingsRoutes(app);
   automationRoutes(app);
   inboxRoutes(app);
+  commentRoutes(app);
   analyticsRoutes(app);
   knowledgeRoutes(app);
   contactRoutes(app);
@@ -131,7 +134,10 @@ export async function buildServer() {
 
   app.setErrorHandler((err: any, req, reply) => {
     const status = err.statusCode && err.statusCode < 500 ? err.statusCode : 500;
-    if (status >= 500) req.log.error({ err }, 'request failed');
+    if (status >= 500) {
+      req.log.error({ err }, 'request failed');
+      void healthSignal('server_error', `${req.method} ${req.routeOptions.url ?? ''}`);
+    }
     reply
       .code(status)
       .type('text/plain; charset=utf-8')

@@ -215,7 +215,7 @@ export const deleteContactField = (contactId: string, key: string) => q(`UPDATE 
 export const setContactField = (contactId: string, key: string, value: string) =>
   q(
     `UPDATE contacts SET fields = fields || jsonb_build_object($2::text, $3::text) WHERE id = $1 AND (fields ? $2 OR (SELECT count(*) FROM jsonb_object_keys(fields)) < 50)`,
-    [contactId, key, value],
+    [contactId, key, sealText(value)], // field values are encrypted like message text (contacts.ts sealField)
   );
 
 export const setContactFlag = (contactId: string, flag: 'opted_out' | 'blocked', value: boolean) =>

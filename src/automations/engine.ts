@@ -1,10 +1,12 @@
 import { replyToComment } from '../channels/instagram.js';
 import type { ChannelRow, InboundEvent } from '../channels/types.js';
+import { queueCommentAi } from '../comments.js';
 import { addTags, type ContactRow, ensureConversation, hasTag, removeTags, setField, upsertContact } from '../contacts.js';
 import { type ConvCtx, deliver, handoff, inWindow, loadConv } from '../conversation.js';
 import { decrypt } from '../crypto.js';
 import { one, q } from '../db.js';
 import { trackLinks } from '../links.js';
+import { openText } from '../messages.js';
 import { automationBlocked, limitAlert } from '../plans.js';
 import { queue } from '../queue.js';
 import { emit } from '../webhooks.js';
@@ -145,7 +147,7 @@ export async function executeSteps(
             ? await hasTag(contact.id, step.tag)
             : step.check === 'not_tag'
               ? !(await hasTag(contact.id, step.tag))
-              : String((await one(`SELECT fields->>$2 AS v FROM contacts WHERE id = $1`, [contact.id, step.key]))?.v ?? '') === step.value;
+              : openText((await one(`SELECT fields->>$2 AS v FROM contacts WHERE id = $1`, [contact.id, step.key]))?.v) === step.value;
         await logStep(run.id, { i, type: 'condition', result: ok });
         if (!ok) {
           await finish(run.id, sent ? 'sent' : 'skipped', 'condition_not_met');
@@ -242,7 +244,8 @@ export async function processComment(ev: Extract<InboundEvent, { type: 'comment'
       matches(x.config.match, ev.text) &&
       capability('comment', ch).status === 'available',
   );
-  if (!a) return;
+  // No keyword automation took it: the AI may answer it (src/comments.ts; off unless the business switched it on).
+  if (!a) return queueCommentAi(ev.commentId);
   await q(`UPDATE ig_comments SET matched = true WHERE id = $1`, [ev.commentId]);
   const blocked = await automationBlocked(ch.workspace_id);
   if (blocked) return limitAlert(ch.workspace_id, blocked);

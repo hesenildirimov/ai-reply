@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { addTags, FIELD_KEY, mergeContacts } from '../contacts.js';
+import { addTags, FIELD_KEY, mergeContacts, openFields, sealFields } from '../contacts.js';
 import { csvLine, parseCsv } from '../csv.js';
 import { one, q } from '../db.js';
 import { audit } from '../events.js';
@@ -145,7 +145,7 @@ export function contactRoutes(app: FastifyInstance) {
               c.blocked ? 1 : 0,
               c.first_seen_at,
               c.last_seen_at,
-              ...keys.map((k) => c.fields[k] ?? ''),
+              ...((f) => keys.map((k) => f[k] ?? ''))(openFields(c.fields)),
             ]),
           );
         if (rows.length <= 1000) break;
@@ -198,7 +198,7 @@ export function contactRoutes(app: FastifyInstance) {
         if (Object.keys(fields).length) {
           await q(`UPDATE contacts SET fields = fields || $2::jsonb WHERE id = $1 AND (SELECT count(*) FROM jsonb_object_keys(fields || $2::jsonb)) <= 50`, [
             ct.id,
-            JSON.stringify(fields),
+            JSON.stringify(sealFields(fields)),
           ]);
         }
         const opt = col('opted_out') >= 0 ? row[col('opted_out')]?.trim().toLowerCase() : '';
@@ -253,7 +253,7 @@ export function contactRoutes(app: FastifyInstance) {
       const back = html`<input type="hidden" name="back" value="contact">`;
       const f = (action: string, inner: unknown, cls = 'inline') =>
         html`<form method="post" action="/app/contacts/${c.id}/${action}" class="${cls}">${csrfField(req.csrfToken)}${back}${inner}</form>`;
-      const fields = Object.entries(c.fields as Record<string, string>);
+      const fields = Object.entries(openFields(c.fields));
       return view(
         req,
         reply,

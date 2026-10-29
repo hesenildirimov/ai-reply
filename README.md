@@ -28,6 +28,7 @@ saxlanması, WhatsApp "oxundu" bildirişi və AI cavabı ayrı işlərdir. Qısa
 | `src/web/` | Route-lar: giriş, CSRF, panel (`dashboard`, `assistant`, `channels`, `settings`, `inbox`…), admin, Meta callback-ləri. HTML ayrıca (`inbox-views.ts`, `ui.ts`) |
 | `src/data/` | SQL sorğuları (route-lardan ayrı), məsələn `data/inbox.ts` |
 | `src/automations/` | Avtomatlaşdırma: trigger-lər, imkan matrisi, flow mühərriki (açar söz, şərhdən DM, story, düymələr) |
+| `src/comments.ts`, `src/web/comments.ts` | Instagram şərhlərinə AI cavabı: növü təyin etmək, DM, ictimai cavab, təsdiq rejimi (`/app/comments`) |
 | `src/context.ts`, `config/ai-models.json` | AI konteksti: bilik bazası seçimi, xülasə, model routing, token büdcələri |
 | `src/analytics.ts` | Analitika sorğuları (hamısı xam məlumatdan yenidən hesablanır) |
 | `src/plans.ts` | Tarif limitləri (serverdə yoxlanılır) |
@@ -91,7 +92,7 @@ Meta webhook-larını lokalda yoxlamaq üçün HTTPS tunel lazımdır (məsələ
 |---|---|
 | `instagram_business_basic` | Bağlanan peşəkar hesabın ID və istifadəçi adını göstərmək üçün |
 | `instagram_business_manage_messages` | Müştəri DM-lərini qəbul edib biznes adından cavab göndərmək üçün |
-| `instagram_business_manage_comments` | Açar sözlü şərhə bir dəfə private reply (DM) və ictimai cavab üçün |
+| `instagram_business_manage_comments` | Şərhə bir dəfə private reply (DM) və şərhin altına qısa ictimai cavab üçün (açar sözlü avtomatlaşdırma və AI şərh cavabları) |
 | `whatsapp_business_management` | Embedded Signup ilə WABA və nömrəni bağlamaq, webhook-a abunə olmaq üçün |
 | `whatsapp_business_messaging` | Müştəri mesajlarına 24 saat ərzində cavab göndərmək üçün |
 | Human Agent (lazım deyil) | Sistem 24 saatdan sonra mesaj göndərmir |
@@ -132,6 +133,23 @@ Claude səsi və videonu birbaşa qəbul etmir. Video `ffmpeg` ilə kadrlara bö
 speech-to-text xidməti lazımdır: `.env`-də `STT_API_URL` + `STT_API_KEY` (istənilən OpenAI-uyğun `/audio/transcriptions`, məs. Whisper).
 Qurulmayıbsa, AI müştəridən sualını yazmağı xahiş edir. Qeyd mesajla birlikdə şifrəli saxlanır, paneldə mesajın altında görünür və
 axtarışda tapılır. Şəkil təsviri AI büdcəsinə daxildir (`ai_usage.purpose = 'media'`).
+
+## Şərhlərə AI cavabı
+"Şərhlər" səhifəsində (`/app/comments`) açılır. Standart olaraq söndürülüdür.
+- Açar sözlü avtomatlaşdırma üstündür. Onun tutmadığı şərhləri sürətli model (`routing.fast`) oxuyur və növünü
+  təyin edir: **sual** (qiymət, ölçü, rəng, "info"...), **şikayət** və ya **digər** (tərif, emoji, dost etiketi).
+  Yalnız emoji və `@etiket`-dən ibarət şərh AI-yə heç göndərilmir.
+- **Sual:** şərh müştərinin DM söhbətinə `[Şərh: "..."]` kimi düşür və adi cavab sistemi cavab yazır (bilik bazası,
+  qiymət yoxlaması, əməkdaş pauzası, limitlər). Müştəri son 24 saatda DM yazıbsa, cavab adi DM ilə gedir, yoxdursa,
+  Meta-nın şərhə icazə verdiyi bir şəxsi cavabla (7 gün). DM gedəndən **sonra** şərhin altına qısa cavab yazılır
+  ("Ətraflı DM-ə yazdıq 🙏"): bir adama bir post üzrə gündə bir dəfə. Meta DM-i qəbul etməsə, "bizə DM yazın" yazılır.
+- **İctimai cavabda qiymət, məbləğ, link və telefon olmur** (`publicTextOk`): yoxlamadan keçməyən mətn paylaşılmır,
+  qiymət yalnız DM-də verilir.
+- **Şikayət:** AI heç nə yazmır, söhbət "əməkdaş lazımdır" kimi işarələnir və bildiriş gedir.
+- **Təsdiq rejimi:** AI DM və ictimai cavabı hazırlayır, əməkdaş "Şərhlər" səhifəsində düzəldib "Göndər" basır.
+- Postları siyahıdan söndürmək olar (məsələn müsabiqə postu). Bir adamın saatda 3-dən çox şərhi AI-yə getmir.
+- Hər cavablanan şərh aylıq AI cavab limitindən 1 cavab sayılır. Növ təyini AI xərc jurnalında `purpose = comment` kimi
+  görünür (sürətli modeldə bir şərh təxminən $0.0005).
 
 ## Dil
 
@@ -237,7 +255,9 @@ Addım-addım: [`docs/DEPLOY.md`](docs/DEPLOY.md) (Caddy/HTTPS, 2FA, backup, `EN
 ## Production yoxlama siyahısı
 
 - [ ] HTTPS domen, `NODE_ENV=production`, `APP_URL=https://...`
-- [ ] `ENCRYPTION_KEY`-in ehtiyat nüsxəsi (itsə, token-lar oxunmaz və bütün kanallar yenidən bağlanmalıdır)
+- [ ] `ENCRYPTION_KEY` və ayrıca `SECRETS_ENCRYPTION_KEY`-in ehtiyat nüsxəsi (itsə, mesajlar və ya tokenlər oxunmaz olur)
+- [ ] SMTP: admin və sağlamlıq xəbərdarlıqları e-poçtla gəlir; logları log drain-ə göndərin (`docs/DEPLOY.md` §11)
+- [ ] GitHub: repo-nu private edin, `main` üçün branch protection (məcburi CI, force-push qadağası)
 - [ ] `npm run create-admin:prod -- email` ilə admin yaradılması
 - [ ] (İstəyə görə) SMTP, domen üçün SPF/DKIM
 - [ ] Postgres üçün avtomatik **şifrəli** backup (`BACKUP_AGE_RECIPIENT`, gizli açar serverdən kənarda), Redis persistence (AOF)

@@ -1,6 +1,7 @@
 import { hash, verify } from '@node-rs/argon2';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { actor, alertAdmins, healthSignal } from '../alerts.js';
 import { config } from '../config.js';
 import { decrypt, randomToken, sha256 } from '../crypto.js';
 import { one, q } from '../db.js';
@@ -13,7 +14,8 @@ import { icon } from './icons.js';
 
 export const ARGON = { memoryCost: 19456, timeCost: 2, parallelism: 1 }; // OWASP argon2id baseline
 const DUMMY_HASH = await hash('timing-equalizer-not-a-password', ARGON);
-const AUTH_LIMIT = { rateLimit: { max: 10, timeWindow: '1 minute' } };
+// Fail closed: if Redis (the limiter's store) is down, login / 2FA / password reset answer 500 rather than run unthrottled (M-1).
+const AUTH_LIMIT = { rateLimit: { max: 10, timeWindow: '1 minute', skipOnError: false } };
 
 export const MESSAGES: Record<string, PageOpts['flash']> = {
   check_email: { type: 'ok', text: 'Əgər bu e-poçt qeydiyyatdadırsa, ona link göndərildi.' },
@@ -71,6 +73,16 @@ async function sendResetLink(email: string): Promise<void> {
   );
 }
 
+/** Every platform-admin login is announced to all admins: a stolen admin account is every customer's account (H-2). */
+async function adminLoginAlert(userId: string, ip: string): Promise<void> {
+  const a = await one<{ email: string }>('SELECT email FROM users WHERE id = $1 AND is_admin', [userId]);
+  if (a)
+    await alertAdmins(
+      'platforma admini daxil oldu',
+      `${actor(a.email, ip)}\nBu siz deyilsinizsə, dərhal şifrəni dəyişin və create-admin ilə 2FA-nı sıfırlayın.`,
+    );
+}
+
 export function publicRoutes(app: FastifyInstance) {
   app.get('/healthz', { config: { rateLimit: false } }, async () => ({ ok: true }));
 
@@ -112,6 +124,7 @@ export function publicRoutes(app: FastifyInstance) {
     const [ipFails = 0, accFails = 0] = (await redis.mget(key, accKey)).map(Number);
     if (ipFails >= LOCK_PER_IP || accFails >= LOCK_PER_ACCOUNT) {
       req.log.warn({ event: 'login_locked', account: sha256(p.data.email).toString('hex').slice(0, 16) }, 'security');
+      await healthSignal('login_locked');
       return reply.redirect('/login?m=locked');
     }
     const u = await one<{ id: string; password_hash: string; email_verified_at: Date | null; totp_enabled_at: Date | null }>(
@@ -128,6 +141,7 @@ export function publicRoutes(app: FastifyInstance) {
     await redis.del(key); // this address only; the account-wide counter expires on its own
     if (u.totp_enabled_at && Number(await redis.get(mfaFailKey(u.id))) >= MFA_FAIL_MAX) {
       req.log.warn({ event: 'mfa_locked', user: u.id }, 'security');
+      await healthSignal('login_locked');
       return reply.redirect('/login?m=locked');
     }
     if (u.totp_enabled_at) {
@@ -139,6 +153,7 @@ export function publicRoutes(app: FastifyInstance) {
     }
     await createSession(reply, u.id);
     req.log.info({ event: 'login_ok', user: u.id }, 'security');
+    await adminLoginAlert(u.id, req.ip);
     return reply.redirect('/app');
   });
 
@@ -190,6 +205,7 @@ export function publicRoutes(app: FastifyInstance) {
     reply.clearCookie('mfa', { path: '/login' });
     await createSession(reply, userId);
     req.log.info({ event: 'login_ok', user: userId, mfa: true }, 'security');
+    await adminLoginAlert(userId, req.ip);
     return reply.redirect('/app');
   });
 

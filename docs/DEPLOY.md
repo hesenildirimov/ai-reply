@@ -16,19 +16,22 @@ DNS-də domenin (məsələn `app.sizinbiznes.az`) **A record**-unu serverin IP-s
 |---|---|
 | `NODE_ENV` | `production` |
 | `APP_URL` / `DOMAIN` | `https://app.sizinbiznes.az` / `app.sizinbiznes.az` |
-| `ENCRYPTION_KEY` | `openssl rand -base64 32` |
+| `ENCRYPTION_KEY` | `openssl rand -base64 32`. Mesaj mətnləri, xülasələr, qeydlər, növbə işləri |
+| `SECRETS_ENCRYPTION_KEY` | **Ayrıca** `openssl rand -base64 32` (production-da məcburidir, `ENCRYPTION_KEY`-dən fərqli olmalıdır). Meta tokenləri, webhook və 2FA sirləri. Biri sızsa, digəri hələ qorunur |
 | `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `APP_DB_PASSWORD` | `openssl rand -hex 24` (hər biri ayrıca). Tətbiq bazaya məhdud `app_rw` rolu ilə qoşulur, superuser yalnız miqrasiya və backup üçündür |
 | `BACKUP_AGE_RECIPIENT` | Backup-ların açıq açarı (`age1...`). **Öz kompüterinizdə** yaradın: `age-keygen -o age-key.txt`. Faylda `# public key: age1...` sətri var, onu bura yazın. `age-key.txt` (gizli açar) serverə qoyulmur: parol menecerində və oflayn saxlayın |
 | `ANTHROPIC_API_KEY` | console.anthropic.com |
 | Meta, Telegram, WhatsApp bildiriş və VAPID dəyərləri | README-dəki bölmələrə baxın |
 
-## 3. `ENCRYPTION_KEY`-in ehtiyat nüsxəsi (vacib)
-Instagram və WhatsApp token-ları bu açarla şifrələnir. **Açar itsə, bütün müştərilər kanallarını yenidən bağlamalı olacaq.**
+## 3. Şifrə açarlarının ehtiyat nüsxəsi (vacib)
+`ENCRYPTION_KEY` mesajları, `SECRETS_ENCRYPTION_KEY` Instagram və WhatsApp tokenlərini açır. **Biri itsə, həmin məlumat oxunmaz olur** (tokenlər itsə, bütün müştərilər kanallarını yenidən bağlamalıdır). Açarları serverdə yalnız hostinqin gizli dəyişənlər bölməsində saxlayın (Railway Variables, Docker-də `chmod 600 .env`), kodda və ya CI-da yox.
 1. `.env` faylının tam məzmununu parol menecerinə (Bitwarden, 1Password) **"AI Reply production"** adlı qeyd kimi yazın.
 2. İkinci nüsxəni oflayn saxlayın (çap edilmiş və ya şifrəli USB).
 3. Açarı heç vaxt GitHub-a, mesajlaşmaya və ya e-poçta yazmayın.
 
-Sistem açarın barmaq izini (fingerprint) DB-də saxlayır. Səhv açar ilə işə düşməyi rədd edir, ona görə token-lar səssizcə xarab olmur.
+Sistem hər iki açarın barmaq izini (fingerprint) DB-də saxlayır. Səhv açar ilə işə düşməyi rədd edir, ona görə məlumatlar səssizcə xarab olmur.
+
+**Mövcud quraşdırmaya `SECRETS_ENCRYPTION_KEY` əlavə edəndə:** dəyişəni yazıb yenidən işə salın. Worker saatlıq texniki işdə köhnə tokenləri yeni açara keçirir (`s1:` ilə başlayırlar). Açar rotasiyası: yeni açarı `SECRETS_ENCRYPTION_KEY`-ə, köhnəni `SECRETS_ENCRYPTION_KEY_PREVIOUS`-a yazın. `app_meta.secrets_key_fp` yenilənəndən sonra köhnəni silin.
 
 ## 4. İşə salma
 ```bash
@@ -46,6 +49,12 @@ Caddy SSL sertifikatını avtomatik alır və yeniləyir. HTTP sorğuları HTTPS
   server və ya backup diski oğurlansa da yazışmalar oxunmur. Açmaq üçün gizli açar (`age-key.txt`) lazımdır.
 - **Serverdən kənara da köçürün** (eyni diskdə olan backup tam backup deyil), məsələn rclone ilə şifrəli Backblaze B2 və ya S3-ə:
   `rclone sync ./backups b2crypt:aireply-backups` (cron ilə gündəlik).
+- **Serverdən kənar nüsxə:** `.env`-də `BACKUP_RCLONE_REMOTE=offsite:aireply-backups` və `offsite` uzaq yaddaşının
+  ayarlarını yazın (Backblaze B2: `RCLONE_CONFIG_OFFSITE_TYPE=b2`, `RCLONE_CONFIG_OFFSITE_ACCOUNT`, `RCLONE_CONFIG_OFFSITE_KEY`;
+  S3: `TYPE=s3`, `PROVIDER`, `ACCESS_KEY_ID`, `SECRET_ACCESS_KEY`, `ENDPOINT`). Hər şifrəli dump ora da yüklənir.
+- Serverdə `/backups` altında age **gizli** açarı tapılsa, backup servisi işə düşmür (açar backup-ın yanında olmamalıdır).
+- **Aylıq bərpa sınağı:** `./scripts/restore-test.sh backups/aireply-....dump.age age-key.txt`. Dump müvəqqəti bazaya
+  bərpa olunur, sətir sayları göstərilir, baza silinir. Canlı məlumata toxunmur.
 - Bərpa: `apt install age`, gizli açarı müvəqqəti serverə köçürün və
   `./scripts/restore.sh backups/aireply-YYYYMMDD-HHMM.dump.age age-key.txt` işlədin. Sonra açarı serverdən silin
   (`shred -u age-key.txt`). Köhnə şifrəsiz `.dump` faylları üçün ikinci arqument lazım deyil. Ayda bir dəfə test
@@ -140,6 +149,7 @@ REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON schema_migrations FROM app_rw;
 | web | `MIGRATE_DATABASE_URL` | `${{Postgres.DATABASE_URL}}` (owner; yalnız `preDeployCommand` miqrasiyası istifadə edir) |
 | worker | `DATABASE_URL` | `postgresql://app_rw:<PAROL>@<host>:<port>/railway` |
 | web, worker | `NODE_ENV` | `production` (Dockerfile da təyin edir; məcburidir, standart dəyər yoxdur) |
+| web, worker | `ENCRYPTION_KEY`, `SECRETS_ENCRYPTION_KEY` | İki ayrı `openssl rand -base64 32`. Eyni dəyərlər hər iki servisdə |
 
 Worker-ə `MIGRATE_DATABASE_URL` verilmir. `<host>`/`<port>` Postgres servisinin `PGHOST`/`PGPORT` dəyişənləridir.
 
@@ -150,3 +160,16 @@ Worker-ə `MIGRATE_DATABASE_URL` verilmir. `<host>`/`<port>` Postgres servisinin
 
 **Backup:** Railway Postgres-in öz backup-larını aktiv edin. Əlavə nüsxə üçün `scripts/backup.sh`-ı ayrıca servis kimi
 (`docker/backup.Dockerfile`, `BACKUP_AGE_RECIPIENT` ilə) işlədib faylları serverdən kənara köçürmək olar.
+
+## 11. Loglar və xəbərdarlıqlar
+- Tətbiq özü platforma adminlərinə e-poçt göndərir: hər admin girişi, şifrə linki, ödəniş və tarif dəyişikliyi, müştəri
+  yaratma və silmə; həmçinin çoxlu bloklanmış giriş (saatda 20+), server xətaları (10 dəqiqədə 20+ 5xx) və təkrarlardan
+  sonra da alınmayan arxa plan işləri (saatda 10+). Bunun üçün SMTP (`SMTP_URL`) qurulmalıdır.
+- Hər xəbərdarlıq logda `"event":"platform_alert"` sətri kimi də yazılır. Logları mərkəzi sistemə göndərin:
+  Railway → Settings → Log Drains (və ya Better Stack / Grafana Loki), sonra `platform_alert`, `login_locked`,
+  `mfa_locked`, `request failed` və `failed (attempt` sətirləri üçün alert qurun.
+
+## 12. Media analizi (ffmpeg)
+Müştəri faylları ffmpeg ilə açılır (`MEDIA_ANALYSIS=on`, standart). ffmpeg yalnız lokal faylları, yalnız lazım olan
+konteyner formatları ilə oxuyur. Hər çağırış 60 san. CPU, 2 GB yaddaş və ən aşağı prioritetlə məhdudlaşdırılıb.
+Şəkil, video və səs analizinə ehtiyac yoxdursa, `MEDIA_ANALYSIS=off` ilə tam söndürün.

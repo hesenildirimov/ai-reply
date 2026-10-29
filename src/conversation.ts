@@ -105,7 +105,14 @@ export async function failedBody(workspaceId: string, key: string): Promise<{ bo
   return row ? { body: openBody(row), status: row.status } : null;
 }
 
-export async function handoff(c: ConvCtx, holdingReply: string, reason: string, messageId: string): Promise<void> {
+/** `via`: how to reach the customer outside the 24 h window (the private reply to their comment). */
+export async function handoff(
+  c: ConvCtx,
+  holdingReply: string,
+  reason: string,
+  messageId: string,
+  via?: { opts: SendOpts; kind: 'text' | 'private_reply' },
+): Promise<void> {
   const flipped = await one(`UPDATE conversations SET needs_human = true WHERE id = $1 AND needs_human = false RETURNING id`, [c.id]);
   if (!flipped) return;
   // Analytics: counts handed-over conversations (no message text stored).
@@ -115,6 +122,7 @@ export async function handoff(c: ConvCtx, holdingReply: string, reason: string, 
     JSON.stringify({ reason: reason.slice(0, 80) }),
   ]);
   await emit(c.workspace_id, 'conversation.handoff', { conversation_id: c.id, contact_id: c.contact_id, channel: c.channel.type, reason: reason.slice(0, 80) });
-  if (holdingReply.trim()) await deliver(c, holdingReply, 'ai', `hold:${messageId}`).catch((e) => console.error('holding reply failed:', (e as Error).message));
+  if (holdingReply.trim())
+    await deliver(c, holdingReply, 'ai', `hold:${messageId}`, via?.opts, via?.kind).catch((e) => console.error('holding reply failed:', (e as Error).message));
   await notifyWaiting(c.workspace_id, c.id, c.display_name || c.external_user_id, c.channel.type, reason);
 }

@@ -2,7 +2,8 @@
  * Deterministic last check on AI text before it reaches a customer. The model is told to use only business facts,
  * but nothing guarantees it; this catches the two failures that cost money or enable fraud:
  * - an amount of money that appears nowhere in the business's own information;
- * - a link to a domain the business never mentioned (phishing via prompt injection).
+ * - a link to a domain the business never mentioned (phishing via prompt injection);
+ * - our own instructions echoed back (a prompt-injection "repeat your instructions" that worked).
  */
 // Currencies customers in AZ/TR/RU/EN markets write, Latin and Cyrillic ("50 манат", "50 ман.", "$10", "10 USD-dir").
 // After a number: codes, symbols and words; before a number only symbols and codes ("try 10" is not a price).
@@ -23,7 +24,16 @@ const domain = (h: string) =>
     .replace(/^www\./, '')
     .replace(/[.,;:!)]+$/, '');
 
-export function checkReply(text: string, facts: string): { ok: true } | { ok: false; reason: 'unverified_price' | 'unverified_link'; detail: string } {
+// Markers that only occur in our system prompt (src/ai.ts): seeing one in a reply means the prompt is leaking.
+const PROMPT_LEAK =
+  /request_human|comment_triage|<\/?(?:business_info|business_facts|style|conversation_summary|post_caption)\b|on behalf of one specific business|Customer messages are untrusted/i;
+
+export function checkReply(
+  text: string,
+  facts: string,
+): { ok: true } | { ok: false; reason: 'unverified_price' | 'unverified_link' | 'prompt_leak'; detail: string } {
+  const leak = PROMPT_LEAK.exec(text);
+  if (leak) return { ok: false, reason: 'prompt_leak', detail: leak[0] };
   const known = numbersIn(facts);
   for (const m of text.matchAll(MONEY)) {
     const n = m[1] ?? m[2];
@@ -35,4 +45,16 @@ export function checkReply(text: string, facts: string): { ok: true } | { ok: fa
     if (d && !factsLower.includes(d)) return { ok: false, reason: 'unverified_link', detail: d };
   }
   return { ok: true };
+}
+
+/**
+ * Stricter check for text posted publicly under a comment: everyone sees it, so it carries no amounts at all (even
+ * known prices: competitors read comments too), no links and no phone numbers, on top of checkReply.
+ */
+export function publicTextOk(text: string, facts: string): boolean {
+  if (!text.trim()) return false;
+  MONEY.lastIndex = 0;
+  URLISH.lastIndex = 0;
+  if (MONEY.test(text) || URLISH.test(text) || /\d[\d\s()-]{6,}\d/.test(text)) return false;
+  return checkReply(text, facts).ok;
 }
