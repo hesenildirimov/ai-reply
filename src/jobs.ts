@@ -214,6 +214,8 @@ export async function maintenance() {
   );
   await q(`DELETE FROM channel_events WHERE created_at < now() - interval '180 days'`);
   await q(`DELETE FROM webhook_deliveries WHERE created_at < now() - interval '14 days'`);
+  // Website requests that did not become customers are kept a year, then deleted (data minimization).
+  await q(`DELETE FROM leads WHERE status IN ('lost', 'new', 'contacted', 'meeting') AND updated_at < now() - interval '1 year'`);
   // A send that crashed mid-flight stays 'pending'; after 15 min mark it 'unknown' (shown to staff, never auto-resent).
   await q(`UPDATE messages SET status = 'unknown', error = 'interrupted' WHERE status = 'pending' AND created_at < now() - interval '15 minutes'`);
   await refreshTokens();

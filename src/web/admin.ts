@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { actor, alertAdmins } from '../alerts.js';
 import { createSubscription, daysLeft, extendSubscription, listSubscriptions, REGIONS, updateSubscription } from '../billing.js';
@@ -57,6 +57,56 @@ const linkBox = (link: string, email: string) => html`<div class="card link-box"
   <div class="copy-row"><input readonly value="${link}" class="copy" id="invite-link"><button type="button" class="btn secondary" data-copy="invite-link">${icon('link')}Kopyala</button></div>
   ${config.mailEnabled ? html`<p class="muted">Link e-poçtla da göndərildi.</p>` : ''}</div>`;
 
+export interface NewCustomer {
+  name: string;
+  email: string;
+  limit: number | null;
+  paidUntil: string | null;
+  note: string;
+  planId?: string | null;
+  region: 'az' | 'eu' | 'other';
+}
+
+/** Creates the customer (owner user + workspace + assistant), mails the password link and alerts the admins. */
+export async function createCustomer(
+  req: FastifyRequest,
+  d: NewCustomer,
+): Promise<{ userId: string; workspaceId: string; link: string; name: string; email: string }> {
+  const ids = await tx(async (c) => {
+    // Unusable password until the customer sets one from the link.
+    const u = (await c.query(`INSERT INTO users (email, password_hash) VALUES ($1, '!') RETURNING id`, [d.email])).rows[0];
+    const workspaceId = await createSubscription(c, {
+      name: d.name,
+      replyLimit: d.limit,
+      paidUntil: d.paidUntil,
+      note: d.note,
+      planId: d.planId,
+      region: d.region,
+    });
+    await c.query(`INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, 'owner')`, [workspaceId, u.id]);
+    await c.query('INSERT INTO assistants (workspace_id, business_name, ai_disclosure) VALUES ($1, $2, $3)', [workspaceId, d.name, d.region === 'eu']);
+    return { userId: u.id as string, workspaceId };
+  });
+  const link = await passwordLink(ids.userId, '72 hours');
+  req.log.info({ event: 'admin_customer_created', admin: req.user!.id, user: ids.userId }, 'audit');
+  await alertAdmins('yeni müştəri yaradıldı', `${d.name} (${d.email})\n${actor(req.user!.email, req.ip)}`);
+  if (config.mailEnabled)
+    await sendMail(
+      d.email,
+      'AI Reply hesabınız',
+      `Salam! ${d.name} üçün AI Reply hesabınız yaradıldı.\nŞifrənizi təyin edin (72 saat etibarlıdır):\n${link}`,
+    ).catch(() => {});
+  return { ...ids, link, name: d.name, email: d.email };
+}
+
+export const customerCreated = (req: FastifyRequest, reply: FastifyReply, c: { name: string; email: string; link: string }) =>
+  view(
+    req,
+    reply,
+    'Müştəri yaradıldı',
+    html`${pageHead(`${c.name} yaradıldı`, 'İndi şifrə linkini müştəriyə göndərin.')}${linkBox(c.link, c.email)}<p><a href="/admin" class="more">${icon('back', 'i xs')} Müştərilər</a></p>`,
+  );
+
 const deleteBox = (w: Record<string, any>, me: string, csrf: string, requester: { email: string } | undefined) => {
   const pending = w.delete_requested_at && Date.now() - new Date(w.delete_requested_at).getTime() < 86400_000;
   const form = (
@@ -81,11 +131,12 @@ export function adminRoutes(app: FastifyInstance) {
       const rows = await listSubscriptions();
       const n = (f: (w: any) => boolean) => rows.filter(f).length;
       const plans = await q(`SELECT id, name, price_note FROM plans ORDER BY created_at`);
+      const newLeads = (await one<{ n: number }>(`SELECT count(*)::int AS n FROM leads WHERE status = 'new'`))!.n;
       return view(
         req,
         reply,
         'Admin',
-        html`${pageHead('Müştərilər', 'Hesabları yaradın, ödənişləri qeyd edin. Ödəniş tarixi keçəndə AI avtomatik dayanır.')}
+        html`${pageHead('Müştərilər', 'Hesabları yaradın, ödənişləri qeyd edin. Ödəniş tarixi keçəndə AI avtomatik dayanır.', html`<a class="btn secondary" href="/admin/leads">${icon('inbox')}Lead-lər${newLeads ? html` <span class="count">${newLeads}</span>` : ''}</a>`)}
         <div class="stats">
           ${stat('users', 'Cəmi müştəri', rows.length)}
           ${stat(
@@ -154,36 +205,7 @@ export function adminRoutes(app: FastifyInstance) {
       if (!p.success) return reply.redirect('/admin?m=invalid');
       const d = p.data;
       if (await one('SELECT 1 FROM users WHERE email = $1', [d.email])) return reply.redirect('/admin?m=customer_exists');
-      const userId = await tx(async (c) => {
-        // Unusable password until the customer sets one from the link.
-        const u = (await c.query(`INSERT INTO users (email, password_hash) VALUES ($1, '!') RETURNING id`, [d.email])).rows[0];
-        const workspaceId = await createSubscription(c, {
-          name: d.name,
-          replyLimit: d.limit,
-          paidUntil: d.paid_until || null,
-          note: d.note,
-          planId: d.plan_id,
-          region: d.region,
-        });
-        await c.query(`INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, 'owner')`, [workspaceId, u.id]);
-        await c.query('INSERT INTO assistants (workspace_id, business_name, ai_disclosure) VALUES ($1, $2, $3)', [workspaceId, d.name, d.region === 'eu']);
-        return u.id as string;
-      });
-      const link = await passwordLink(userId, '72 hours');
-      req.log.info({ event: 'admin_customer_created', admin: req.user!.id, user: userId }, 'audit');
-      await alertAdmins('yeni müştəri yaradıldı', `${d.name} (${d.email})\n${actor(req.user!.email, req.ip)}`);
-      if (config.mailEnabled)
-        await sendMail(
-          d.email,
-          'AI Reply hesabınız',
-          `Salam! ${d.name} üçün AI Reply hesabınız yaradıldı.\nŞifrənizi təyin edin (72 saat etibarlıdır):\n${link}`,
-        ).catch(() => {});
-      return view(
-        req,
-        reply,
-        'Müştəri yaradıldı',
-        html`${pageHead(`${d.name} yaradıldı`, 'İndi şifrə linkini müştəriyə göndərin.')}${linkBox(link, d.email)}<p><a href="/admin" class="more">${icon('back', 'i xs')} Müştərilər</a></p>`,
-      );
+      return customerCreated(req, reply, await createCustomer(req, { ...d, paidUntil: d.paid_until || null, planId: d.plan_id }));
     });
 
     const load = async (req: FastifyRequest) => {
