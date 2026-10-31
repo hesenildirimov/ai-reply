@@ -1,5 +1,6 @@
 import type { ReplyContext, Turn } from './ai.js';
 import { aiConfig, estimateTokens } from './aiconfig.js';
+import { catalogFacts } from './commerce/catalog.js';
 import { config } from './config.js';
 import { one, q } from './db.js';
 import { isLatinRussian } from './language.js';
@@ -99,7 +100,7 @@ export async function buildContext(conversationId: string, workspaceId: string):
   const conv = await loadSummary(conversationId);
   const rows = openTurns(
     await q<{ sender: string; body: string; enc: boolean; media_text: string | null; created_at: Date }>(
-      `SELECT sender, body, enc, media_text, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') AND created_at > coalesce($2, '-infinity'::timestamptz)
+      `SELECT sender, body, enc, media_text, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent', 'simulated') AND created_at > coalesce($2, '-infinity'::timestamptz)
      ORDER BY created_at DESC LIMIT 60`,
       [conversationId, conv?.summary_upto ?? null],
     ),
@@ -144,7 +145,7 @@ export async function updateSummary(conversationId: string, workspaceId: string)
   const conv = await loadSummary(conversationId);
   const rows = openTurns(
     await q<{ sender: string; body: string; enc: boolean; media_text: string | null; created_at: Date }>(
-      `SELECT sender, body, enc, media_text, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent') AND created_at > coalesce($2, '-infinity'::timestamptz) ORDER BY created_at`,
+      `SELECT sender, body, enc, media_text, created_at FROM messages WHERE conversation_id = $1 AND status IN ('received', 'sent', 'simulated') AND created_at > coalesce($2, '-infinity'::timestamptz) ORDER BY created_at`,
       [conversationId, conv?.summary_upto ?? null],
     ),
   );
@@ -183,5 +184,6 @@ export async function businessFacts(workspaceId: string, general: string, seen =
   const items = await q<{ t: string }>(`SELECT title || ' ' || body AS t FROM knowledge_items WHERE workspace_id = $1 AND active AND source_id IS NULL`, [
     workspaceId,
   ]);
-  return `${general}\n${items.map((i) => i.t).join('\n')}${seen ? `\n${seen}` : ''}`;
+  // Catalog prices count as stated facts too: the cards and answers of the product flow quote them, and a follow-up may repeat them.
+  return `${general}\n${items.map((i) => i.t).join('\n')}\n${await catalogFacts(workspaceId)}${seen ? `\n${seen}` : ''}`;
 }

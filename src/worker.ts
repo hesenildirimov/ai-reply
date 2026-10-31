@@ -26,6 +26,7 @@ for (const w of workers)
       void healthSignal('job_dead', `${job?.name}: ${err.message}`.slice(0, 200));
   });
 await queue.upsertJobScheduler('maintenance', { every: 3600_000 }, { name: 'maintenance', data: { kind: 'maintenance' } as never });
+await queue.upsertJobScheduler('post_sweep', { every: 300_000 }, { name: 'post_sweep', data: { kind: 'post_sweep' } });
 await queue.upsertJobScheduler('sweep', { every: 300_000 }, { name: 'sweep', data: { kind: 'sweep' } });
 
 // Webhooks that arrived while Redis was unreachable wait in Postgres; move them into the queue.

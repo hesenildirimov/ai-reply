@@ -207,3 +207,20 @@ export async function until(cond: () => boolean | Promise<boolean>, ms = 3000) {
     await new Promise((r) => setTimeout(r, 25));
   }
 }
+
+/**
+ * Runs every waiting job of both queues now (the worker does this in production): intake, comment, reply. Jobs queued
+ * by the jobs themselves (inbound -> comment -> reply) are picked up in the next round.
+ */
+export async function drainAll() {
+  const { inboundQueue, queue } = await import('../src/queue.js');
+  const { runJob } = await import('../src/jobs.js');
+  for (let round = 0; round < 10; round++) {
+    const jobs = [...(await inboundQueue.getJobs(['waiting', 'prioritized', 'delayed'])), ...(await queue.getJobs(['waiting', 'prioritized', 'delayed']))];
+    if (!jobs.length) return;
+    for (const j of jobs.reverse()) {
+      await runJob(j as never);
+      await j.remove().catch(() => {});
+    }
+  }
+}

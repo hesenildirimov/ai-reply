@@ -1,9 +1,10 @@
 import { decrypt } from '../crypto.js';
 import { q } from '../db.js';
 import { markReauth, recordEvent } from '../events.js';
+import { igSendCards, igSendText, igUnsubscribe } from '../integrations/ig.js';
+import type { Card, SendResult } from '../integrations/types.js';
 import { notifyChannelProblem } from '../notify.js';
 import { GraphError } from './graph.js';
-import { sendInstagramText, unsubscribeInstagram } from './instagram.js';
 import type { ChannelRow } from './types.js';
 import { sendWhatsAppText, unsubscribeWhatsApp } from './whatsapp.js';
 
@@ -25,14 +26,21 @@ export interface SendOpts {
   /** Instagram private reply: recipient is the comment, not the user. */
   commentId?: string;
   quickReplies?: { title: string; payload: string }[];
+  /** Instagram Generic Template (product carousel) instead of plain text; the text then only labels the stored message. */
+  cards?: Card[];
 }
 
-export async function sendText(ch: ChannelRow, to: string, text: string, opts: SendOpts = {}): Promise<string> {
-  const token = decrypt(ch.access_token_enc);
+/**
+ * Sends one message. Instagram goes through the configured provider (real Meta API, or the mock in INTEGRATION_MODE=mock);
+ * the result carries the provider's status: DELIVERED only when a real provider confirmed, SIMULATED in mock mode.
+ */
+export async function sendText(ch: ChannelRow, to: string, text: string, opts: SendOpts = {}): Promise<SendResult> {
   try {
-    return ch.type === 'whatsapp'
-      ? await sendWhatsAppText(token, ch.external_id, to, text, opts.quickReplies)
-      : await sendInstagramText(token, ch.external_id, to, text, opts);
+    if (ch.type === 'whatsapp') {
+      return { id: await sendWhatsAppText(decrypt(ch.access_token_enc), ch.external_id, to, text, opts.quickReplies), status: 'DELIVERED' };
+    }
+    const recipient = { userId: to, commentId: opts.commentId };
+    return opts.cards?.length ? await igSendCards(ch, recipient, opts.cards) : await igSendText(ch, recipient, text, opts.quickReplies);
   } catch (e) {
     if (!(e instanceof GraphError)) throw new SendError('network', false, false);
     if (e.tokenInvalid) {
@@ -50,9 +58,8 @@ export async function sendText(ch: ChannelRow, to: string, text: string, opts: S
 /** Stops webhook delivery for this channel (best effort) and deletes it with all its conversations. */
 export async function removeChannel(ch: ChannelRow): Promise<void> {
   try {
-    const token = decrypt(ch.access_token_enc);
-    if (ch.type === 'whatsapp' && ch.waba_id) await unsubscribeWhatsApp(token, ch.waba_id);
-    if (ch.type === 'instagram') await unsubscribeInstagram(token);
+    if (ch.type === 'whatsapp' && ch.waba_id) await unsubscribeWhatsApp(decrypt(ch.access_token_enc), ch.waba_id);
+    if (ch.type === 'instagram') await igUnsubscribe(ch);
   } catch {
     // Token may already be revoked; local data is deleted regardless.
   }

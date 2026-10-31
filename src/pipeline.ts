@@ -5,17 +5,19 @@ import { aiConfig } from './aiconfig.js';
 import { runMessageAutomations } from './automations/engine.js';
 import { reserveReply } from './billing.js';
 import { SendError } from './channels/index.js';
-import { instagramUsername } from './channels/instagram.js';
 import type { ChannelRow, InboundEvent, Media } from './channels/types.js';
 import { afterCommentDm, afterCommentDmRefused, commentOfMessage, holdForApproval, privateReplyOpen, setCommentStatus } from './comments.js';
+import { answerProductPostback } from './commerce/flow.js';
 import { config } from './config.js';
 import { type ContactRow, upsertContact } from './contacts.js';
 import { buildContext, businessFacts } from './context.js';
 import { type ConvCtx, deliver, failedBody, handoff, inWindow, loadConv } from './conversation.js';
-import { decrypt, encrypt, sha256 } from './crypto.js';
+import { encrypt, sha256 } from './crypto.js';
 import { one, q } from './db.js';
 import { audit, recordEvent } from './events.js';
 import { checkReply } from './guard.js';
+import { recordIntegrationEvent } from './integrations/events.js';
+import { igProfileName } from './integrations/ig.js';
 import { withLock } from './locks.js';
 import { mediaNote } from './media.js';
 import { MEDIA_PLACEHOLDER, openBody, openRows, sealBody, sealText, searchTokensOf } from './messages.js';
@@ -80,6 +82,16 @@ export async function ingest(ev: InboundEvent): Promise<void> {
     await q(`UPDATE conversations SET unread_count = greatest(unread_count - 1, 0) WHERE id = $1`, [conv!.id]); // duplicate delivery
     return;
   }
+  if (ch.type === 'instagram')
+    await recordIntegrationEvent({
+      workspaceId: ch.workspace_id,
+      provider: 'instagram',
+      direction: 'in',
+      kind: ev.kind === 'quick_reply' && ev.payload?.startsWith('prod:') ? 'postback' : 'dm',
+      status: 'RECEIVED',
+      summary: ev.kind === 'quick_reply' ? `Düymə: ${body}${ev.payload ? ` (${ev.payload.slice(0, 40)})` : ''}` : `DM: ${body}`,
+      externalId: ev.mid,
+    });
   // Funnel: the contact answered a flow message within 24h.
   await q(`UPDATE automation_runs SET replied_at = now() WHERE contact_id = $1 AND sent_at > now() - interval '24 hours' AND replied_at IS NULL`, [contact.id]);
   await publish(ch.workspace_id, { type: 'message', conversationId: conv!.id });
@@ -198,6 +210,8 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
       await limitAlert(c.workspace_id, blocked);
       return notifyWaiting(c.workspace_id, c.id, who, c.channel.type, `yeni mesaj (tarif limiti: ${LIMIT_LABELS[blocked]})`);
     }
+    // Tap on a product card: the answer is read from the products table, no flow lookup and no AI (src/commerce/flow.ts).
+    if (latest.kind === 'quick_reply' && (await answerProductPostback(c, latest.payload, messageId))) return;
     // Rule-based flows first: they cost no AI tokens. (A comment already went through the comment automations.)
     const since = openRows(
       await q<{ body: string; enc: boolean }>(
@@ -309,7 +323,7 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
 export async function lookupInstagramName(conversationId: string): Promise<void> {
   const c = await loadConv(conversationId);
   if (!c || c.display_name || c.channel.type !== 'instagram' || c.channel.status !== 'active') return;
-  const name = await instagramUsername(decrypt(c.channel.access_token_enc), c.external_user_id);
+  const name = await igProfileName(c.channel, c.external_user_id).catch(() => '');
   if (name) await q(`UPDATE conversations SET display_name = $2 WHERE id = $1 AND display_name = ''`, [c.id, name.slice(0, 200)]);
 }
 

@@ -13,6 +13,7 @@ import { openRows } from '../messages.js';
 import { LIMIT_KEYS, LIMIT_LABELS, limitsOf, usageOf } from '../plans.js';
 import { redis } from '../queue.js';
 import { telegramEnabled } from '../telegram.js';
+import { createTelegramLinkCode } from '../telegram-updates.js';
 import { newTotpSecret, otpauthUrl, verifyTotp } from '../totp.js';
 import { subscriptionSchema } from '../webpush.js';
 import { can, destroySession, endOtherSessions, requireOwner, requirePerm, requireUser } from './auth.js';
@@ -226,8 +227,9 @@ export function settingsRoutes(app: FastifyInstance) {
     // Telegram linking: one-time code (hash in Redis, 15 min) passed via the bot's /start deep link.
     r.post('/app/notifications/telegram', { config: { rateLimit: { max: 10, timeWindow: '1 minute', skipOnError: false } } }, async (req, reply) => {
       if (!telegramEnabled()) return reply.redirect('/app/settings');
-      const code = randomToken(18);
-      await redis.set(`tglink:${sha256(code).toString('hex')}`, JSON.stringify({ workspaceId: req.user!.workspaceId, userId: req.user!.id }), 'EX', 900);
+      // Mock mode has no Telegram to open: the dashboard simulator performs the same /start step (src/commerce/simulator.ts).
+      if (config.mockMode) return reply.redirect('/app/dev');
+      const code = await createTelegramLinkCode(req.user!.workspaceId, req.user!.id);
       return reply.redirect(`https://t.me/${config.TELEGRAM_BOT_USERNAME}?start=${code}`);
     });
     r.post('/app/notifications/telegram/remove', async (req, reply) => {

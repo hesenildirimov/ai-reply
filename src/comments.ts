@@ -1,14 +1,13 @@
 import { type CommentTriage, triageComment } from './ai.js';
 import { capability } from './automations/capabilities.js';
-import { mediaCaption, replyToComment } from './channels/instagram.js';
 import type { ChannelRow } from './channels/types.js';
 import { config } from './config.js';
 import { type ContactRow, ensureConversation } from './contacts.js';
 import { businessFacts, knowledgeFor } from './context.js';
-import { decrypt } from './crypto.js';
 import { one, q } from './db.js';
 import { audit } from './events.js';
 import { publicTextOk } from './guard.js';
+import { igMediaCaption, igReplyToComment } from './integrations/ig.js';
 import { isLatinRussian } from './language.js';
 import { openText, sealBody, sealText } from './messages.js';
 import { notifyWaiting } from './notify.js';
@@ -108,8 +107,7 @@ export async function handleCommentAi(commentId: string): Promise<'done' | 'thro
   if (calls === 1) await redis.expire(`airpm:${c.workspace_id}:${minute}`, 120);
   if (calls > config.AI_WORKSPACE_RPM) return 'throttled';
 
-  const token = decrypt(ch.access_token_enc);
-  const caption = await cachedCaption(token, c.media_id);
+  const caption = await cachedCaption(ch, c.media_id);
   const { pinned, knowledge } = await knowledgeFor(c.workspace_id, c.body);
   const t: CommentTriage = await triageComment(
     a,
@@ -146,11 +144,11 @@ export async function handleCommentAi(commentId: string): Promise<'done' | 'thro
   return 'done';
 }
 
-async function cachedCaption(token: string, mediaId: string): Promise<string> {
+async function cachedCaption(ch: ChannelRow, mediaId: string): Promise<string> {
   const key = `igcaption:${mediaId}`;
   const hit = await redis.get(key).catch(() => null);
   if (hit !== null) return openText(hit);
-  const caption = await mediaCaption(token, mediaId).catch(() => '');
+  const caption = await igMediaCaption(ch, mediaId).catch(() => '');
   await redis.set(key, sealText(caption) || '', 'EX', 3600).catch(() => {});
   return caption;
 }
@@ -209,7 +207,7 @@ async function postPublic(c: CommentRow, ch: ChannelRow, text: string): Promise<
   // Claim first: a retried job never posts twice.
   const claimed = await one(`UPDATE ig_comments SET public_replied_at = now() WHERE id = $1 AND public_replied_at IS NULL RETURNING id`, [c.id]);
   if (!claimed) return;
-  await replyToComment(decrypt(ch.access_token_enc), c.id, text).catch(async (e) => {
+  await igReplyToComment(ch, c.id, text).catch(async (e) => {
     await q(`UPDATE ig_comments SET public_replied_at = NULL WHERE id = $1`, [c.id]);
     console.error('public comment reply failed:', (e as Error).message);
   });

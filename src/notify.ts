@@ -29,8 +29,8 @@ export async function notifyWaiting(workspaceId: string, conversationId: string,
     `SELECT id, kind, chat_id, data_enc FROM notify_targets WHERE workspace_id = $1`,
     [workspaceId],
   );
-  const jobs = targets.map(async (t) => {
-    if (t.kind === 'telegram' && telegramEnabled()) return tgSend(t.chat_id, text);
+  const jobs: Promise<unknown>[] = targets.map(async (t) => {
+    if (t.kind === 'telegram' && telegramEnabled()) return tgSend(t.chat_id, text, { workspaceId, kind: 'notification' });
     if (t.kind === 'whatsapp' && config.waAlertsEnabled) {
       return sendWhatsAppTemplate(
         config.PLATFORM_WA_TOKEN!,
@@ -69,7 +69,7 @@ export async function notifyChannelProblem(ch: { workspace_id: string; type: str
     [ch.workspace_id],
   );
   const jobs: Promise<unknown>[] = targets.map(async (t) => {
-    if (t.kind === 'telegram' && telegramEnabled()) return tgSend(t.chat_id, text);
+    if (t.kind === 'telegram' && telegramEnabled()) return tgSend(t.chat_id, text, { workspaceId: ch.workspace_id, kind: 'notification' });
     if (t.kind === 'webpush' && config.pushEnabled && t.data_enc)
       return sendPush(JSON.parse(decrypt(t.data_enc)), { title: `${where} bağlantısı yenilənməlidir`, body: ch.display_name, url: '/app/channels' });
   });

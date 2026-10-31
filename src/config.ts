@@ -7,6 +7,13 @@ const schema = z.object({
   // no trusted proxy, debug logs). .env.example sets development, the Dockerfile production, vitest test.
   NODE_ENV: z.enum(['development', 'production', 'test']),
   PORT: z.coerce.number().int().default(3000),
+  // mock = no call leaves this server (simulated Instagram and Telegram, see src/integrations); production = the real
+  // Meta and Telegram APIs. Not allowed with NODE_ENV=production: a deployment must never run on simulated channels.
+  INTEGRATION_MODE: z.enum(['mock', 'production']).default('production'),
+  // The catalog flows (post detection, product carousel, Telegram product pickers) were built against the mock and are
+  // not yet verified against the live Meta and Telegram APIs. They stay off in production until someone has verified
+  // them and set this to "on" (docs/INTEGRATIONS-MOCK.md).
+  META_COMMERCE_VERIFIED: z.enum(['on', 'off']).default('off'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug']).optional().catch(undefined),
   APP_URL: z.url(),
   DATABASE_URL: z.string().min(1),
@@ -111,6 +118,10 @@ if (!parsed.success) {
 }
 const env = parsed.data;
 
+if (env.NODE_ENV === 'production' && env.INTEGRATION_MODE === 'mock') {
+  console.error('INTEGRATION_MODE=mock is not allowed with NODE_ENV=production: simulated channels must never serve real customers.');
+  process.exit(1);
+}
 if (env.NODE_ENV === 'production') {
   const missing: string[] = env.ANTHROPIC_API_KEY ? [] : ['ANTHROPIC_API_KEY'];
   if (!env.APP_URL.startsWith('https://')) missing.push('APP_URL(https)');
@@ -125,6 +136,9 @@ if (env.NODE_ENV === 'production') {
 export const config = {
   ...env,
   isProd: env.NODE_ENV === 'production',
+  mockMode: env.INTEGRATION_MODE === 'mock',
+  /** Catalog flows run in mock mode, and in production only after META_COMMERCE_VERIFIED=on. */
+  commerceEnabled: env.INTEGRATION_MODE === 'mock' || env.META_COMMERCE_VERIFIED === 'on',
   appOrigin: new URL(env.APP_URL).origin,
   whatsappEnabled: Boolean(env.META_APP_ID && env.META_APP_SECRET && env.WA_EMBEDDED_SIGNUP_CONFIG_ID),
   mailEnabled: Boolean(env.SMTP_URL),

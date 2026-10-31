@@ -4,11 +4,11 @@ import { parseInstagramWebhook } from '../channels/instagram.js';
 import type { ChannelRow } from '../channels/types.js';
 import { parseWhatsAppWebhook } from '../channels/whatsapp.js';
 import { config } from '../config.js';
-import { parseSignedRequest, randomToken, safeEqual, sha256, verifyMetaSignature } from '../crypto.js';
+import { parseSignedRequest, randomToken, safeEqual, verifyMetaSignature } from '../crypto.js';
 import { one, q } from '../db.js';
 import { accept, eventJob, type IntakeJob, keyedJob } from '../inbound.js';
-import { redis } from '../queue.js';
-import { telegramEnabled, tgSend } from '../telegram.js';
+import { telegramEnabled } from '../telegram.js';
+import { handleTelegramUpdate } from '../telegram-updates.js';
 
 // Meta delivers in bursts from a few IPs: the cap stops floods of unsigned junk (audit F-14) without throttling Meta
 // itself at 500+ businesses. A webhook now costs one HMAC and one queue write, so the cap can be generous.
@@ -80,35 +80,10 @@ export function metaRoutes(app: FastifyInstance) {
   // Telegram bot: links a chat to a workspace via the one-time /start code. Verified by the secret header.
   app.post('/webhooks/telegram', { config: META }, async (req, reply) => {
     const secret = req.headers['x-telegram-bot-api-secret-token'];
-    if (!telegramEnabled() || typeof secret !== 'string' || !safeEqual(secret, config.TELEGRAM_WEBHOOK_SECRET!)) return reply.code(401).send();
-    const msg = (req.body as any)?.message;
-    const chatId = msg?.chat?.id;
-    const text = typeof msg?.text === 'string' ? msg.text.trim() : '';
-    if (typeof chatId !== 'number' || msg.chat.type !== 'private') return reply.send({ ok: true });
-    const chat = String(chatId);
-    const code = /^\/start ([A-Za-z0-9_-]{10,64})$/.exec(text)?.[1];
-    if (code) {
-      const raw = await redis.getdel(`tglink:${sha256(code).toString('hex')}`);
-      const link = raw ? (JSON.parse(raw) as { workspaceId: string; userId: string }) : null;
-      if (!link) {
-        await tgSend(chat, 'Link etibarsızdır və ya vaxtı keçib. Paneldə Ayarlar → Bildirişlər bölməsindən yenidən cəhd edin.');
-      } else {
-        const label = [msg.from?.first_name, msg.from?.username && `@${msg.from.username}`].filter(Boolean).join(' ').slice(0, 100);
-        await q(`INSERT INTO notify_targets (workspace_id, user_id, kind, chat_id, label) VALUES ($1, $2, 'telegram', $3, $4) ON CONFLICT DO NOTHING`, [
-          link.workspaceId,
-          link.userId,
-          chat,
-          label,
-        ]);
-        const ws = await one('SELECT name FROM workspaces WHERE id = $1', [link.workspaceId]);
-        await tgSend(chat, `✅ Bildirişlər qoşuldu: ${ws?.name ?? ''}. Müştəri cavabınızı gözləyəndə burada xəbər verəcəyəm. Dayandırmaq üçün /stop yazın.`);
-      }
-    } else if (text === '/stop') {
-      await q(`DELETE FROM notify_targets WHERE kind = 'telegram' AND chat_id = $1`, [chat]);
-      await tgSend(chat, 'Bildirişlər dayandırıldı.');
-    } else {
-      await tgSend(chat, 'Bu bot AI Reply bildirişləri üçündür. Qoşulmaq üçün paneldə Ayarlar → Bildirişlər → "Telegram-ı qoş" düyməsini basın.');
-    }
+    // Mock mode never accepts outside Telegram traffic: its updates come from the dashboard simulator.
+    if (config.mockMode || !telegramEnabled() || typeof secret !== 'string' || !safeEqual(secret, config.TELEGRAM_WEBHOOK_SECRET!))
+      return reply.code(401).send();
+    await handleTelegramUpdate(req.body);
     return reply.send({ ok: true });
   });
 

@@ -6,6 +6,7 @@ import { refreshInstagramToken } from './channels/instagram.js';
 import type { ChannelRow } from './channels/types.js';
 import { markWhatsAppRead } from './channels/whatsapp.js';
 import { handleCommentAi } from './comments.js';
+import { sweepPosts } from './commerce/posts.js';
 import { config } from './config.js';
 import { updateSummary } from './context.js';
 import { decrypt, decryptSecretWithInfo, decryptWithInfo, encrypt, encryptSecret, secretsKeyConfigured } from './crypto.js';
@@ -28,6 +29,7 @@ export type Data = JobData | { kind: 'maintenance' };
 const ECHO_CHECKS = 30;
 
 async function refreshTokens() {
+  if (config.mockMode) return; // simulated accounts have no Meta token to refresh
   // Instagram long-lived tokens last 60 days; refresh when <15 days remain. One refresher per channel at a time.
   const due = await q(`SELECT * FROM channels WHERE type = 'instagram' AND status = 'active' AND token_expires_at < now() + interval '15 days'`);
   for (const ch of due) {
@@ -214,6 +216,7 @@ export async function maintenance() {
     [config.RETENTION_DAYS],
   );
   await q(`DELETE FROM channel_events WHERE created_at < now() - interval '180 days'`);
+  await q(`DELETE FROM integration_events WHERE created_at < now() - interval '30 days'`);
   await q(`DELETE FROM webhook_deliveries WHERE created_at < now() - interval '14 days'`);
   // Uploads a lost job never processed (the source shows "failed" so the user can upload again).
   await q(
@@ -326,6 +329,8 @@ export async function runJob(job: Job<Data>, token?: string): Promise<void> {
         return await maintenance();
       case 'sweep':
         return void (await requeueStranded());
+      case 'post_sweep':
+        return void (await sweepPosts());
     }
   } catch (e) {
     if (e instanceof DelayedError) throw e;

@@ -1,7 +1,6 @@
 import { learnStyleGuide } from './ai.js';
-import { instagramOwnMessages } from './channels/instagram.js';
-import { decrypt } from './crypto.js';
 import { one, q } from './db.js';
+import { igOwnMessages } from './integrations/ig.js';
 import { openRows } from './messages.js';
 
 const MIN_SAMPLES = 5;
@@ -17,10 +16,11 @@ export async function learnStyle(workspaceId: string): Promise<'ok' | 'not_enoug
     ]),
   );
   const samples = stored.map((m) => m.body);
-  for (const ch of await q(`SELECT external_id, access_token_enc FROM channels WHERE workspace_id = $1 AND type = 'instagram' AND status = 'active'`, [
-    workspaceId,
-  ])) {
-    samples.push(...(await instagramOwnMessages(decrypt(ch.access_token_enc), ch.external_id).catch(() => [])));
+  for (const ch of await q(
+    `SELECT id, workspace_id, external_id, access_token_enc FROM channels WHERE workspace_id = $1 AND type = 'instagram' AND status = 'active'`,
+    [workspaceId],
+  )) {
+    samples.push(...(await igOwnMessages(ch).catch(() => [])));
   }
   const picked: string[] = [];
   let chars = 0;

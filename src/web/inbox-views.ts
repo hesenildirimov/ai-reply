@@ -35,6 +35,7 @@ const KIND_LABEL: Record<string, string> = {
 };
 const STATUS_ICON: Record<string, Safe> = {
   pending: html`<span title="Göndərilir">…</span>`,
+  simulated: html`<span class="chip warn" title="Test rejimi: mesaj heç kimə göndərilmədi">SIMULATED</span>`,
   failed: html`<span class="st-bad" title="Göndərilmədi">${icon('alert', 'i xs')} göndərilmədi</span>`,
   unknown: html`<span class="st-bad" title="Göndərilib-göndərilmədiyi bilinmir (bağlantı kəsildi)">? bilinmir</span>`,
 };

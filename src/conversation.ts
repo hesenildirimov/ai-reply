@@ -72,9 +72,9 @@ export async function deliver(
       [c.workspace_id, key],
     ));
   if (!claimed) return 'duplicate';
-  let mid: string;
+  let sent: Awaited<ReturnType<typeof sendText>>;
   try {
-    mid = await sendText(c.channel, c.external_user_id, openBody(claimed), opts);
+    sent = await sendText(c.channel, c.external_user_id, openBody(claimed), opts);
   } catch (e) {
     const se = e instanceof SendError ? e : new SendError('network', false, false);
     // An echo that already carried this message's id (processEcho) proves it was delivered despite the error.
@@ -85,11 +85,12 @@ export async function deliver(
     throw se;
   }
   // The send API's id is authoritative (an echo may have attached one first, see processEcho); never steal another row's id.
+  // 'simulated' = the mock provider answered: the message never reached a customer and must not look delivered.
   await q(
-    `UPDATE messages SET status = 'sent', error = NULL, created_at = now(),
+    `UPDATE messages SET status = $3, error = NULL, created_at = now(),
        external_id = CASE WHEN EXISTS (SELECT 1 FROM messages x WHERE x.conversation_id = messages.conversation_id AND x.external_id = $2 AND x.id <> messages.id) THEN external_id ELSE $2 END
      WHERE id = $1`,
-    [claimed.id, mid],
+    [claimed.id, sent.id, sent.status === 'SIMULATED' ? 'simulated' : 'sent'],
   );
   await q('UPDATE conversations SET last_message_at = now() WHERE id = $1', [c.id]);
   await publish(c.workspace_id, { type: 'message', conversationId: c.id });

@@ -1,28 +1,57 @@
 import { config } from './config.js';
+import { recordIntegrationEvent } from './integrations/events.js';
+import { telegramProvider } from './integrations/index.js';
+import { tg } from './integrations/telegram-api.js';
+import type { InlineButton, SendResult } from './integrations/types.js';
 
-export const telegramEnabled = () => Boolean(config.TELEGRAM_BOT_TOKEN && config.TELEGRAM_BOT_USERNAME && config.TELEGRAM_WEBHOOK_SECRET);
+/** The bot can be used: configured for real, or simulated in mock mode (see src/integrations). */
+export const telegramEnabled = () => telegramProvider().enabled();
 
-/** Telegram Bot API call. The token is part of the URL, so errors never include the URL. */
-export async function tg(method: string, body: Record<string, unknown>): Promise<any> {
-  const res = await fetch(`${config.TELEGRAM_API_BASE}/bot${config.TELEGRAM_BOT_TOKEN}/${method}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(10_000),
-  });
-  const data: any = await res.json().catch(() => ({}));
-  if (!data.ok) throw new Error(`Telegram ${method} failed: ${res.status} ${data.description ?? ''}`.trim());
-  return data.result;
+export interface TgOpts {
+  /** When given, the message appears in that business's integration event feed. */
+  workspaceId?: string | null;
+  keyboard?: InlineButton[][];
+  /** Event kind in the feed, e.g. 'notification', 'new_post'. */
+  kind?: string;
 }
 
-export const tgSend = (chatId: string, text: string) => tg('sendMessage', { chat_id: chatId, text, link_preview_options: { is_disabled: true } });
+/** Sends a Telegram message through the configured provider (real bot or mock) and records it when the business is known. */
+export async function tgSend(chatId: string, text: string, o: TgOpts = {}): Promise<SendResult> {
+  const provider = telegramProvider();
+  const record = (status: SendResult['status'], extra: { id?: string; error?: string } = {}) =>
+    o.workspaceId
+      ? recordIntegrationEvent({
+          workspaceId: o.workspaceId,
+          provider: 'telegram',
+          direction: 'out',
+          kind: o.kind ?? 'notification',
+          status,
+          summary: text,
+          payload: { chatId, text, keyboard: o.keyboard },
+          externalId: extra.id,
+          error: extra.error,
+        })
+      : undefined;
+  try {
+    const r = await provider.sendMessage(chatId, text, o.keyboard);
+    await record(r.status, { id: r.id });
+    return r;
+  } catch (e) {
+    await record('FAILED', { error: 'telegram_api' });
+    throw e;
+  }
+}
+
+export const tgEditKeyboard = (chatId: string, messageId: string, keyboard: InlineButton[][]) => telegramProvider().editKeyboard(chatId, messageId, keyboard);
+export const tgAnswerCallback = (callbackQueryId: string, text?: string) => telegramProvider().answerCallback(callbackQueryId, text);
 
 export async function registerTelegramWebhook(): Promise<void> {
-  if (!telegramEnabled()) return;
+  // Mock mode never talks to Telegram; without a real bot configured there is nothing to register.
+  if (config.mockMode || !telegramProvider().enabled()) return;
   await tg('setWebhook', {
     url: `${config.APP_URL}/webhooks/telegram`,
     secret_token: config.TELEGRAM_WEBHOOK_SECRET,
-    allowed_updates: ['message'],
+    allowed_updates: ['message', 'callback_query'],
     drop_pending_updates: true,
   });
 }

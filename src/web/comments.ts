@@ -1,14 +1,13 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { recentMedia } from '../channels/instagram.js';
 import type { ChannelRow } from '../channels/types.js';
 import { afterCommentDm, type CommentRow, privateReplyOpen, setCommentStatus } from '../comments.js';
 import { businessFacts } from '../context.js';
 import { deliver, inWindow, loadConv } from '../conversation.js';
-import { decrypt } from '../crypto.js';
 import { one, q } from '../db.js';
 import { audit } from '../events.js';
 import { publicTextOk } from '../guard.js';
+import { igMediaForPicker } from '../integrations/ig.js';
 import { openText, sealText } from '../messages.js';
 import { can, requirePerm, requireUser } from './auth.js';
 import { csrfField, html, pageHead, raw } from './html.js';
@@ -62,7 +61,7 @@ export function commentRoutes(app: FastifyInstance) {
       const ch = manage
         ? await one<ChannelRow>(`SELECT * FROM channels WHERE workspace_id = $1 AND type = 'instagram' AND status = 'active' LIMIT 1`, [w])
         : undefined;
-      const posts = ch ? await recentMedia(decrypt(ch.access_token_enc)).catch(() => null) : null;
+      const posts = ch ? await igMediaForPicker(ch).catch(() => null) : null;
       const pending = await q<CommentRow>(
         `SELECT * FROM ig_comments WHERE workspace_id = $1 AND ai_status = 'pending_approval' ORDER BY received_at LIMIT 50`,
         [w],

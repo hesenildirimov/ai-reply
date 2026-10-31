@@ -1,10 +1,11 @@
-import { replyToComment } from '../channels/instagram.js';
 import type { ChannelRow, InboundEvent } from '../channels/types.js';
 import { queueCommentAi } from '../comments.js';
+import { handleCatalogComment } from '../commerce/flow.js';
 import { addTags, type ContactRow, ensureConversation, hasTag, removeTags, setField, upsertContact } from '../contacts.js';
 import { type ConvCtx, deliver, handoff, inWindow, loadConv } from '../conversation.js';
-import { decrypt } from '../crypto.js';
 import { one, q } from '../db.js';
+import { recordIntegrationEvent } from '../integrations/events.js';
+import { igReplyToComment } from '../integrations/ig.js';
 import { trackLinks } from '../links.js';
 import { openText } from '../messages.js';
 import { automationBlocked, limitAlert } from '../plans.js';
@@ -235,6 +236,16 @@ export async function processComment(ev: Extract<InboundEvent, { type: 'comment'
     [ev.commentId, ch.workspace_id, ch.id, ev.mediaId, ev.fromId, ev.fromUsername.slice(0, 100), ev.text.slice(0, 2000)],
   );
   if (!fresh) return; // duplicate webhook
+  await recordIntegrationEvent({
+    workspaceId: ch.workspace_id,
+    provider: 'instagram',
+    direction: 'in',
+    kind: 'comment',
+    status: 'RECEIVED',
+    summary: `Şərh${ev.fromUsername ? ` @${ev.fromUsername}` : ''}: ${ev.text}`,
+    payload: { commentId: ev.commentId, mediaId: ev.mediaId },
+    externalId: ev.commentId,
+  });
   if (ch.status !== 'active' || Date.now() - ev.time > 7 * 86400_000) return;
   const contact = await upsertContact(ch, ev.fromId, '', ev.fromUsername);
   if (contact.blocked || contact.opted_out) return;
@@ -244,8 +255,12 @@ export async function processComment(ev: Extract<InboundEvent, { type: 'comment'
       matches(x.config.match, ev.text) &&
       capability('comment', ch).status === 'available',
   );
-  // No keyword automation took it: the AI may answer it (src/comments.ts; off unless the business switched it on).
-  if (!a) return queueCommentAi(ev.commentId);
+  if (!a) {
+    // A price question under a post with saved products is answered from the catalog (no AI), see src/commerce/flow.ts.
+    if (await handleCatalogComment(ch, contact, ev)) return;
+    // Otherwise the AI may answer it (src/comments.ts; off unless the business switched it on).
+    return queueCommentAi(ev.commentId);
+  }
   await q(`UPDATE ig_comments SET matched = true WHERE id = $1`, [ev.commentId]);
   const blocked = await automationBlocked(ch.workspace_id);
   if (blocked) return limitAlert(ch.workspace_id, blocked);
@@ -255,7 +270,7 @@ export async function processComment(ev: Extract<InboundEvent, { type: 'comment'
   const cfg = configSchema.parse(a.config);
   if (cfg.public_reply.enabled && cfg.public_reply.texts.length) {
     const text = cfg.public_reply.texts[Math.floor(Math.random() * cfg.public_reply.texts.length)]!;
-    await replyToComment(decrypt(ch.access_token_enc), ev.commentId, text)
+    await igReplyToComment(ch, ev.commentId, text)
       .then(() => logStep(run.id, { type: 'public_reply', result: 'sent' }))
       .catch((e) => logStep(run.id, { type: 'public_reply', result: 'failed', reason: String((e as Error).message).slice(0, 120) }));
   }

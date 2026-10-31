@@ -3,11 +3,10 @@ import { z } from 'zod';
 import { type Capability, capability, TRIGGER_LABELS } from '../automations/capabilities.js';
 import { matches, normalize } from '../automations/engine.js';
 import { type AutomationConfig, configSchema, defaultConfig, TRIGGERS, type Trigger, validateForTrigger } from '../automations/schema.js';
-import { recentMedia } from '../channels/instagram.js';
 import type { ChannelRow } from '../channels/types.js';
-import { decrypt } from '../crypto.js';
 import { one, q, tx } from '../db.js';
 import { audit } from '../events.js';
+import { igMediaForPicker } from '../integrations/ig.js';
 import { checkLimit } from '../plans.js';
 import { can, requirePerm, requireUser } from './auth.js';
 import { csrfField, html, pageHead } from './html.js';
@@ -387,7 +386,7 @@ export function automationRoutes(app: FastifyInstance) {
       );
       if (!ch) return reply.send({ ok: false, items: [], error: 'Instagram bağlı deyil' });
       try {
-        return reply.send({ ok: true, items: await recentMedia(decrypt(ch.access_token_enc)) });
+        return reply.send({ ok: true, items: await igMediaForPicker(ch) });
       } catch {
         return reply.send({ ok: false, items: [], error: 'Postları yükləmək alınmadı' });
       }

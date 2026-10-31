@@ -209,3 +209,45 @@ export async function instagramOwnMessages(token: string, igId: string): Promise
   });
   return (r.data ?? []).flatMap((c) => (c.messages?.data ?? []).filter((m) => m.from?.id === igId && typeof m.message === 'string').map((m) => m.message!));
 }
+
+/**
+ * Generic Template (carousel / "Rich Card") message. Meta limits: 10 cards, title and subtitle 80 chars, 3 buttons per
+ * card with titles up to 20 chars. NOT yet verified against the live API (see META_COMMERCE_VERIFIED).
+ */
+export async function sendInstagramCards(
+  token: string,
+  igId: string,
+  to: string,
+  cards: { title: string; subtitle?: string; imageUrl?: string; buttons: { type: 'postback'; title: string; payload: string }[] }[],
+  opts: { commentId?: string } = {},
+): Promise<string> {
+  const elements = cards.slice(0, 10).map((c) => ({
+    title: c.title.slice(0, 80),
+    ...(c.subtitle ? { subtitle: c.subtitle.slice(0, 80) } : {}),
+    ...(c.imageUrl ? { image_url: c.imageUrl } : {}),
+    buttons: c.buttons.slice(0, 3).map((b) => ({ type: 'postback', title: b.title.slice(0, 20), payload: b.payload.slice(0, 1000) })),
+  }));
+  const r = await graph<{ message_id: string }>(IG(), fbPath(`${igId}/messages`), {
+    token,
+    json: {
+      recipient: opts.commentId ? { comment_id: opts.commentId } : { id: to },
+      message: { attachment: { type: 'template', payload: { template_type: 'generic', elements } } },
+    },
+  });
+  return r.message_id;
+}
+
+/** Newest posts/reels with their full caption (new-post detection). Newest first. */
+export async function listInstagramMedia(token: string, limit = 12) {
+  const r = await graph<{
+    data?: { id: string; caption?: string; media_type?: string; thumbnail_url?: string; media_url?: string; timestamp?: string; permalink?: string }[];
+  }>(IG(), fbPath('me/media'), { token, query: { fields: 'id,caption,media_type,thumbnail_url,media_url,timestamp,permalink', limit: String(limit) } });
+  return (r.data ?? []).map((m) => ({
+    id: m.id,
+    caption: (m.caption ?? '').slice(0, 1000),
+    mediaType: m.media_type ?? '',
+    permalink: m.permalink ?? '',
+    thumbUrl: [m.thumbnail_url, m.media_url].find((u) => u && onMetaCdn(u)) ?? '',
+    timestamp: m.timestamp ?? '',
+  }));
+}

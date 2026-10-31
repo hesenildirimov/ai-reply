@@ -32,6 +32,7 @@ export type JobData =
   | { kind: 'ig_profile'; conversationId: string }
   | { kind: 'wa_partner_removed'; wabaId: string }
   | { kind: 'wa_alert_link'; waId: string; text: string }
+  | { kind: 'post_sweep' }
   | { kind: 'sweep' };
 
 // Finished jobs are kept for an hour (duplicate job ids collapse meanwhile) but capped so a traffic spike can't fill Redis.
