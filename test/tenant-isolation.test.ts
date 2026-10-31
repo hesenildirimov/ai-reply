@@ -5,7 +5,7 @@ import { createAutomation, igMessage, loginAs, resetDb, seedWorkspace, startFake
 
 const MARK = 'BSECRET';
 const ROUTES =
-  `get /;get /admin;get /admin/w/:id;get /app;get /app/2fa;get /app/analytics;get /app/analytics/export.csv;get /app/assistant;get /app/audit;get /app/automations;get /app/automations/:id;get /app/automations/:id/media;get /app/automations/new;get /app/channels;get /app/contacts;get /app/contacts/:id;get /app/contacts/export.csv;get /app/inbox;get /app/inbox/:id;get /app/inbox/:id/part/:part;get /app/inbox/part/list;get /app/integrations;get /app/knowledge;get /app/knowledge/:id;get /app/media/:id/:i;get /app/saved-replies;get /app/settings;get /app/settings/export;get /app/team;get /app/test;get /data-deletion/status;post /admin/customers;post /admin/w/:id/delete;post /admin/w/:id/extend;post /admin/w/:id/link;post /admin/w/:id/plan;post /admin/w/:id/update;post /app/assistant/learn;post /app/automations/:id;post /app/automations/:id/delete;post /app/automations/:id/duplicate;post /app/automations/:id/status;post /app/automations/:id/test;post /app/channels/:id/disconnect;post /app/contacts/:id/fields;post /app/contacts/:id/flags;post /app/contacts/:id/merge;post /app/contacts/:id/tags;post /app/inbox/:id/ai;post /app/inbox/:id/assign;post /app/inbox/:id/delete;post /app/inbox/:id/note;post /app/inbox/:id/reply;post /app/inbox/:id/status;post /app/integrations/:id/delete;post /app/integrations/:id/rotate;post /app/integrations/:id/test;post /app/integrations/:id/toggle;post /app/knowledge/:id;post /app/knowledge/:id/delete;post /app/knowledge/:id/toggle;post /app/saved-replies/:id/delete;post /app/team/:id/link;post /app/team/:id/remove;post /app/team/:id/role`
+  `get /;get /admin;get /admin/w/:id;get /app;get /app/2fa;get /app/analytics;get /app/analytics/export.csv;get /app/assistant;get /app/audit;get /app/automations;get /app/automations/:id;get /app/automations/:id/media;get /app/automations/new;get /app/catalog;get /app/channels;get /app/activity;get /app/posts;get /app/contacts;get /app/contacts/:id;get /app/contacts/export.csv;get /app/inbox;get /app/inbox/:id;get /app/inbox/:id/part/:part;get /app/inbox/part/list;get /app/integrations;get /app/knowledge;get /app/knowledge/:id;get /app/media/:id/:i;get /app/saved-replies;get /app/settings;get /app/settings/export;get /app/team;get /app/test;get /data-deletion/status;post /admin/customers;post /admin/w/:id/delete;post /admin/w/:id/extend;post /admin/w/:id/link;post /admin/w/:id/plan;post /admin/w/:id/update;post /app/assistant/learn;post /app/automations/:id;post /app/automations/:id/delete;post /app/automations/:id/duplicate;post /app/automations/:id/status;post /app/automations/:id/test;post /app/catalog;post /app/catalog/:id/toggle;post /app/channels/:id/disconnect;post /app/posts/:id/products;post /app/posts/:id/skip;post /app/posts/detect;post /app/contacts/:id/fields;post /app/contacts/:id/flags;post /app/contacts/:id/merge;post /app/contacts/:id/tags;post /app/inbox/:id/ai;post /app/inbox/:id/assign;post /app/inbox/:id/delete;post /app/inbox/:id/note;post /app/inbox/:id/reply;post /app/inbox/:id/status;post /app/integrations/:id/delete;post /app/integrations/:id/rotate;post /app/integrations/:id/test;post /app/integrations/:id/toggle;post /app/knowledge/:id;post /app/knowledge/:id/delete;post /app/knowledge/:id/toggle;post /app/saved-replies/:id/delete;post /app/team/:id/link;post /app/team/:id/remove;post /app/team/:id/role`
     .split(';')
     .map((r) => r.split(' ') as ['get' | 'post', string]);
 
@@ -89,7 +89,28 @@ describe.skipIf(!enabled)('multi-tenant isolation (every route)', () => {
     ]);
     await db.q(`INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, 'agent')`, [B.workspaceId, agent.id]);
     await db.q(`INSERT INTO links (code, workspace_id, automation_id, url) VALUES ('bcode1', $1, $2, 'https://b.example.com/landing')`, [B.workspaceId, auto]);
+    // Catalog data of B: a product and a post carrying B's marker, an event in B's feed.
+    const product = await db.one(`INSERT INTO products (workspace_id, sku, name, price) VALUES ($1, 'B-1', $2, 99) RETURNING id`, [
+      B.workspaceId,
+      `${MARK} product`,
+    ]);
+    const post = await db.one(`INSERT INTO ig_posts (workspace_id, channel_id, media_id, caption) VALUES ($1, $2, 'bmedia', $3) RETURNING id`, [
+      B.workspaceId,
+      B.channelId,
+      `${MARK} post`,
+    ]);
+    const { recordIntegrationEvent } = await import('../src/integrations/events.js');
+    await recordIntegrationEvent({
+      workspaceId: B.workspaceId,
+      provider: 'instagram',
+      direction: 'in',
+      kind: 'comment',
+      status: 'RECEIVED',
+      summary: `${MARK} event`,
+    });
     Object.assign(bIds, {
+      product: product.id,
+      post: post.id,
       conv: m.conversation_id,
       msg: m.id,
       contact: m.contact_id,
@@ -135,7 +156,7 @@ describe.skipIf(!enabled)('multi-tenant isolation (every route)', () => {
     const before = await fingerprintB();
     const leaks: string[] = [];
     let requests = 0;
-    const idKinds = ['conv', 'msg', 'contact', 'note', 'sr', 'auto', 'kb', 'wh', 'user', 'owner', 'ws', 'channel'];
+    const idKinds = ['product', 'post', 'conv', 'msg', 'contact', 'note', 'sr', 'auto', 'kb', 'wh', 'user', 'owner', 'ws', 'channel'];
     for (const [method, route] of ROUTES) {
       const variants = route.includes(':id') ? idKinds.map((k) => route.replace(':id', bIds[k]!)) : [route];
       for (const v of variants) {
@@ -172,6 +193,9 @@ describe.skipIf(!enabled)('multi-tenant isolation (every route)', () => {
                   url: 'https://x.example.com',
                   events: 'message.received',
                   plan_id: bIds.ws,
+                  products: bIds.product,
+                  sku: 'B-1',
+                  price: '1',
                 }
               : undefined;
           const res = await app.inject({ method: method.toUpperCase() as 'GET', url, headers: { ...s.headers, accept: 'text/html' }, payload });

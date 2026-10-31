@@ -3,7 +3,7 @@
 process.env.INTEGRATION_MODE = 'mock';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { drainAll, fake, resetDb, seedWorkspace, startFake, stopFake } from './helpers.js';
+import { drainAll, fake, loginAs, resetDb, seedWorkspace, startFake, stopFake } from './helpers.js';
 
 const enabled = !!process.env.TEST_DATABASE_URL && !!process.env.TEST_REDIS_URL;
 
@@ -15,6 +15,7 @@ describe.skipIf(!enabled)('mock mode: catalog workflow without external credenti
   let fx: typeof import('../src/commerce/fixtures.js');
   let events: typeof import('../src/integrations/events.js');
   let ws: Awaited<ReturnType<typeof seedWorkspace>>;
+  let app: import('fastify').FastifyInstance;
   let demo: Awaited<ReturnType<ReturnType<typeof importFx>['seedDemoData']>>;
   const importFx = () => fx;
 
@@ -35,6 +36,7 @@ describe.skipIf(!enabled)('mock mode: catalog workflow without external credenti
     demo = await fx.seedDemoData(ws.workspaceId);
   });
   afterAll(async () => {
+    await app?.close();
     await stopFake();
     const { closeQueues, redis } = await import('../src/queue.js');
     (await import('../src/realtime.js')).closeRealtime();
@@ -260,6 +262,94 @@ describe.skipIf(!enabled)('mock mode: catalog workflow without external credenti
         db.q(`INSERT INTO post_products (post_id, product_id, workspace_id) VALUES ($1, $2, $3)`, [post.id, theirs.id, ws.workspaceId]),
       ).rejects.toThrow();
       await expect(posts.setPostProducts(ws.workspaceId, post.id, [theirs.id])).rejects.toThrow();
+    });
+  });
+
+  describe('dashboard', () => {
+    let session: Awaited<ReturnType<typeof loginAs>>;
+    const get = (url: string) => app.inject({ url, headers: session.headers });
+    const post = (url: string, payload: Record<string, unknown> = {}) =>
+      app.inject({ method: 'POST', url, headers: session.headers, payload: { _csrf: session.csrf, ...payload } });
+
+    beforeAll(async () => {
+      app = await (await import('../src/server.js')).buildServer();
+      session = await loginAs(app, ws.email);
+    });
+
+    it('shows the development indicator on every dashboard page', async () => {
+      for (const url of ['/app', '/app/activity', '/app/posts', '/app/catalog', '/app/dev', '/app/inbox']) {
+        const res = await get(url);
+        expect(res.statusCode, url).toBe(200);
+        expect(res.body, url).toContain('DEVELOPMENT MODE — MOCK INTEGRATIONS');
+      }
+    });
+
+    it('notifies about posts waiting for products on the home page', async () => {
+      const res = await get('/app');
+      expect(res.body).toMatch(/1 yeni post<\/b> məhsul seçiminizi gözləyir/);
+    });
+
+    it('lists events as SIMULATED and never as DELIVERED', async () => {
+      const res = await get('/app/activity');
+      expect(res.body).toContain('chip warn">SIMULATED');
+      const rows = res.body.slice(res.body.indexOf('<tbody>'));
+      expect(rows).not.toContain('DELIVERED'); // the legend above names it, no event row carries it in mock mode
+      expect(res.body).toContain('new_post');
+      expect(res.body).toContain('cards');
+    });
+
+    it('marks simulated messages in the inbox thread', async () => {
+      const conv = await db.one(`SELECT id FROM conversations WHERE external_user_id = 'CUST1'`);
+      const res = await get(`/app/inbox/${conv.id}/part/thread`);
+      expect(res.body).toContain('SIMULATED');
+      expect(res.body).not.toContain('chip ok">DELIVERED');
+    });
+
+    it('saves a post\'s products from the dashboard form (one or several), and "no product"', async () => {
+      const p = (await db.one(`SELECT id FROM ig_posts WHERE workspace_id = $1 AND media_id = 'mock_media_1004'`, [ws.workspaceId]))!;
+      expect((await post(`/app/posts/${p.id}/products`, {})).headers.location).toContain('post_none'); // nothing ticked
+      const bags = await db.q(`SELECT id FROM products WHERE workspace_id = $1 AND sku IN ('BG-001', 'BG-002') ORDER BY sku`, [ws.workspaceId]);
+      const res = await post(`/app/posts/${p.id}/products`, { products: bags.map((b) => b.id) });
+      expect(res.headers.location).toContain('post_saved');
+      expect(
+        await db.one(`SELECT product_state, (SELECT count(*)::int FROM post_products WHERE post_id = $1) AS n FROM ig_posts WHERE id = $1`, [p.id]),
+      ).toEqual({ product_state: 'assigned', n: 2 });
+      expect((await post(`/app/posts/${p.id}/skip`)).headers.location).toContain('post_skipped');
+      expect(
+        await db.one(`SELECT product_state, (SELECT count(*)::int FROM post_products WHERE post_id = $1) AS n FROM ig_posts WHERE id = $1`, [p.id]),
+      ).toEqual({ product_state: 'skipped', n: 0 });
+    });
+
+    it('adds and deactivates catalog products; a deactivated product is no longer offered', async () => {
+      expect((await post('/app/catalog', { sku: 'NEW-1', name: 'Yeni kəmər', price: '19.9', description: 'Dəri' })).headers.location).toContain(
+        'catalog_saved',
+      );
+      const row = await db.one(`SELECT id, price FROM products WHERE workspace_id = $1 AND sku = 'NEW-1'`, [ws.workspaceId]);
+      expect(row.price).toBe('19.90');
+      expect((await post('/app/catalog', { sku: 'BAD', name: 'x', price: '1', image_url: 'http://insecure.example/x.png' })).headers.location).toContain(
+        'invalid',
+      );
+      await post(`/app/catalog/${row.id}/toggle`);
+      expect((await db.one(`SELECT active FROM products WHERE id = $1`, [row.id])).active).toBe(false);
+    });
+
+    it('the simulator forms run the same pipeline: comment -> worker -> carousel', async () => {
+      fake.reset();
+      const res = await post('/app/dev/comment', { media: 'mock_media_1002', text: 'qiymət neçədir', user: 'sevinc' });
+      expect(res.headers.location).toContain('sim_queued');
+      await drainAll();
+      const cards = await eventsOf('cards');
+      expect(cards.at(-1)!.summary).toContain('Jean şalvar');
+      expect(fake.aiCalls()).toHaveLength(0);
+      const page = await get('/app/dev');
+      expect(page.body).toContain('Qiyməti göstər');
+    });
+
+    it("does not let the simulator be used for another business's Telegram chat", async () => {
+      const other = await db.one(`SELECT chat_id FROM notify_targets WHERE workspace_id <> $1 LIMIT 1`, [ws.workspaceId]);
+      const mine = (await db.one(`SELECT seq FROM ig_posts WHERE workspace_id = $1 AND media_id = 'mock_media_1004'`, [ws.workspaceId]))!;
+      await post('/app/dev/telegram-press', { chat: other.chat_id, message: '1', data: `pn:${mine.seq}` });
+      expect((await db.one(`SELECT product_state FROM ig_posts WHERE seq = $1`, [mine.seq])).product_state).toBe('skipped'); // unchanged from the previous test
     });
   });
 });

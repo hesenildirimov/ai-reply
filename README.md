@@ -48,6 +48,20 @@ npm run dev:worker                # ayrı terminalda
 npm test
 ```
 
+### Test (mock) rejimi: Meta və Telegram açarları olmadan
+
+`.env`-də `INTEGRATION_MODE=mock` (`.env.example`-də belədir). Bu rejimdə Instagram və Telegram **simulyasiya** olunur: heç nə Meta-ya və ya Telegram-a göndərilmir, hadisələr `SIMULATED` kimi qeyd olunur, panelin yuxarısında `DEVELOPMENT MODE — MOCK INTEGRATIONS` yazısı görünür. Biznes məntiqi real olanla eynidir.
+
+```bash
+npm run migrate
+npm run seed:mock -- siz@example.com   # demo biznes, Instagram hesabı, 12 məhsul, FAQ, 4 post; şifrə linki çap edir
+npm run dev & npm run dev:worker       # ikisi də lazımdır
+# /app/dev (Simulyator): post dərc et, şərh yaz, kart düyməsinə bas, Telegram düymələrinə bas
+# /app/activity (Hadisələr): bütün hadisələr statusu ilə
+```
+
+Ətraflı: `docs/INTEGRATIONS-MOCK.md` (provayderlər, statuslar, istehsal rejiminə keçid şərtləri).
+
 SMTP məcburi deyil. Təyin olunsa, operatora ötürmə bildirişləri e-poçtla gəlir və "Şifrəni unutmusunuz?" funksiyası aktivləşir.
 
 ## Sayt və lead-lər
