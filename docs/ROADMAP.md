@@ -1,10 +1,13 @@
 # Yol xəritəsi
 
-## Növbəti (razılaşdırılıb)
-- **Bilik bazası mənbələri** (Chatbase "Sources" kimi): fayl (PDF, Word, TXT), sayt linki (bir səhifə və ya bütün sayt), sual-cavab (Q&A), Excel/CSV məhsul siyahısı. Həcm limiti tarifə görə: Start 10 MB, Biznes 20 MB, Pro 40 MB (admin dəyişə bilir).
-- **Şəkil analizi modeli seçimi**: standart olaraq ucuz model (Haiku), ayarda "dəqiq şəkil analizi" ilə Sonnet.
-- **Sayt və lead axını**: ümumi sayt + müştəri paneli eyni domendə; paketlər → forma → super admin panelində "Lead-lər" + e-poçt / WhatsApp / Telegram bildirişi.
-- **AI cavab limiti tarifdən gəlsin** (indi hər yeni müştəriyə standart 1 000).
+## Edildi
+- Bilik bazası mənbələri: fayl (PDF, Word, TXT, CSV, Excel), sayt (səhifə və ya bütün sayt), sual-cavab; limit Start 10 / Biznes 20 / Pro 40 MB.
+- Şəkil analizi modeli seçimi (standart ucuz model, "Dəqiq şəkil analizi" ilə güclü model).
+- Sayt (az/ru/en), müraciət forması, admin "Lead-lər" (statuslar, qeydlər, CSV, bir kliklə müştəri yaratmaq), e-poçt və Telegram bildirişi.
+- AI cavab limiti tarifdən (Start 1 500, Biznes 6 000, Pro 20 000).
+
+## Növbəti
+- Saytın mətnlərini və dizaynını demo üzərində yoxlamaq, düzəlişlər.
 
 ## Deploy və Meta
 - Deploy (Railway, domen, HTTPS, iki şifrə açarı, `app_rw`, SMTP, STT açarı).

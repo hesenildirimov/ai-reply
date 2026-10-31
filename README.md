@@ -50,11 +50,27 @@ npm test
 
 SMTP məcburi deyil. Təyin olunsa, operatora ötürmə bildirişləri e-poçtla gəlir və "Şifrəni unutmusunuz?" funksiyası aktivləşir.
 
+## Sayt və lead-lər
+
+Ana səhifə (`/`, `/ru`, `/en`) eyni domendə məhsulu təqdim edir: imkanlar, "Necə işləyir", tariflər (qiymət və limitlər
+`plans` cədvəlindən), suallar. Yuxarıda **Daxil ol**, **Demoya bax** (`DEMO_URL` yazılıbsa) və **Görüş təyin et** var.
+Mətnlər `src/web/site-i18n.ts`-dədir (üç dil, bir yerdə).
+
+Axın: ziyarətçi paketi seçir ("Bu paketlə başla") və ya birbaşa "Görüş təyin et" basır → forma (`/request`: ad, biznes,
+telefon, e-poçt, Instagram, sahə, mesaj həcmi, paket, demo/zəng, uyğun vaxt, razılıq) → **Admin → Lead-lər**.
+Hər yeni lead platforma adminlərinə e-poçtla və `LEADS_TELEGRAM_CHAT_ID` Telegram çatına gəlir. Spam qoruması: gizli sahə
+(botlar doldurur, insan görmür) və bir ünvandan saatda 5 müraciət.
+
+**Lead-lər** səhifəsi: statuslar (Yeni → Əlaqə saxlanıldı → Görüş → Müştəri oldu / İmtina), qeydlər, axtarış, CSV.
+Görüşdən sonra lead-in səhifəsində **"Müştəri yarat"**: hesab lead-in məlumatları ilə açılır, müştəriyə şifrə linki gedir,
+lead "Müştəri oldu" olur. Müştəri olmayan lead-lər bir ildən sonra silinir.
+
 ## Müştəri idarəetməsi (Admin panel: `/admin`)
 
 Açıq qeydiyyat yoxdur. Ödəniş nağd və ya kartdan karta alınır, sistemdə yalnız tarix kimi qeyd olunur.
 
-1. **Yeni müştəri** formasını doldurun: biznes adı, e-poçt, aylıq AI limiti, "Ödənilib (bu tarixə qədər)", qeyd.
+1. **Yeni müştəri** formasını doldurun (və ya lead-dən "Müştəri yarat"): biznes adı, e-poçt, tarif, "Ödənilib (bu tarixə qədər)", qeyd.
+   Aylıq AI cavab limiti tarifdən gəlir (Start 1 500, Biznes 6 000, Pro 20 000); lazım olsa müştəriyə fərdi rəqəm yazın.
 2. Sistem **şifrə təyin etmə linki** göstərir (72 saat, birdəfəlik). Onu müştəriyə WhatsApp ilə göndərin.
 3. Müştəri şifrəsini təyin edib daxil olur, məlumatlarını yazır, kanallarını bağlayır.
 4. Ödəniş alanda müştərinin səhifəsində **"+30 gün ödəniş"** düyməsini basın.
@@ -133,6 +149,22 @@ Claude səsi və videonu birbaşa qəbul etmir. Video `ffmpeg` ilə kadrlara bö
 speech-to-text xidməti lazımdır: `.env`-də `STT_API_URL` + `STT_API_KEY` (istənilən OpenAI-uyğun `/audio/transcriptions`, məs. Whisper).
 Qurulmayıbsa, AI müştəridən sualını yazmağı xahiş edir. Qeyd mesajla birlikdə şifrəli saxlanır, paneldə mesajın altında görünür və
 axtarışda tapılır. Şəkil təsviri AI büdcəsinə daxildir (`ai_usage.purpose = 'media'`).
+
+Şəkil və video kadrlarına standart olaraq sürətli və ucuz model baxır. "AI köməkçi → Dəqiq şəkil analizi" açılanda
+güclü model kiçik yazıları, etiketləri və ölçü cədvəllərini daha yaxşı oxuyur (şəkil başına xərc ~20 dəfə çox).
+
+## Bilik bazası mənbələri
+
+"Bilik bazası → Mənbələr" (Chatbase "Sources" kimi):
+- **Fayl:** PDF, Word (.docx), TXT, CSV, Excel (.xlsx), hər biri ən çox 10 MB. Cədvəldə hər sətir ayrıca məhsul olur.
+- **Sayt:** bir səhifə və ya bütün sayt (sitemap, yoxdursa səhifədəki linklər; ən çox 30 səhifə).
+- **Sual-cavab:** hazır sual və cavab (əl ilə yazılan "Tez-tez verilən sual" maddəsi).
+
+Worker mətni çıxarır, kiçik hissələrə bölür və axtarış indeksi ilə saxlayır (`src/sources.ts`). Hər cavabda AI yalnız
+müştərinin sualına uyğun hissələri görür (ən çox 4 hissə, ~800 token), ona görə böyük kataloq da promptu böyütmür.
+Mənbə hissələri model seçiminə təsir etmir: sadə sual kataloqla üst-üstə düşsə də, ucuz model cavab verir. Qiymət yoxlaması həmin hissələri də
+"biznesin dediyi" sayır. Həcm limiti çıxarılmış mətnə görədir: Start 10 MB, Biznes 20 MB, Pro 40 MB (admin dəyişə bilir,
+`knowledge_mb`). Sayt oxunarkən yalnız açıq internet ünvanlarına qoşulur (daxili şəbəkə və cloud metadata bloklanır).
 
 ## Şərhlərə AI cavabı
 "Şərhlər" səhifəsində (`/app/comments`) açılır. Standart olaraq söndürülüdür.
@@ -282,4 +314,4 @@ TikTok-un DM API-si (Business Messaging API) hamı üçün açıq deyil, partnyo
 
 ## Növbəti addımlar
 
-Onlayn ödəniş (Payriff / Epoint), TikTok (partnyor girişi lazımdır), bilik bazası üçün PDF və sayt importu, birbaşa CRM adapterləri (hazırda webhook + Make/Zapier/n8n vasitəsilə: `docs/INTEGRATIONS.md`), şərti budaqlanan vizual qrafik redaktor (indiki builder ardıcıl addımlar + düymə keçidləri + şərt addımıdır).
+Ətraflı: `docs/ROADMAP.md`. Onlayn ödəniş (Payriff / Epoint), TikTok (partnyor girişi lazımdır), birbaşa CRM adapterləri (hazırda webhook + Make/Zapier/n8n vasitəsilə: `docs/INTEGRATIONS.md`), şərti budaqlanan vizual qrafik redaktor (indiki builder ardıcıl addımlar + düymə keçidləri + şərt addımıdır).

@@ -18,6 +18,9 @@ export interface PageOpts {
   head?: Safe;
   path?: string;
   wide?: boolean;
+  /** Public website: document language and its own header (navigation, language switch, calls to action). */
+  lang?: 'az' | 'ru' | 'en';
+  header?: Safe;
 }
 
 // Entries a role can't use are hidden (the routes enforce the same permissions server-side).
@@ -55,9 +58,9 @@ export function page(title: string, body: Safe, o: PageOpts): string {
   </aside>
   <div class="content"><main class="${o.wide ? 'wide' : ''}">${flash}${body}</main>${footer}</div>
 </div>`
-    : html`<header class="top"><a class="brand" href="/">${logo}<span>AI Reply</span></a><a class="btn ghost" href="/login">Daxil ol</a></header>
+    : html`${o.header ?? html`<header class="top"><a class="brand" href="/">${logo}<span>AI Reply</span></a><a class="btn ghost" href="/login">Daxil ol</a></header>`}
 <main class="plain">${flash}${body}</main>${footer}`;
-  return `<!doctype html>${html`<html lang="az"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  return `<!doctype html>${html`<html lang="${o.lang ?? 'az'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title} · AI Reply</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap">

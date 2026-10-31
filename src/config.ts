@@ -88,6 +88,10 @@ const schema = z.object({
   LEGAL_ADDRESS: z.string().default('[Ünvan], Bakı, Azərbaycan'),
   SUPPORT_EMAIL: z.string().default('support@example.com'),
   CONTACT_PHONE: z.string().default(''),
+  // Public website: link of the clickable product demo ("Demoya bax"); without it the button is hidden.
+  DEMO_URL: z.url().optional().catch(undefined),
+  // Telegram chat that gets a message for every new website lead (also mailed to platform admins).
+  LEADS_TELEGRAM_CHAT_ID: optional,
 
   RETENTION_DAYS: z.coerce.number().int().min(1).default(90),
 

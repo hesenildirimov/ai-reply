@@ -191,6 +191,8 @@ const clause = (t: string) => t.trim().replace(/[.\s]+$/, '');
 export interface NoteCtx {
   workspaceId: string;
   conversationId: string;
+  /** Model for looking at photos / video frames (assistants.media_model). */
+  route?: 'fast' | 'smart';
 }
 
 /** Note for one attachment. AI-call failures propagate (the reply job retries); download/format problems become a note. */

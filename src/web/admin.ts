@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { actor, alertAdmins } from '../alerts.js';
 import { createSubscription, daysLeft, extendSubscription, listSubscriptions, REGIONS, updateSubscription } from '../billing.js';
@@ -41,6 +41,8 @@ async function adminCodeOk(userId: string, code: unknown): Promise<boolean> {
 }
 
 const date = z.union([z.literal(''), z.string().regex(/^\d{4}-\d{2}-\d{2}$/)]);
+// Empty = the plan's monthly AI reply limit; a number = a custom limit for this customer.
+const optionalLimit = z.union([z.literal('').transform(() => null), z.coerce.number().int().min(0).max(1_000_000)]).default(null);
 const plusDays = (n: number) => new Date(Date.now() + n * 86400_000).toISOString().slice(0, 10);
 const payChip = (d: Date | null) => {
   const n = daysLeft(d);
@@ -54,6 +56,56 @@ const linkBox = (link: string, email: string) => html`<div class="card link-box"
   <p>Bu linki müştəriyə göndərin (WhatsApp və s.). Link <b>72 saat</b> etibarlıdır və yalnız bir dəfə işləyir. Müştəri şifrəsini təyin edib <b>${email}</b> ilə daxil olacaq.</p>
   <div class="copy-row"><input readonly value="${link}" class="copy" id="invite-link"><button type="button" class="btn secondary" data-copy="invite-link">${icon('link')}Kopyala</button></div>
   ${config.mailEnabled ? html`<p class="muted">Link e-poçtla da göndərildi.</p>` : ''}</div>`;
+
+export interface NewCustomer {
+  name: string;
+  email: string;
+  limit: number | null;
+  paidUntil: string | null;
+  note: string;
+  planId?: string | null;
+  region: 'az' | 'eu' | 'other';
+}
+
+/** Creates the customer (owner user + workspace + assistant), mails the password link and alerts the admins. */
+export async function createCustomer(
+  req: FastifyRequest,
+  d: NewCustomer,
+): Promise<{ userId: string; workspaceId: string; link: string; name: string; email: string }> {
+  const ids = await tx(async (c) => {
+    // Unusable password until the customer sets one from the link.
+    const u = (await c.query(`INSERT INTO users (email, password_hash) VALUES ($1, '!') RETURNING id`, [d.email])).rows[0];
+    const workspaceId = await createSubscription(c, {
+      name: d.name,
+      replyLimit: d.limit,
+      paidUntil: d.paidUntil,
+      note: d.note,
+      planId: d.planId,
+      region: d.region,
+    });
+    await c.query(`INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, 'owner')`, [workspaceId, u.id]);
+    await c.query('INSERT INTO assistants (workspace_id, business_name, ai_disclosure) VALUES ($1, $2, $3)', [workspaceId, d.name, d.region === 'eu']);
+    return { userId: u.id as string, workspaceId };
+  });
+  const link = await passwordLink(ids.userId, '72 hours');
+  req.log.info({ event: 'admin_customer_created', admin: req.user!.id, user: ids.userId }, 'audit');
+  await alertAdmins('yeni müştəri yaradıldı', `${d.name} (${d.email})\n${actor(req.user!.email, req.ip)}`);
+  if (config.mailEnabled)
+    await sendMail(
+      d.email,
+      'AI Reply hesabınız',
+      `Salam! ${d.name} üçün AI Reply hesabınız yaradıldı.\nŞifrənizi təyin edin (72 saat etibarlıdır):\n${link}`,
+    ).catch(() => {});
+  return { ...ids, link, name: d.name, email: d.email };
+}
+
+export const customerCreated = (req: FastifyRequest, reply: FastifyReply, c: { name: string; email: string; link: string }) =>
+  view(
+    req,
+    reply,
+    'Müştəri yaradıldı',
+    html`${pageHead(`${c.name} yaradıldı`, 'İndi şifrə linkini müştəriyə göndərin.')}${linkBox(c.link, c.email)}<p><a href="/admin" class="more">${icon('back', 'i xs')} Müştərilər</a></p>`,
+  );
 
 const deleteBox = (w: Record<string, any>, me: string, csrf: string, requester: { email: string } | undefined) => {
   const pending = w.delete_requested_at && Date.now() - new Date(w.delete_requested_at).getTime() < 86400_000;
@@ -79,11 +131,12 @@ export function adminRoutes(app: FastifyInstance) {
       const rows = await listSubscriptions();
       const n = (f: (w: any) => boolean) => rows.filter(f).length;
       const plans = await q(`SELECT id, name, price_note FROM plans ORDER BY created_at`);
+      const newLeads = (await one<{ n: number }>(`SELECT count(*)::int AS n FROM leads WHERE status = 'new'`))!.n;
       return view(
         req,
         reply,
         'Admin',
-        html`${pageHead('Müştərilər', 'Hesabları yaradın, ödənişləri qeyd edin. Ödəniş tarixi keçəndə AI avtomatik dayanır.')}
+        html`${pageHead('Müştərilər', 'Hesabları yaradın, ödənişləri qeyd edin. Ödəniş tarixi keçəndə AI avtomatik dayanır.', html`<a class="btn secondary" href="/admin/leads">${icon('inbox')}Lead-lər${newLeads ? html` <span class="count">${newLeads}</span>` : ''}</a>`)}
         <div class="stats">
           ${stat('users', 'Cəmi müştəri', rows.length)}
           ${stat(
@@ -113,7 +166,7 @@ export function adminRoutes(app: FastifyInstance) {
         <form method="post" action="/admin/customers" class="grid">${csrfField(req.csrfToken)}
           <label>Biznesin adı<input name="name" required maxlength="120"></label>
           <label>E-poçt (giriş üçün)<input name="email" type="email" required></label>
-          <label>Aylıq AI cavab limiti<input name="limit" type="number" min="0" max="1000000" value="${config.DEFAULT_REPLY_LIMIT}" required></label>
+          <label>Aylıq AI cavab limiti<input name="limit" type="number" min="0" max="1000000" placeholder="tarifdən"><small class="help">Boş = tarifin limiti (Start 1 500, Biznes 6 000, Pro 20 000).</small></label>
           <label>Tarif<select name="plan_id">${plans.map((p) => html`<option value="${p.id}" ${p.name === 'Biznes' ? raw('selected') : ''}>${p.name} · ${p.price_note}</option>`)}</select></label>
           <label>Ödənilib (bu tarixə qədər)<input name="paid_until" type="date" value="${plusDays(30)}"></label>
           <label>Qeyd (yalnız siz görürsünüz)<input name="note" maxlength="500" placeholder="Telefon, ödəniş üsulu..."></label>
@@ -125,7 +178,7 @@ export function adminRoutes(app: FastifyInstance) {
             (w) => html`<tr><td><a class="strong" href="/admin/w/${w.id}">${w.name}</a>${w.note ? html`<small class="muted block">${w.note}</small>` : ''}</td>
             <td>${w.emails}${w.activated ? '' : html` <span class="chip neutral">link gözləyir</span>`}</td>
             <td>${payChip(w.paid_until)}</td>
-            <td class="num">${w.used ?? 0} / ${w.monthly_reply_limit}</td><td>${
+            <td class="num">${w.used ?? 0} / ${w.reply_limit}</td><td>${
               w.channels
                 ? String(w.channels)
                     .split(', ')
@@ -142,7 +195,7 @@ export function adminRoutes(app: FastifyInstance) {
         .object({
           name: z.string().trim().min(1).max(120),
           email: emailSchema,
-          limit: z.coerce.number().int().min(0).max(1_000_000),
+          limit: optionalLimit,
           paid_until: date,
           note: z.string().trim().max(500),
           plan_id: z.uuid().optional(),
@@ -152,36 +205,7 @@ export function adminRoutes(app: FastifyInstance) {
       if (!p.success) return reply.redirect('/admin?m=invalid');
       const d = p.data;
       if (await one('SELECT 1 FROM users WHERE email = $1', [d.email])) return reply.redirect('/admin?m=customer_exists');
-      const userId = await tx(async (c) => {
-        // Unusable password until the customer sets one from the link.
-        const u = (await c.query(`INSERT INTO users (email, password_hash) VALUES ($1, '!') RETURNING id`, [d.email])).rows[0];
-        const workspaceId = await createSubscription(c, {
-          name: d.name,
-          replyLimit: d.limit,
-          paidUntil: d.paid_until || null,
-          note: d.note,
-          planId: d.plan_id,
-          region: d.region,
-        });
-        await c.query(`INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, 'owner')`, [workspaceId, u.id]);
-        await c.query('INSERT INTO assistants (workspace_id, business_name, ai_disclosure) VALUES ($1, $2, $3)', [workspaceId, d.name, d.region === 'eu']);
-        return u.id as string;
-      });
-      const link = await passwordLink(userId, '72 hours');
-      req.log.info({ event: 'admin_customer_created', admin: req.user!.id, user: userId }, 'audit');
-      await alertAdmins('yeni müştəri yaradıldı', `${d.name} (${d.email})\n${actor(req.user!.email, req.ip)}`);
-      if (config.mailEnabled)
-        await sendMail(
-          d.email,
-          'AI Reply hesabınız',
-          `Salam! ${d.name} üçün AI Reply hesabınız yaradıldı.\nŞifrənizi təyin edin (72 saat etibarlıdır):\n${link}`,
-        ).catch(() => {});
-      return view(
-        req,
-        reply,
-        'Müştəri yaradıldı',
-        html`${pageHead(`${d.name} yaradıldı`, 'İndi şifrə linkini müştəriyə göndərin.')}${linkBox(link, d.email)}<p><a href="/admin" class="more">${icon('back', 'i xs')} Müştərilər</a></p>`,
-      );
+      return customerCreated(req, reply, await createCustomer(req, { ...d, paidUntil: d.paid_until || null, planId: d.plan_id }));
     });
 
     const load = async (req: FastifyRequest) => {
@@ -215,7 +239,7 @@ export function adminRoutes(app: FastifyInstance) {
         <p>İstifadəçi: ${users.map((u) => html`<b>${u.email}</b> ${u.email_verified_at ? '' : html`<span class="tag">link gözləyir</span>`} `)}</p>
         <form method="post" action="/admin/w/${w.id}/update">${csrfField(req.csrfToken)}
           <label>Biznesin adı<input name="name" value="${w.name}" required maxlength="120"></label>
-          <label>Aylıq AI cavab limiti<input name="limit" type="number" min="0" max="1000000" value="${w.monthly_reply_limit}" required></label>
+          <label>Aylıq AI cavab limiti<input name="limit" type="number" min="0" max="1000000" value="${w.monthly_reply_limit ?? ''}" placeholder="tarifdən"><small class="help">Boş = tarifin limiti.</small></label>
           <label>Ödənilib (bu tarixə qədər; boş = limitsiz)<input name="paid_until" type="date" value="${day(w.paid_until)}"></label>
           <label>Qeyd<input name="note" value="${w.note}" maxlength="500"></label>
           <label>Bazar<select name="region">${Object.entries(REGIONS).map(([k, l]) => html`<option value="${k}" ${w.region === k ? raw('selected') : ''}>${l}${k === 'eu' ? ' (AI bildirişi məcburi)' : ''}</option>`)}</select></label>
@@ -249,7 +273,7 @@ export function adminRoutes(app: FastifyInstance) {
       const p = z
         .object({
           name: z.string().trim().min(1).max(120),
-          limit: z.coerce.number().int().min(0).max(1_000_000),
+          limit: optionalLimit,
           paid_until: date,
           note: z.string().trim().max(500),
           region: z.enum(['az', 'eu', 'other']).optional(),
@@ -268,7 +292,7 @@ export function adminRoutes(app: FastifyInstance) {
       await audit(w.id, req.user!.id, 'admin.subscription_update', 'workspace', w.id, { paid_until: p.data.paid_until || null, limit: p.data.limit });
       await alertAdmins(
         'ödəniş/limit dəyişdi',
-        `${w.name}: ödəniş ${p.data.paid_until || 'limitsiz'}, aylıq limit ${p.data.limit}\n${actor(req.user!.email, req.ip)}`,
+        `${w.name}: ödəniş ${p.data.paid_until || 'limitsiz'}, aylıq AI limiti ${p.data.limit ?? 'tarifdən'}\n${actor(req.user!.email, req.ip)}`,
       );
       return reply.redirect(`/admin/w/${w.id}?m=saved`);
     });

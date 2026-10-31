@@ -23,10 +23,12 @@ import { dashboardRoutes } from './web/dashboard.js';
 import { inboxRoutes } from './web/inbox.js';
 import { integrationRoutes } from './web/integrations.js';
 import { knowledgeRoutes } from './web/knowledge.js';
+import { leadRoutes } from './web/leads.js';
 import { legalRoutes } from './web/legal.js';
 import { metaRoutes } from './web/meta.js';
 import { publicRoutes } from './web/public.js';
 import { settingsRoutes } from './web/settings.js';
+import { siteRoutes } from './web/site.js';
 import { teamRoutes } from './web/team.js';
 
 export async function buildServer() {
@@ -115,6 +117,8 @@ export async function buildServer() {
   app.get('/sw.js', { config: { rateLimit: false } }, (_req, reply) => reply.header('Cache-Control', 'no-cache').sendFile('sw.js'));
 
   registerAuth(app);
+  siteRoutes(app);
+  leadRoutes(app);
   publicRoutes(app);
   legalRoutes(app);
   metaRoutes(app);

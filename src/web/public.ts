@@ -10,7 +10,6 @@ import { redis } from '../queue.js';
 import { verifyTotp } from '../totp.js';
 import { createSession, destroySession } from './auth.js';
 import { csrfField, html, logo, type PageOpts, page } from './html.js';
-import { icon } from './icons.js';
 
 export const ARGON = { memoryCost: 19456, timeCost: 2, parallelism: 1 }; // OWASP argon2id baseline
 const DUMMY_HASH = await hash('timing-equalizer-not-a-password', ARGON);
@@ -85,22 +84,6 @@ async function adminLoginAlert(userId: string, ip: string): Promise<void> {
 
 export function publicRoutes(app: FastifyInstance) {
   app.get('/healthz', { config: { rateLimit: false } }, async () => ({ ok: true }));
-
-  app.get('/', (req, reply) =>
-    view(
-      req,
-      reply,
-      'Ana səhifə',
-      html`<section class="hero"><h1>Instagram və WhatsApp mesajlarınıza AI cavab versin</h1>
-      <p class="lead">Müştəriləriniz 7/24 dəqiq cavab alır: qiymət, ünvan, iş saatları, çatdırılma. AI bilmədiyini sizə ötürür, siz isə bütün yazışmaları bir yerdən idarə edirsiniz.</p>
-      <div class="hero-actions"><a class="btn lg" href="${req.user ? '/app' : '/login'}">Daxil ol</a><span class="muted">Qoşulmaq üçün: ${contact()}</span></div></section>
-      <section class="features">
-        <div class="card">${icon('bot', 'i feat')}<h2>Avtomatik cavab</h2><p class="muted">Biznesinizin məlumatlarına əsasən, müştərinin dilində, saniyələr içində.</p></div>
-        <div class="card">${icon('headset', 'i feat')}<h2>Operatora ötürmə</h2><p class="muted">Endirim, şikayət, sifariş təsdiqi kimi hallarda söhbət sizə keçir.</p></div>
-        <div class="card">${icon('chat', 'i feat')}<h2>Vahid inbox</h2><p class="muted">Instagram və WhatsApp yazışmaları bir paneldə, istənilən vaxt özünüz cavab verin.</p></div>
-      </section>`,
-    ),
-  );
 
   app.get('/login', (req, reply) =>
     view(

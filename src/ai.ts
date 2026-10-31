@@ -262,7 +262,8 @@ export async function describeMedia(m: MediaInput, ctx: AiCtx): Promise<string> 
     }`,
   });
   const res = await callModel(
-    { ...ctx, purpose: 'media', route: 'smart' },
+    // The business chooses: 'fast' (cheap, default) or 'smart' (reads small print and labels better).
+    { ...ctx, purpose: 'media', route: ctx.route ?? 'smart' },
     {
       max_tokens: 2000,
       output_config: { effort: 'low' },

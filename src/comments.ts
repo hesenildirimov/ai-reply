@@ -4,7 +4,7 @@ import { mediaCaption, replyToComment } from './channels/instagram.js';
 import type { ChannelRow } from './channels/types.js';
 import { config } from './config.js';
 import { type ContactRow, ensureConversation } from './contacts.js';
-import { businessFacts, planKnowledge } from './context.js';
+import { businessFacts, knowledgeFor } from './context.js';
 import { decrypt } from './crypto.js';
 import { one, q } from './db.js';
 import { audit } from './events.js';
@@ -110,8 +110,7 @@ export async function handleCommentAi(commentId: string): Promise<'done' | 'thro
 
   const token = decrypt(ch.access_token_enc);
   const caption = await cachedCaption(token, c.media_id);
-  const items = await q(`SELECT kind, title, body, keywords FROM knowledge_items WHERE workspace_id = $1 AND active ORDER BY id LIMIT 500`, [c.workspace_id]);
-  const { pinned, knowledge } = planKnowledge(items, c.body);
+  const { pinned, knowledge } = await knowledgeFor(c.workspace_id, c.body);
   const t: CommentTriage = await triageComment(
     a,
     { text: c.body, caption },
@@ -134,7 +133,7 @@ export async function handleCommentAi(commentId: string): Promise<'done' | 'thro
     await notifyWaiting(c.workspace_id, conversationId, c.from_username ? `@${c.from_username}` : c.from_id, 'instagram', 'şərhdə şikayət (AI cavab yazmadı)');
     return 'done';
   }
-  const facts = await businessFacts(c.workspace_id, a.knowledge);
+  const facts = await businessFacts(c.workspace_id, a.knowledge, knowledge);
   const safe = (s: string) => (publicTextOk(s, facts) ? sealText(s) : '');
   await setCommentStatus(c.id, 'queued', {
     ai_category: 'question',

@@ -109,7 +109,7 @@ export function isPrivateAddress(ip: string): boolean {
   return true; // not an IP address: refuse
 }
 
-const allowPrivate = () => !config.isProd && process.env.WEBHOOK_ALLOW_PRIVATE === '1'; // local testing only
+export const allowPrivate = () => !config.isProd && process.env.WEBHOOK_ALLOW_PRIVATE === '1'; // local testing only
 
 /** Validates a webhook URL when it is saved (the address is checked again at connect time). */
 export function validateWebhookUrl(raw: string): string | null {
@@ -128,7 +128,7 @@ export function validateWebhookUrl(raw: string): string | null {
 }
 
 // Resolves and checks every address at connect time, so DNS rebinding can't point an accepted host at the LAN.
-const safeLookup: LookupFunction = (host, opts, cb) =>
+export const safeLookup: LookupFunction = (host, opts, cb) =>
   lookup(host, { ...opts, all: true }, (err, addrs) => {
     if (err) return cb(err, '', 0);
     const list = (addrs as unknown as { address: string; family: number }[]) ?? [];
