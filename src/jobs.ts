@@ -17,6 +17,7 @@ import { openText, resealIfStale, sealBody, sealText, searchTokensOf } from './m
 import { linkWhatsAppAlerts, notifyChannelProblem } from './notify.js';
 import { ingest, lookupInstagramName, processEcho, processReply } from './pipeline.js';
 import { type JobData, queue } from './queue.js';
+import { processSource } from './sources.js';
 import { learnStyle } from './style.js';
 import { SESSION_MAX_DAYS } from './web/auth.js';
 import { deliverWebhook } from './webhooks.js';
@@ -214,6 +215,11 @@ export async function maintenance() {
   );
   await q(`DELETE FROM channel_events WHERE created_at < now() - interval '180 days'`);
   await q(`DELETE FROM webhook_deliveries WHERE created_at < now() - interval '14 days'`);
+  // Uploads a lost job never processed (the source shows "failed" so the user can upload again).
+  await q(
+    `UPDATE knowledge_sources SET status = 'failed', error = 'Emal yarımçıq qaldı, yenidən yükləyin.' WHERE status IN ('queued', 'processing') AND updated_at < now() - interval '1 hour'`,
+  );
+  await q(`DELETE FROM knowledge_uploads WHERE created_at < now() - interval '1 hour'`);
   // Website requests that did not become customers are kept a year, then deleted (data minimization).
   await q(`DELETE FROM leads WHERE status IN ('lost', 'new', 'contacted', 'meeting') AND updated_at < now() - interval '1 year'`);
   // A send that crashed mid-flight stays 'pending'; after 15 min mark it 'unknown' (shown to staff, never auto-resent).
@@ -304,6 +310,8 @@ export async function runJob(job: Job<Data>, token?: string): Promise<void> {
         return void (await learnStyle(d.workspaceId));
       case 'comment':
         return await processComment(d.sealed ? JSON.parse(decrypt(d.sealed)) : d.event!);
+      case 'knowledge_source':
+        return await processSource(d.sourceId);
       case 'comment_ai':
         // Throttled = workspace AI burst limit: retry later without using up an attempt.
         if ((await handleCommentAi(d.commentId)) === 'throttled') await later(job, token, 15000);

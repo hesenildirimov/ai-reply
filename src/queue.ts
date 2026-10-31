@@ -23,6 +23,7 @@ export type JobData =
   | { kind: 'learn_style'; workspaceId: string }
   | { kind: 'comment'; sealed?: string; event?: Extract<InboundEvent, { type: 'comment' }> }
   | { kind: 'comment_ai'; commentId: string }
+  | { kind: 'knowledge_source'; sourceId: string }
   | { kind: 'automation_step'; runId: string; step: number }
   | { kind: 'summarize'; conversationId: string; workspaceId: string }
   | { kind: 'webhook'; deliveryId: string }

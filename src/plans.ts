@@ -11,6 +11,7 @@ export const LIMIT_KEYS = [
   'ai_budget_usd_month',
   'ai_budget_usd_day',
   'history_days',
+  'knowledge_mb',
 ] as const;
 export type LimitKey = (typeof LIMIT_KEYS)[number];
 export const LIMIT_LABELS: Record<LimitKey, string> = {
@@ -22,6 +23,7 @@ export const LIMIT_LABELS: Record<LimitKey, string> = {
   ai_budget_usd_month: 'AI büdcəsi, $ (ay, təxmini)',
   ai_budget_usd_day: 'AI büdcəsi, $ (gün, təxmini)',
   history_days: 'Tarixçə və analitika (gün)',
+  knowledge_mb: 'Bilik bazası mənbələri (MB)',
 };
 
 /** Effective limits = plan limits overridden per workspace. null = unlimited. */
@@ -43,6 +45,7 @@ const USAGE_SQL: Record<LimitKey, string | null> = {
   ai_budget_usd_month: `SELECT coalesce(sum(est_cost_usd), 0)::float AS n FROM ai_usage WHERE workspace_id = $1 AND created_at >= date_trunc('month', now())`,
   ai_budget_usd_day: `SELECT coalesce(sum(est_cost_usd), 0)::float AS n FROM ai_usage WHERE workspace_id = $1 AND created_at >= date_trunc('day', now())`,
   history_days: null,
+  knowledge_mb: `SELECT coalesce(sum(bytes), 0)::float / 1048576 AS n FROM knowledge_sources WHERE workspace_id = $1 AND status <> 'failed'`,
 };
 
 export async function usageOf(workspaceId: string, key: LimitKey): Promise<number> {

@@ -120,9 +120,7 @@ export async function buildContext(conversationId: string, workspaceId: string):
     .slice(-3)
     .map((m) => m.body)
     .join(' ');
-  // Stable order (by id) so the pinned block is byte-identical across conversations and stays cached.
-  const items = await q(`SELECT kind, title, body, keywords FROM knowledge_items WHERE workspace_id = $1 AND active ORDER BY id LIMIT 500`, [workspaceId]);
-  const { pinned, knowledge } = planKnowledge(items, latestInbound);
+  const { pinned, knowledge } = await knowledgeFor(workspaceId, latestInbound);
   const lastText = recent.at(-1)?.body ?? '';
   return {
     history,
@@ -159,8 +157,29 @@ export async function updateSummary(conversationId: string, workspaceId: string)
   if (summary) await q(`UPDATE conversations SET summary = $2, summary_upto = $3 WHERE id = $1`, [conversationId, sealText(summary), older.at(-1)!.created_at]);
 }
 
-/** Everything the business itself has stated (general info + active knowledge items): the reference for checkReply. */
-export async function businessFacts(workspaceId: string, general: string): Promise<string> {
-  const items = await q<{ t: string }>(`SELECT title || ' ' || body AS t FROM knowledge_items WHERE workspace_id = $1 AND active`, [workspaceId]);
-  return `${general}\n${items.map((i) => i.t).join('\n')}`;
+/**
+ * Knowledge for one message: the hand-written items (whole when small, else the relevant ones) plus the pieces of
+ * uploaded sources (files, sites, tables) that match the customer's words.
+ */
+export async function knowledgeFor(workspaceId: string, query: string): Promise<{ pinned: string; knowledge: string }> {
+  // Stable order (by id) so the pinned block is byte-identical across conversations and stays cached.
+  const items = await q(
+    `SELECT kind, title, body, keywords FROM knowledge_items WHERE workspace_id = $1 AND active AND source_id IS NULL ORDER BY id LIMIT 500`,
+    [workspaceId],
+  );
+  const { pinned, knowledge } = planKnowledge(items, query);
+  const { sourceHits } = await import('./sources.js');
+  const hits = await sourceHits(workspaceId, query);
+  return { pinned, knowledge: [knowledge, hits].filter(Boolean).join('\n') };
+}
+
+/**
+ * What the business has stated that a reply may quote: general info, the hand-written items, and `seen` (the source
+ * pieces the model was given for this message). The reference for checkReply; whole sources would be too big.
+ */
+export async function businessFacts(workspaceId: string, general: string, seen = ''): Promise<string> {
+  const items = await q<{ t: string }>(`SELECT title || ' ' || body AS t FROM knowledge_items WHERE workspace_id = $1 AND active AND source_id IS NULL`, [
+    workspaceId,
+  ]);
+  return `${general}\n${items.map((i) => i.t).join('\n')}${seen ? `\n${seen}` : ''}`;
 }

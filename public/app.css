@@ -393,3 +393,6 @@ details.faq{border-bottom:1px solid var(--border);padding-block:14px}details.faq
 .request.center,.center{text-align:center}.hero-actions.center{justify-content:center}
 @media (max-width:860px){.site-nav{display:none}.site-hero h1{font-size:32px}.site-hero{padding-block:48px 32px}.site-bar{gap:12px}.site-actions .btn.secondary{display:none}}
 .site .btn.lg{padding:12px 22px;font-size:16px}
+.source-forms{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:12px 0 16px}
+.source-form{display:flex;flex-direction:column;gap:8px;border:1px solid var(--border);border-radius:10px;padding:14px;min-width:0}.source-form h3{margin:0;display:flex;gap:6px;align-items:center}
+.source-form .radio{font-size:13px}

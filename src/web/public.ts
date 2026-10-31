@@ -10,7 +10,6 @@ import { redis } from '../queue.js';
 import { verifyTotp } from '../totp.js';
 import { createSession, destroySession } from './auth.js';
 import { csrfField, html, logo, type PageOpts, page } from './html.js';
-import { icon } from './icons.js';
 
 export const ARGON = { memoryCost: 19456, timeCost: 2, parallelism: 1 }; // OWASP argon2id baseline
 const DUMMY_HASH = await hash('timing-equalizer-not-a-password', ARGON);

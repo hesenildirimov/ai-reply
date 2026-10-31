@@ -275,7 +275,7 @@ async function replyLocked(conversationId: string, messageId: string, finalAttem
   const fresh = await loadConv(conversationId);
   if (!fresh || fresh.latest_in !== messageId || fresh.needs_human || fresh.ai_paused || (!inWindow(fresh) && !via)) return;
 
-  const facts = await businessFacts(c.workspace_id, a.knowledge);
+  const facts = await businessFacts(c.workspace_id, a.knowledge, ctx.extra.knowledge);
   if (result.kind === 'handoff') {
     const hold = result.holdingReply && checkReply(result.holdingReply, facts).ok ? result.holdingReply : a.handoff_message;
     return handover(fresh, hold, result.reason);

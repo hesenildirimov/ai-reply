@@ -166,3 +166,9 @@ Not verified: real model behaviour (`scripts/eval-prices.ts` needs a key), real 
 | L-2 | Backups on the same host | ✅ Optional rclone off-host copy, refuses to run if an age private key sits under `/backups`, monthly restore drill script |
 | L-3 | No license | ✅ Proprietary `LICENSE`, `package.json` `UNLICENSED`. ⚠️ Repository visibility and branch protection are GitHub settings for the owner |
 | L-4 | No alerting | ✅ Health alerts by e-mail (lockout bursts, 5xx bursts, dead jobs) plus `platform_alert` log lines for a log drain (DEPLOY §11) |
+
+### Sayt formaları və bilik bazası mənbələri (2026-10-31)
+- Sayt forması: CSRF tokeni, razılıq qutusu (`consent_at`), gizli sahə (bot tələsi), bir ünvandan saatda 5 müraciət. Lead-ləri yalnız platforma adminləri görür; müştəri olmayanlar bir ildən sonra silinir.
+- Sayt mənbələri müştərinin verdiyi linkdir: yalnız http(s), hər qoşulmada ünvan yoxlanır (daxili şəbəkə, cloud metadata, DNS rebinding bloklanır), ən çox 3 yönləndirmə, səhifə 2 MB, 15 san.
+- Fayllar worker-də oxunur: növ faylın baytlarından təyin olunur (ad yox), 10 MB limit, zip bombasına qarşı açılan hissə 50 MB-la məhdud, PDF 500 səhifə, bütün emal 5 dəqiqə. Faylın özü emaldan sonra silinir, yalnız mətn qalır.
+- Mənbə mətnləri AI-yə "biznes məlumatı" kimi gedir; qiymət yoxlaması yalnız modelin həmin cavab üçün gördüyü hissələri qəbul edir.
