@@ -239,7 +239,7 @@ describe.skipIf(!enabled)('knowledge sources (integration)', () => {
     const page = await app.inject({ url: '/app/knowledge', headers: owner.headers });
     expect(page.body).toContain('Mənbələr');
     expect(page.body).toContain('kataloq.csv');
-    expect(page.body).toContain(' MB / 20.0 MB'); // Biznes plan: 20 MB
+    expect(page.body).toMatch(/\d+ KB \/ 20\.0 MB/); // Biznes plan: 20 MB
     expect(page.body).not.toContain('Payız pencəyi'); // source pieces are not listed as hand-written items
 
     await app.inject({

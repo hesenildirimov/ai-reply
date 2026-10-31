@@ -396,3 +396,4 @@ details.faq{border-bottom:1px solid var(--border);padding-block:14px}details.faq
 .source-forms{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:12px 0 16px}
 .source-form{display:flex;flex-direction:column;gap:8px;border:1px solid var(--border);border-radius:10px;padding:14px;min-width:0}.source-form h3{margin:0;display:flex;gap:6px;align-items:center}
 .source-form .radio{font-size:13px}
+@media (min-width:861px){.site-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}

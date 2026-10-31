@@ -52,7 +52,7 @@ const SOURCE_STATUS: Record<SourceRow['status'], [ChipTone, string]> = {
   ready: ['ok', 'Hazır'],
   failed: ['danger', 'Alınmadı'],
 };
-const mb = (bytes: number) => `${(bytes / 1048576).toFixed(bytes < 1048576 ? 2 : 1)} MB`;
+const mb = (bytes: number) => (bytes < 102_400 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1048576).toFixed(1)} MB`);
 
 /** Sources: upload a file, add a page or a whole site, a question with its answer; usage against the plan. */
 async function sourcesCard(req: FastifyRequest, w: boolean): Promise<ReturnType<typeof html>> {
