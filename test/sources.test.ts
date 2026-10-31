@@ -198,8 +198,9 @@ describe.skipIf(!enabled)('knowledge sources (integration)', () => {
     const { buildContext } = await import('../src/context.js');
     const { parseInstagramWebhook } = await import('../src/channels/instagram.js');
     const pipeline = await import('../src/pipeline.js');
-    // A large catalogue: many rows that all match "don".
-    const rows = Array.from({ length: 40 }, (_, i) => `Yay donu model ${i},${40 + i} AZN,S-XL,${'uzun təsvir '.repeat(50)}`).join('\n');
+    // A large catalogue: many rows that all match "don", each ~870 characters, so 3 pieces (~2 600 characters,
+    // more than the routing threshold of 2 500) fit the 800-token source budget whichever rows rank first.
+    const rows = Array.from({ length: 40 }, (_, i) => `Yay donu model ${i},${40 + i} AZN,S-XL,${'uzun təsvir '.repeat(65)}`).join('\n');
     await upload('boyuk-kataloq.csv', Buffer.from(`Məhsul,Qiymət,Ölçü,Təsvir\n${rows}\n`));
     expect(await processLatest()).toMatchObject({ status: 'ready' });
     for (const ev of parseInstagramWebhook(igMessage('IGSRC', 'U-route', 'route.1', 'don var?'))) await pipeline.ingest(ev);
