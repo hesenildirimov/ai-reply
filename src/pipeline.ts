@@ -124,10 +124,12 @@ async function annotateMedia(c: ConvCtx, finalAttempt: boolean): Promise<void> {
      ORDER BY created_at LIMIT 5`,
     [c.id],
   );
+  if (!pending.length) return;
+  const a = await one<{ media_model: 'fast' | 'smart' }>(`SELECT media_model FROM assistants WHERE workspace_id = $1`, [c.workspace_id]);
   for (const m of pending) {
     let note: string;
     try {
-      note = await mediaNote(c.channel, m.media, { workspaceId: c.workspace_id, conversationId: c.id });
+      note = await mediaNote(c.channel, m.media, { workspaceId: c.workspace_id, conversationId: c.id, route: a?.media_model ?? 'fast' });
     } catch (e) {
       if (aiRetryable(e) && !finalAttempt) throw e; // Claude busy: the job retries
       note = '[Fayl: baxmaq mümkün olmadı]';

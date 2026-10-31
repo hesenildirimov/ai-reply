@@ -62,6 +62,9 @@ export function assistantRoutes(app: FastifyInstance) {
                 : 'Söndürülüb: AI özünü təqdim etmir. Müştəri ciddi şəkildə "bot-san?" soruşarsa, yalan danışmır.'
             }</small></span>
               <input type="checkbox" class="switch" name="ai_disclosure" value="1" ${a.ai_disclosure || eu ? raw('checked') : ''} ${eu ? raw('disabled') : ''}></label></section>
+          <section class="card span"><div class="card-head"><h2>${icon('sparkle')}Şəkil və video</h2></div>
+            <label class="switch-row"><span><b>Dəqiq şəkil analizi</b><small>Söndürülüb: şəkillərə və video kadrlarına sürətli, ucuz model baxır (adətən kifayətdir). Aktiv: güclü model kiçik yazıları, etiketləri və ölçü cədvəllərini daha yaxşı oxuyur, amma şəkil başına AI xərci ~20 dəfə artır.</small></span>
+              <input type="checkbox" class="switch" name="media_smart" value="1" ${a.media_model === 'smart' ? raw('checked') : ''}></label></section>
           <section class="card span"><div class="card-head"><h2>${icon('headset')}Bilmədiyi suallar</h2></div>
             <p class="muted">AI cavabı bilməyəndə müştəriyə öz üslubunda qısa, təbii bir cavab yazır (operator və ya AI sözü işlətmədən) və sizə bildiriş göndərir.</p>
             <label>Ehtiyat gözləmə mesajı<input name="handoff_message" value="${a.handoff_message}" maxlength="500"></label>
@@ -81,6 +84,7 @@ export function assistantRoutes(app: FastifyInstance) {
           handoff_message: z.string().trim().max(500),
           enabled: z.literal('1').optional(),
           ai_disclosure: z.literal('1').optional(),
+          media_smart: z.literal('1').optional(),
         })
         .safeParse(req.body);
       if (!p.success) return reply.redirect('/app/assistant?m=invalid');
@@ -88,8 +92,18 @@ export function assistantRoutes(app: FastifyInstance) {
       // EU market: disclosure stays on whatever the form sends (a disabled checkbox is not submitted).
       await q(
         `UPDATE assistants a SET business_name = $2, knowledge = $3, style_guide = $4, style_preset = $5, handoff_message = $6, enabled = $7,
-           ai_disclosure = $8 OR (SELECT region = 'eu' FROM workspaces w WHERE w.id = a.workspace_id), updated_at = now() WHERE workspace_id = $1`,
-        [req.user!.workspaceId, d.business_name, d.knowledge, d.style_guide, d.style_preset, d.handoff_message, !!d.enabled, !!d.ai_disclosure],
+           ai_disclosure = $8 OR (SELECT region = 'eu' FROM workspaces w WHERE w.id = a.workspace_id), media_model = $9, updated_at = now() WHERE workspace_id = $1`,
+        [
+          req.user!.workspaceId,
+          d.business_name,
+          d.knowledge,
+          d.style_guide,
+          d.style_preset,
+          d.handoff_message,
+          !!d.enabled,
+          !!d.ai_disclosure,
+          d.media_smart ? 'smart' : 'fast',
+        ],
       );
       await audit(req.user!.workspaceId, req.user!.id, 'assistant.update', 'workspace', req.user!.workspaceId, { enabled: !!d.enabled });
       return reply.redirect('/app/assistant?m=saved');

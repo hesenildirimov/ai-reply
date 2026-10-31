@@ -41,6 +41,8 @@ async function adminCodeOk(userId: string, code: unknown): Promise<boolean> {
 }
 
 const date = z.union([z.literal(''), z.string().regex(/^\d{4}-\d{2}-\d{2}$/)]);
+// Empty = the plan's monthly AI reply limit; a number = a custom limit for this customer.
+const optionalLimit = z.union([z.literal('').transform(() => null), z.coerce.number().int().min(0).max(1_000_000)]).default(null);
 const plusDays = (n: number) => new Date(Date.now() + n * 86400_000).toISOString().slice(0, 10);
 const payChip = (d: Date | null) => {
   const n = daysLeft(d);
@@ -113,7 +115,7 @@ export function adminRoutes(app: FastifyInstance) {
         <form method="post" action="/admin/customers" class="grid">${csrfField(req.csrfToken)}
           <label>Biznesin adı<input name="name" required maxlength="120"></label>
           <label>E-poçt (giriş üçün)<input name="email" type="email" required></label>
-          <label>Aylıq AI cavab limiti<input name="limit" type="number" min="0" max="1000000" value="${config.DEFAULT_REPLY_LIMIT}" required></label>
+          <label>Aylıq AI cavab limiti<input name="limit" type="number" min="0" max="1000000" placeholder="tarifdən"><small class="help">Boş = tarifin limiti (Start 1 500, Biznes 6 000, Pro 20 000).</small></label>
           <label>Tarif<select name="plan_id">${plans.map((p) => html`<option value="${p.id}" ${p.name === 'Biznes' ? raw('selected') : ''}>${p.name} · ${p.price_note}</option>`)}</select></label>
           <label>Ödənilib (bu tarixə qədər)<input name="paid_until" type="date" value="${plusDays(30)}"></label>
           <label>Qeyd (yalnız siz görürsünüz)<input name="note" maxlength="500" placeholder="Telefon, ödəniş üsulu..."></label>
@@ -125,7 +127,7 @@ export function adminRoutes(app: FastifyInstance) {
             (w) => html`<tr><td><a class="strong" href="/admin/w/${w.id}">${w.name}</a>${w.note ? html`<small class="muted block">${w.note}</small>` : ''}</td>
             <td>${w.emails}${w.activated ? '' : html` <span class="chip neutral">link gözləyir</span>`}</td>
             <td>${payChip(w.paid_until)}</td>
-            <td class="num">${w.used ?? 0} / ${w.monthly_reply_limit}</td><td>${
+            <td class="num">${w.used ?? 0} / ${w.reply_limit}</td><td>${
               w.channels
                 ? String(w.channels)
                     .split(', ')
@@ -142,7 +144,7 @@ export function adminRoutes(app: FastifyInstance) {
         .object({
           name: z.string().trim().min(1).max(120),
           email: emailSchema,
-          limit: z.coerce.number().int().min(0).max(1_000_000),
+          limit: optionalLimit,
           paid_until: date,
           note: z.string().trim().max(500),
           plan_id: z.uuid().optional(),
@@ -215,7 +217,7 @@ export function adminRoutes(app: FastifyInstance) {
         <p>İstifadəçi: ${users.map((u) => html`<b>${u.email}</b> ${u.email_verified_at ? '' : html`<span class="tag">link gözləyir</span>`} `)}</p>
         <form method="post" action="/admin/w/${w.id}/update">${csrfField(req.csrfToken)}
           <label>Biznesin adı<input name="name" value="${w.name}" required maxlength="120"></label>
-          <label>Aylıq AI cavab limiti<input name="limit" type="number" min="0" max="1000000" value="${w.monthly_reply_limit}" required></label>
+          <label>Aylıq AI cavab limiti<input name="limit" type="number" min="0" max="1000000" value="${w.monthly_reply_limit ?? ''}" placeholder="tarifdən"><small class="help">Boş = tarifin limiti.</small></label>
           <label>Ödənilib (bu tarixə qədər; boş = limitsiz)<input name="paid_until" type="date" value="${day(w.paid_until)}"></label>
           <label>Qeyd<input name="note" value="${w.note}" maxlength="500"></label>
           <label>Bazar<select name="region">${Object.entries(REGIONS).map(([k, l]) => html`<option value="${k}" ${w.region === k ? raw('selected') : ''}>${l}${k === 'eu' ? ' (AI bildirişi məcburi)' : ''}</option>`)}</select></label>
@@ -249,7 +251,7 @@ export function adminRoutes(app: FastifyInstance) {
       const p = z
         .object({
           name: z.string().trim().min(1).max(120),
-          limit: z.coerce.number().int().min(0).max(1_000_000),
+          limit: optionalLimit,
           paid_until: date,
           note: z.string().trim().max(500),
           region: z.enum(['az', 'eu', 'other']).optional(),
@@ -268,7 +270,7 @@ export function adminRoutes(app: FastifyInstance) {
       await audit(w.id, req.user!.id, 'admin.subscription_update', 'workspace', w.id, { paid_until: p.data.paid_until || null, limit: p.data.limit });
       await alertAdmins(
         'ödəniş/limit dəyişdi',
-        `${w.name}: ödəniş ${p.data.paid_until || 'limitsiz'}, aylıq limit ${p.data.limit}\n${actor(req.user!.email, req.ip)}`,
+        `${w.name}: ödəniş ${p.data.paid_until || 'limitsiz'}, aylıq AI limiti ${p.data.limit ?? 'tarifdən'}\n${actor(req.user!.email, req.ip)}`,
       );
       return reply.redirect(`/admin/w/${w.id}?m=saved`);
     });

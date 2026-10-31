@@ -1,22 +1,28 @@
 import type pg from 'pg';
+import { config } from './config.js';
 import { one, q } from './db.js';
 
 /**
  * Subscriptions: the single place for their rules (screens and the reply pipeline only call these functions).
  * - paid_until: the subscription runs through that day; afterwards AI replies stop (null = no end date);
- * - monthly_reply_limit: AI replies per calendar month, counted in usage_counters (one row per workspace and month);
+ * - AI replies per calendar month: the plan's ai_replies_month, or workspaces.monthly_reply_limit when the admin set a
+ *   custom one (NULL = from the plan); counted in usage_counters (one row per workspace and month);
  * - plan_id + limit_overrides: plan limits, enforced by plans.ts.
  * Whatever the state, incoming messages are stored and staff can answer by hand.
  */
 
 const PERIOD = `to_char(now(), 'YYYY-MM')`;
 const EXPIRED = `coalesce(w.paid_until < current_date, false)`;
+/** Effective monthly AI reply limit (needs `w` = workspaces, `p` = its plan, joined). */
+const REPLY_LIMIT = () => `coalesce(w.monthly_reply_limit, (p.limits->>'ai_replies_month')::int, ${Number(config.DEFAULT_REPLY_LIMIT)})`;
 
 export interface Subscription {
   name: string;
   paidUntil: Date | null;
   expired: boolean;
   replyLimit: number;
+  /** The admin set a custom limit (otherwise it comes from the plan). */
+  customLimit: boolean;
   repliesUsed: number;
   planId: string | null;
   planName: string | null;
@@ -27,7 +33,7 @@ export interface Subscription {
 
 export async function subscriptionOf(workspaceId: string): Promise<Subscription | undefined> {
   const r = await one(
-    `SELECT w.name, w.paid_until, ${EXPIRED} AS expired, w.monthly_reply_limit, w.plan_id, p.name AS plan_name, p.price_note, w.note, w.created_at,
+    `SELECT w.name, w.paid_until, ${EXPIRED} AS expired, ${REPLY_LIMIT()} AS reply_limit, w.monthly_reply_limit IS NOT NULL AS custom, w.plan_id, p.name AS plan_name, p.price_note, w.note, w.created_at,
             coalesce((SELECT ai_replies FROM usage_counters uc WHERE uc.workspace_id = w.id AND uc.period = ${PERIOD}), 0) AS used
      FROM workspaces w LEFT JOIN plans p ON p.id = w.plan_id WHERE w.id = $1`,
     [workspaceId],
@@ -37,7 +43,8 @@ export async function subscriptionOf(workspaceId: string): Promise<Subscription 
       name: r.name,
       paidUntil: r.paid_until,
       expired: r.expired,
-      replyLimit: r.monthly_reply_limit,
+      replyLimit: r.reply_limit,
+      customLimit: r.custom,
       repliesUsed: r.used,
       planId: r.plan_id,
       planName: r.plan_name,
@@ -50,17 +57,17 @@ export async function subscriptionOf(workspaceId: string): Promise<Subscription 
 
 /** Counts one AI reply against the monthly limit (atomic: concurrent replies can't overshoot). 'expired' = not paid. */
 export async function reserveReply(workspaceId: string): Promise<'ok' | 'limit' | 'expired'> {
-  const ws = await one<{ monthly_reply_limit: number; expired: boolean }>(
-    `SELECT w.monthly_reply_limit, ${EXPIRED} AS expired FROM workspaces w WHERE w.id = $1`,
+  const ws = await one<{ reply_limit: number; expired: boolean }>(
+    `SELECT ${REPLY_LIMIT()} AS reply_limit, ${EXPIRED} AS expired FROM workspaces w LEFT JOIN plans p ON p.id = w.plan_id WHERE w.id = $1`,
     [workspaceId],
   );
   if (!ws || ws.expired) return 'expired';
-  if (ws.monthly_reply_limit <= 0) return 'limit';
+  if (ws.reply_limit <= 0) return 'limit';
   const row = await one(
     `INSERT INTO usage_counters (workspace_id, period, ai_replies) VALUES ($1, ${PERIOD}, 1)
      ON CONFLICT (workspace_id, period) DO UPDATE SET ai_replies = usage_counters.ai_replies + 1
      WHERE usage_counters.ai_replies < $2 RETURNING ai_replies`,
-    [workspaceId, ws.monthly_reply_limit],
+    [workspaceId, ws.reply_limit],
   );
   return row ? 'ok' : 'limit';
 }
@@ -78,7 +85,8 @@ export const extendSubscription = (workspaceId: string, days = 30) =>
 
 export interface SubscriptionTerms {
   name: string;
-  replyLimit: number;
+  /** null = from the plan. */
+  replyLimit: number | null;
   /** YYYY-MM-DD, or null for no end date. */
   paidUntil: string | null;
   note: string;
@@ -111,10 +119,10 @@ export async function createSubscription(c: pg.PoolClient, t: SubscriptionTerms 
 /** All customers for the admin list, soonest-expiring first. */
 export const listSubscriptions = () =>
   q(
-    `SELECT w.id, w.name, w.paid_until, w.monthly_reply_limit, w.note, ${EXPIRED} AS expired,
+    `SELECT w.id, w.name, w.paid_until, ${REPLY_LIMIT()} AS reply_limit, w.note, ${EXPIRED} AS expired,
        (SELECT string_agg(u.email, ', ') FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = w.id) AS emails,
        (SELECT bool_or(u.email_verified_at IS NOT NULL) FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = w.id) AS activated,
        (SELECT ai_replies FROM usage_counters uc WHERE uc.workspace_id = w.id AND uc.period = ${PERIOD}) AS used,
        (SELECT string_agg(type, ', ') FROM channels c WHERE c.workspace_id = w.id) AS channels
-     FROM workspaces w ORDER BY w.paid_until NULLS LAST, w.name`,
+     FROM workspaces w LEFT JOIN plans p ON p.id = w.plan_id ORDER BY w.paid_until NULLS LAST, w.name`,
   );
