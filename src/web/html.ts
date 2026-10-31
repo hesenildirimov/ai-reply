@@ -1,3 +1,4 @@
+import { config } from '../config.js';
 import { can, type Permission, type SessionUser } from './auth.js';
 import { icon } from './icons.js';
 import { html, type Safe } from './tpl.js';
@@ -28,6 +29,9 @@ const NAV: [string, string, string, Permission?][] = [
   ['/app', 'Panel', 'grid'],
   ['/app/inbox', 'Söhbətlər', 'chat', 'inbox.reply'],
   ['/app/comments', 'Şərhlər', 'instagram', 'inbox.view'],
+  ['/app/posts', 'Postlar', 'sparkle', 'integrations.manage'],
+  ['/app/catalog', 'Kataloq', 'list', 'integrations.manage'],
+  ['/app/activity', 'Hadisələr', 'zap', 'inbox.view'],
   ['/app/contacts', 'Kontaktlar', 'contact', 'contacts.write'],
   ['/app/automations', 'Avtomatlaşdırma', 'zap', 'automations.view'],
   ['/app/analytics', 'Analitika', 'chart', 'analytics.view'],
@@ -37,6 +41,7 @@ const NAV: [string, string, string, Permission?][] = [
   ['/app/integrations', 'İnteqrasiyalar', 'share', 'integrations.manage'],
   ['/app/team', 'Komanda', 'users', 'team.manage'],
   ['/app/test', 'Test et', 'flask', 'assistant.write'],
+  ['/app/dev', 'Simulyator', 'flask', 'integrations.manage'],
   ['/app/settings', 'Ayarlar', 'sliders'],
 ];
 
@@ -51,12 +56,12 @@ export function page(title: string, body: Safe, o: PageOpts): string {
     ? html`<div class="shell">
   <aside class="side">
     <a class="brand" href="/app">${logo}<span>AI Reply</span></a>
-    <nav class="nav">${NAV.filter(([, , , p]) => !p || can(o.user ?? null, p)).map(([href, label, ic]) => html`<a href="${href}" class="${active(href) ? 'on' : ''}">${icon(ic)}<span>${label}</span></a>`)}
+    <nav class="nav">${NAV.filter(([href, , , p]) => (href !== '/app/dev' || config.mockMode) && (!p || can(o.user ?? null, p))).map(([href, label, ic]) => html`<a href="${href}" class="${active(href) ? 'on' : ''}">${icon(ic)}<span>${label}</span></a>`)}
       ${o.user.isAdmin ? html`<a href="/admin" class="${active('/admin') ? 'on' : ''}">${icon('shield')}<span>Admin</span></a>` : ''}</nav>
     <div class="me"><span class="avatar">${o.user.email.slice(0, 1).toUpperCase()}</span><span class="me-mail">${o.user.email}</span>
       <form method="post" action="/logout">${csrfField(o.csrf)}<button class="icon-btn" title="Çıxış" aria-label="Çıxış">${icon('logout')}</button></form></div>
   </aside>
-  <div class="content"><main class="${o.wide ? 'wide' : ''}">${flash}${body}</main>${footer}</div>
+  <div class="content">${config.mockMode ? html`<div class="dev-banner" role="status">DEVELOPMENT MODE — MOCK INTEGRATIONS</div>` : ''}<main class="${o.wide ? 'wide' : ''}">${flash}${body}</main>${footer}</div>
 </div>`
     : html`${o.header ?? html`<header class="top"><a class="brand" href="/">${logo}<span>AI Reply</span></a><a class="btn ghost" href="/login">Daxil ol</a></header>`}
 <main class="plain">${flash}${body}</main>${footer}`;

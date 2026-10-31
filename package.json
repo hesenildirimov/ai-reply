@@ -17,6 +17,7 @@
     "test": "vitest run",
     "create-admin": "tsx --env-file=.env src/create-admin.ts",
     "create-admin:prod": "node dist/create-admin.js",
+    "seed:mock": "tsx --env-file=.env scripts/seed-mock.ts",
     "loadtest": "tsx scripts/loadtest.ts"
   },
   "license": "UNLICENSED",

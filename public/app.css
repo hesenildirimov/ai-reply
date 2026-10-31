@@ -397,3 +397,10 @@ details.faq{border-bottom:1px solid var(--border);padding-block:14px}details.faq
 .source-form{display:flex;flex-direction:column;gap:8px;border:1px solid var(--border);border-radius:10px;padding:14px;min-width:0}.source-form h3{margin:0;display:flex;gap:6px;align-items:center}
 .source-form .radio{font-size:13px}
 @media (min-width:861px){.site-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+
+/* Development banner (INTEGRATION_MODE=mock) and the catalog / event / simulator pages */
+.dev-banner{background:#fff4d6;color:#7a4b00;border-bottom:2px solid #f5b301;text-align:center;font-weight:700;letter-spacing:.04em;padding:8px 12px;font-size:13px;position:sticky;top:0;z-index:20}
+.dev-note{border-color:#f5b301;background:#fffaf0}.ready{list-style:none;padding:0;margin:8px 0 0;display:grid;gap:6px}
+.legend{display:flex;flex-wrap:wrap;gap:8px 18px}.checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px 14px;margin:12px 0}
+.check{display:flex;gap:8px;align-items:center}.post+.post,.card.post{margin-top:16px}.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;align-items:end}
+.inline-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}.tg{border:1px dashed var(--border-strong);border-radius:10px;padding:12px;margin-top:12px}

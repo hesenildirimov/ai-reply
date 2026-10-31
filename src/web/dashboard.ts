@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { subscriptionOf } from '../billing.js';
 import type { ChannelRow } from '../channels/types.js';
+import { pendingPostCount } from '../commerce/posts.js';
+import { config } from '../config.js';
 import { urgentConversations } from '../data/inbox.js';
 import { one, q } from '../db.js';
 import { can, requireUser } from './auth.js';
@@ -22,7 +24,7 @@ export function dashboardRoutes(app: FastifyInstance) {
     // ---------- Dashboard ----------
     r.get('/app', async (req, reply) => {
       const w = req.user!.workspaceId;
-      const [sub, a, chans, counts, recent] = await Promise.all([
+      const [sub, a, chans, counts, recent, pendingPosts] = await Promise.all([
         subscriptionOf(w).then((s) => s!),
         one('SELECT enabled, knowledge FROM assistants WHERE workspace_id = $1', [w]),
         q<ChannelRow>('SELECT type, display_name, status FROM channels WHERE workspace_id = $1', [w]),
@@ -32,6 +34,7 @@ export function dashboardRoutes(app: FastifyInstance) {
           [w],
         ),
         can(req.user, 'inbox.view') ? urgentConversations(w) : Promise.resolve([]),
+        config.commerceEnabled && can(req.user, 'integrations.manage') ? pendingPostCount(w) : Promise.resolve(0),
       ]);
       const pct = sub.replyLimit ? Math.min(100, Math.round((sub.repliesUsed / sub.replyLimit) * 100)) : 100;
       const ob = await one(
@@ -60,6 +63,11 @@ export function dashboardRoutes(app: FastifyInstance) {
         reply,
         'Panel',
         html`${sub.expired ? html`<p class="flash error">${icon('alert')}<span>${MESSAGES.expired!.text}</span></p>` : ''}
+        ${
+          pendingPosts
+            ? html`<p class="flash ok">${icon('instagram')}<span><b>${pendingPosts} yeni post</b> məhsul seçiminizi gözləyir. <a href="/app/posts">Postlara keç →</a></span></p>`
+            : ''
+        }
         ${pageHead(
           sub.name,
           html`AI köməkçi: ${a.enabled ? chip('ok', 'Aktiv') : chip('neutral', 'Deaktiv')}${sub.paidUntil ? html` · Abunəlik: <b>${day(sub.paidUntil)}</b> tarixinə qədər` : ''}`,

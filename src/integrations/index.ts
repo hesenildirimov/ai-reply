@@ -5,6 +5,7 @@ import { MockTelegramProvider } from './mock-telegram.js';
 import { TelegramBotProvider } from './telegram-bot.js';
 import type { InstagramProvider, TelegramProvider } from './types.js';
 
+export * from './readiness.js';
 export * from './types.js';
 
 /**

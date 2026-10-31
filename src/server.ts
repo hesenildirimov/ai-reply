@@ -18,6 +18,7 @@ import { registerAuth } from './web/auth.js';
 import { automationRoutes } from './web/automations.js';
 import { channelRoutes } from './web/channels.js';
 import { commentRoutes } from './web/comments.js';
+import { commerceRoutes } from './web/commerce.js';
 import { contactRoutes } from './web/contacts.js';
 import { dashboardRoutes } from './web/dashboard.js';
 import { inboxRoutes } from './web/inbox.js';
@@ -129,6 +130,7 @@ export async function buildServer() {
   automationRoutes(app);
   inboxRoutes(app);
   commentRoutes(app);
+  commerceRoutes(app);
   analyticsRoutes(app);
   knowledgeRoutes(app);
   contactRoutes(app);
