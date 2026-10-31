@@ -82,6 +82,15 @@ describe.skipIf(!enabled)('website and leads', () => {
     expect(az.body).not.toContain('Demoya bax');
   });
 
+  it('AI budget caps stay below the plan price (migration 020)', async () => {
+    const rows = await db.q(`SELECT name, limits->>'ai_budget_usd_month' AS month, limits->>'ai_budget_usd_day' AS day FROM plans ORDER BY created_at`);
+    expect(rows).toEqual([
+      { name: 'Start', month: '10', day: '1' },
+      { name: 'Biznes', month: '30', day: '3' },
+      { name: 'Pro', month: '75', day: '8' },
+    ]);
+  });
+
   it('the form arrives with the chosen plan and intent', async () => {
     const r = await app.inject({ url: '/request?plan=pro&intent=call' });
     expect(r.body).toMatch(/<option value="pro" selected>Pro/);

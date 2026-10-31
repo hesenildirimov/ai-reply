@@ -194,6 +194,23 @@ describe.skipIf(!enabled)('knowledge sources (integration)', () => {
     }
   });
 
+  it('a simple question that matches a big catalogue stays on the fast model; at most 4 pieces go to the AI', async () => {
+    const { buildContext } = await import('../src/context.js');
+    const { parseInstagramWebhook } = await import('../src/channels/instagram.js');
+    const pipeline = await import('../src/pipeline.js');
+    // A large catalogue: many rows that all match "don".
+    const rows = Array.from({ length: 40 }, (_, i) => `Yay donu model ${i},${40 + i} AZN,S-XL,${'uzun təsvir '.repeat(50)}`).join('\n');
+    await upload('boyuk-kataloq.csv', Buffer.from(`Məhsul,Qiymət,Ölçü,Təsvir\n${rows}\n`));
+    expect(await processLatest()).toMatchObject({ status: 'ready' });
+    for (const ev of parseInstagramWebhook(igMessage('IGSRC', 'U-route', 'route.1', 'don var?'))) await pipeline.ingest(ev);
+    const m = await db.one(`SELECT conversation_id FROM messages WHERE external_id = 'route.1'`);
+    const ctx = await buildContext(m.conversation_id, ws.workspaceId);
+    expect(ctx.extra.knowledge).toContain('Yay donu model');
+    expect(ctx.extra.knowledge!.split('\n').filter((l) => l.startsWith('[product]')).length).toBeLessThanOrEqual(4);
+    expect(ctx.extra.knowledge!.length).toBeGreaterThan(2500); // would have pushed the reply to the smart model
+    expect(ctx.route).toBe('fast');
+  });
+
   it('a page or a whole site (sitemap) is read; private addresses are refused', async () => {
     await addUrl(`${SITE}/shop/delivery`, 'url');
     expect(await processLatest()).toMatchObject({ status: 'ready', kind: 'url' });

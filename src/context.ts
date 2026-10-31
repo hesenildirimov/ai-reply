@@ -120,12 +120,13 @@ export async function buildContext(conversationId: string, workspaceId: string):
     .slice(-3)
     .map((m) => m.body)
     .join(' ');
-  const { pinned, knowledge } = await knowledgeFor(workspaceId, latestInbound);
+  const { pinned, knowledge, manual } = await knowledgeFor(workspaceId, latestInbound);
   const lastText = recent.at(-1)?.body ?? '';
   return {
     history,
     extra: { pinnedKnowledge: pinned || undefined, knowledge, summary: conv?.summary || undefined, latinRussian: isLatinRussian(latestInbound) },
-    route: chooseRoute(lastText, history.length, knowledge.length),
+    // Source pieces do not count here: a simple question that happens to match a catalogue stays on the fast model.
+    route: chooseRoute(lastText, history.length, manual.length),
     unsummarized: rows.length - recent.length,
     estInputTokens: used + estimateTokens(pinned) + estimateTokens(knowledge) + estimateTokens(conv?.summary ?? ''),
   };
@@ -161,7 +162,7 @@ export async function updateSummary(conversationId: string, workspaceId: string)
  * Knowledge for one message: the hand-written items (whole when small, else the relevant ones) plus the pieces of
  * uploaded sources (files, sites, tables) that match the customer's words.
  */
-export async function knowledgeFor(workspaceId: string, query: string): Promise<{ pinned: string; knowledge: string }> {
+export async function knowledgeFor(workspaceId: string, query: string): Promise<{ pinned: string; knowledge: string; manual: string }> {
   // Stable order (by id) so the pinned block is byte-identical across conversations and stays cached.
   const items = await q(
     `SELECT kind, title, body, keywords FROM knowledge_items WHERE workspace_id = $1 AND active AND source_id IS NULL ORDER BY id LIMIT 500`,
@@ -170,7 +171,8 @@ export async function knowledgeFor(workspaceId: string, query: string): Promise<
   const { pinned, knowledge } = planKnowledge(items, query);
   const { sourceHits } = await import('./sources.js');
   const hits = await sourceHits(workspaceId, query);
-  return { pinned, knowledge: [knowledge, hits].filter(Boolean).join('\n') };
+  // `manual` = the hand-written part only: model routing looks at it, not at source pieces (see chooseRoute).
+  return { pinned, knowledge: [knowledge, hits].filter(Boolean).join('\n'), manual: knowledge };
 }
 
 /**

@@ -161,7 +161,8 @@ güclü model kiçik yazıları, etiketləri və ölçü cədvəllərini daha ya
 - **Sual-cavab:** hazır sual və cavab (əl ilə yazılan "Tez-tez verilən sual" maddəsi).
 
 Worker mətni çıxarır, kiçik hissələrə bölür və axtarış indeksi ilə saxlayır (`src/sources.ts`). Hər cavabda AI yalnız
-müştərinin sualına uyğun hissələri görür, ona görə böyük kataloq da promptu böyütmür. Qiymət yoxlaması həmin hissələri də
+müştərinin sualına uyğun hissələri görür (ən çox 4 hissə, ~800 token), ona görə böyük kataloq da promptu böyütmür.
+Mənbə hissələri model seçiminə təsir etmir: sadə sual kataloqla üst-üstə düşsə də, ucuz model cavab verir. Qiymət yoxlaması həmin hissələri də
 "biznesin dediyi" sayır. Həcm limiti çıxarılmış mətnə görədir: Start 10 MB, Biznes 20 MB, Pro 40 MB (admin dəyişə bilir,
 `knowledge_mb`). Sayt oxunarkən yalnız açıq internet ünvanlarına qoşulur (daxili şəbəkə və cloud metadata bloklanır).
 

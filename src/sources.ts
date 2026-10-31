@@ -1,5 +1,5 @@
 import { unzipSync } from 'fflate';
-import { aiConfig, estimateTokens } from './aiconfig.js';
+import { estimateTokens } from './aiconfig.js';
 import { parseCsv } from './csv.js';
 import { one, q, tx } from './db.js';
 import { fetchPublic } from './fetch-public.js';
@@ -17,6 +17,9 @@ export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // one file
 const MAX_SITE_PAGES = 30;
 const CHUNK = 1500; // characters per item: small pieces are found more precisely
 const MAX_TABLE_ROWS = 5000;
+// Source pieces per reply: the best few matches, ~800 tokens (a reply costs the same whatever the sources' size).
+const SOURCE_TOKEN_BUDGET = 800;
+const SOURCE_PIECES = 4;
 
 export type SourceKind = 'file' | 'url' | 'site' | 'table';
 export interface SourceRow {
@@ -311,7 +314,7 @@ const withTimeout = <T>(p: Promise<T>, ms: number) =>
  * Source pieces that match the customer's words (full-text search, prefix matches, best first) within a token budget.
  * Used next to planKnowledge for the hand-written items, which stay small enough to be scored in memory.
  */
-export async function sourceHits(workspaceId: string, query: string, budget = aiConfig.limits.knowledge_token_budget): Promise<string> {
+export async function sourceHits(workspaceId: string, query: string, budget = SOURCE_TOKEN_BUDGET): Promise<string> {
   const words = [
     ...new Set(
       normalize(query)
@@ -325,7 +328,7 @@ export async function sourceHits(workspaceId: string, query: string, budget = ai
   const rows = await q<{ kind: string; title: string; body: string }>(
     `SELECT kind, title, body FROM knowledge_items
      WHERE workspace_id = $1 AND active AND source_id IS NOT NULL AND search @@ to_tsquery('simple', $2)
-     ORDER BY ts_rank(search, to_tsquery('simple', $2)) DESC LIMIT 8`,
+     ORDER BY ts_rank(search, to_tsquery('simple', $2)) DESC LIMIT ${SOURCE_PIECES}`,
     [workspaceId, tsq],
   );
   const out: string[] = [];
