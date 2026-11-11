@@ -2,7 +2,7 @@
 # Only Caddy (TLS) is published to the internet; web, db and redis stay on the internal network.
 services:
   db:
-    image: postgres:16@sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
+    image: postgres:16@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
     # Owner (superuser) only for migrations and backups; web/worker use the least-privilege role app_rw (docker/db-init.sh).
     environment: { POSTGRES_USER: aireply_owner, POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}", POSTGRES_DB: aireply, APP_DB_PASSWORD: "${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}" }
     volumes: [pgdata:/var/lib/postgresql/data, ./docker/db-init.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro]
